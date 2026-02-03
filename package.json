@@ -1,0 +1,45 @@
+{
+  "name": "wordping",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "build": "tsc",
+    "dev:bot": "ts-node-dev --respawn --transpile-only src/bot/index.ts",
+    "dev:worker": "ts-node-dev --respawn --transpile-only src/scheduler/worker.ts",
+    "dev:api": "ts-node-dev --respawn --transpile-only src/api/index.ts",
+    "dev:web": "npm --prefix web run dev",
+    "start:bot": "node dist/bot/index.js",
+    "start:worker": "node dist/scheduler/worker.js",
+    "start:api": "node dist/api/index.js",
+    "migrate:dev": "prisma migrate dev",
+    "migrate:deploy": "prisma migrate deploy",
+    "prisma:generate": "prisma generate",
+    "build:web": "npm --prefix web run build",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "@prisma/client": "^6.19.2",
+    "cors": "^2.8.5",
+    "dayjs": "^1.11.19",
+    "dotenv": "^17.2.3",
+    "express": "^5.1.0",
+    "node-cron": "^4.2.1",
+    "telegraf": "^4.16.3"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.18",
+    "@types/node": "^25.1.0",
+    "@types/express": "^5.0.3",
+    "@types/supertest": "^2.0.16",
+    "prisma": "^6.19.2",
+    "supertest": "^7.0.0",
+    "ts-node-dev": "^2.0.0",
+    "typescript": "^5.9.3",
+    "vitest": "^2.1.9"
+  }
+}

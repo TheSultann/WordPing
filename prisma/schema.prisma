@@ -1,0 +1,134 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum DirectionMode {
+  MIXED
+  EN_TO_RU
+  RU_TO_EN
+}
+
+enum CardDirection {
+  EN_TO_RU
+  RU_TO_EN
+}
+
+enum ReviewResult {
+  CORRECT
+  INCORRECT
+  SKIPPED
+}
+
+enum SessionState {
+  IDLE
+  ADDING_WORD_WAIT_EN
+  ADDING_WORD_CONFIRM_TRANSLATION
+  ADDING_WORD_WAIT_RU_MANUAL
+  WAITING_ANSWER
+  WAITING_GRADE
+  SETTINGS_WAIT_INTERVAL
+  SETTINGS_WAIT_GOAL
+}
+
+model User {
+  id                   BigInt        @id
+  createdAt            DateTime      @default(now())
+  timezone             String?       @db.VarChar(64)
+  directionMode        DirectionMode @default(MIXED)
+  notificationsEnabled Boolean       @default(true)
+  // Quiet hours window (start == end => 24/7)
+  quietHoursStartMinutes Int         @default(480) // 08:00
+  quietHoursEndMinutes   Int         @default(1380) // 23:00
+
+  // Notification controls
+  maxNotificationsPerDay   Int        @default(20)
+  notificationIntervalMinutes Int     @default(30)
+  notificationsSentToday   Int        @default(0)
+  notificationsDate        DateTime?
+  lastNotificationAt       DateTime?
+
+  streakCount          Int           @default(0)
+  lastStreakDate       DateTime?
+  doneTodayCount       Int           @default(0)
+  lastDoneDate         DateTime?
+
+  // Referrals
+  referredById         BigInt?
+  referredBy           User?         @relation("UserReferrals", fields: [referredById], references: [id], onDelete: SetNull)
+  referrals            User[]        @relation("UserReferrals")
+
+  // Legacy fields (kept for compatibility)
+  windowStartMinutes   Int           @default(480) // 08:00
+  windowEndMinutes     Int           @default(1380) // 23:00
+  todayCompleted       Int           @default(0)
+  todayDate            DateTime?
+  words                Word[]
+  reviews              Review[]
+  session              UserSession?
+  language             String        @default("ru")
+
+  @@index([referredById])
+}
+
+model Word {
+  id            Int       @id @default(autoincrement())
+  userId        BigInt
+  wordEn        String    @db.VarChar(256)
+  translationRu String    @db.VarChar(256)
+  createdAt     DateTime  @default(now())
+  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  review        Review?
+
+  @@index([userId])
+  @@unique([userId, wordEn])
+}
+
+model Review {
+  id             Int           @id @default(autoincrement())
+  userId         BigInt
+  wordId         Int           @unique
+  lastReviewAt   DateTime?
+  nextReviewAt   DateTime?
+  stage          Int           @default(0)
+  intervalMinutes Int          @default(0)
+  easeFactor     Float?        @default(2.3)
+  lastDirection  CardDirection?
+  lastAnswerText String?
+  lastResult     ReviewResult?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+  user           User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  word           Word          @relation(fields: [wordId], references: [id], onDelete: Cascade)
+
+  @@index([userId, nextReviewAt])
+  @@index([wordId])
+}
+
+model UserSession {
+  userId       BigInt       @id
+  state        SessionState @default(IDLE)
+  reviewId     Int?
+  wordId       Int?
+  direction    CardDirection?
+  sentAt       DateTime?
+  reminderStep Int          @default(0)
+  answerText   String?
+  payload      Json?
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([state])
+}

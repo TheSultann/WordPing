@@ -320,18 +320,33 @@ app.delete('/api/words/:id', async (req, res) => {
     return res.status(400).json({ error: 'invalid_id' });
   }
 
-  const result = await prisma.word.deleteMany({
-    where: {
-      id,
-      userId,
-    },
-  });
+  try {
+    // Be explicit: delete review first to avoid FK issues on environments
+    // where ON DELETE CASCADE might not be in sync yet.
+    const [, wordsDeleted] = await prisma.$transaction([
+      prisma.review.deleteMany({
+        where: {
+          userId,
+          wordId: id,
+        },
+      }),
+      prisma.word.deleteMany({
+        where: {
+          id,
+          userId,
+        },
+      }),
+    ]);
 
-  if (result.count === 0) {
-    return res.status(404).json({ error: 'not_found' });
+    if (wordsDeleted.count === 0) {
+      return res.status(404).json({ error: 'not_found' });
+    }
+
+    return res.json({ ok: true });
+  } catch (error) {
+    console.error('DELETE /api/words/:id failed', { userId: userId.toString(), id, error });
+    return res.status(500).json({ error: 'delete_failed' });
   }
-
-  return res.json({ ok: true });
 });
 
 app.get('/api/admin/overview', async (_req, res) => {

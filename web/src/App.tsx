@@ -291,6 +291,12 @@ const App = () => {
   const [adminBroadcastError, setAdminBroadcastError] = useState('');
 
   const telegramUser = useMemo(() => getTelegramUser(), []);
+  const isTelegramWebApp = useMemo(() => Boolean((window as any)?.Telegram?.WebApp), []);
+  const prefersReducedMotion = useMemo(
+    () => (typeof window !== 'undefined' ? window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches ?? false : false),
+    []
+  );
+  const useLiteUi = isTelegramWebApp || prefersReducedMotion;
   const hasInitData = Boolean((window as any)?.Telegram?.WebApp?.initData);
   const devUserId = new URLSearchParams(window.location.search).get('devUserId');
   const canAuth = hasInitData || Boolean(devUserId);
@@ -421,6 +427,15 @@ const App = () => {
       tg.setBackgroundColor?.(bg);
     }
   }, [theme]);
+
+  useEffect(() => {
+    if (typeof document === 'undefined') return;
+    if (useLiteUi) {
+      document.documentElement.setAttribute('data-lite-ui', 'true');
+      return;
+    }
+    document.documentElement.removeAttribute('data-lite-ui');
+  }, [useLiteUi]);
 
   useEffect(() => {
     if (!canAuth) {
@@ -671,14 +686,14 @@ const App = () => {
         </div>
       </div>
 
-      <AnimatePresence mode='wait'>
+      <AnimatePresence mode='wait' initial={!useLiteUi}>
         {tab === 'stats' && (
           <motion.div
             key="stats"
-            initial={{ opacity: 0, scale: 0.98 }}
+            initial={useLiteUi ? false : { opacity: 0, scale: 0.98 }}
             animate={{ opacity: 1, scale: 1 }}
-            exit={{ opacity: 0, scale: 0.98 }}
-            transition={{ duration: 0.2 }}
+            exit={useLiteUi ? { opacity: 1, scale: 1 } : { opacity: 0, scale: 0.98 }}
+            transition={{ duration: useLiteUi ? 0 : 0.2 }}
             className="section"
           >
             {stats ? (
@@ -786,10 +801,10 @@ const App = () => {
         {tab === 'words' && (
           <motion.div
             key="words"
-            initial={{ opacity: 0, scale: 0.98 }}
+            initial={useLiteUi ? false : { opacity: 0, scale: 0.98 }}
             animate={{ opacity: 1, scale: 1 }}
-            exit={{ opacity: 0, scale: 0.98 }}
-            transition={{ duration: 0.2 }}
+            exit={useLiteUi ? { opacity: 1, scale: 1 } : { opacity: 0, scale: 0.98 }}
+            transition={{ duration: useLiteUi ? 0 : 0.2 }}
             className="section"
           >
             <div className="panel" style={{ minHeight: '80vh' }}>
@@ -828,10 +843,10 @@ const App = () => {
         {tab === 'settings' && (
           <motion.div
             key="settings"
-            initial={{ opacity: 0, scale: 0.98 }}
+            initial={useLiteUi ? false : { opacity: 0, scale: 0.98 }}
             animate={{ opacity: 1, scale: 1 }}
-            exit={{ opacity: 0, scale: 0.98 }}
-            transition={{ duration: 0.2 }}
+            exit={useLiteUi ? { opacity: 1, scale: 1 } : { opacity: 0, scale: 0.98 }}
+            transition={{ duration: useLiteUi ? 0 : 0.2 }}
             className="section"
           >
             <div className="panel">
@@ -934,10 +949,10 @@ const App = () => {
         {tab === 'admin' && isAdmin && (
           <motion.div
             key="admin"
-            initial={{ opacity: 0, scale: 0.98 }}
+            initial={useLiteUi ? false : { opacity: 0, scale: 0.98 }}
             animate={{ opacity: 1, scale: 1 }}
-            exit={{ opacity: 0, scale: 0.98 }}
-            transition={{ duration: 0.2 }}
+            exit={useLiteUi ? { opacity: 1, scale: 1 } : { opacity: 0, scale: 0.98 }}
+            transition={{ duration: useLiteUi ? 0 : 0.2 }}
             className="section"
           >
             <div className="admin-shell">
@@ -1144,13 +1159,24 @@ const App = () => {
       </AnimatePresence>
 
       {notice && (
-        <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} className="notice">
+        <motion.div
+          initial={useLiteUi ? false : { opacity: 0, y: -10 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: useLiteUi ? 0 : 0.15 }}
+          className="notice"
+        >
           <CheckCircle2 size={16} style={{ display: 'inline', marginRight: 8, verticalAlign: 'text-bottom' }} />
           {notice}
         </motion.div>
       )}
       {error && (
-        <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} className="notice" style={{ color: '#ef4444', borderColor: '#ef4444', backgroundColor: 'rgba(239,68,68,0.1)' }}>
+        <motion.div
+          initial={useLiteUi ? false : { opacity: 0, y: -10 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: useLiteUi ? 0 : 0.15 }}
+          className="notice"
+          style={{ color: '#ef4444', borderColor: '#ef4444', backgroundColor: 'rgba(239,68,68,0.1)' }}
+        >
           <AlertCircle size={16} style={{ display: 'inline', marginRight: 8, verticalAlign: 'text-bottom' }} />
           {error}
         </motion.div>

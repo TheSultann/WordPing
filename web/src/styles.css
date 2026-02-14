@@ -1620,6 +1620,37 @@ input:checked+.toggle-slider:before {
   border: 1px solid rgba(22, 163, 74, 0.2);
 }
 
+:root[data-lite-ui='true'] .tabs-container,
+:root[data-lite-ui='true'] .admin-user-card {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+:root[data-lite-ui='true'] .panel,
+:root[data-lite-ui='true'] .tabs-container,
+:root[data-lite-ui='true'] .tab-btn.active,
+:root[data-lite-ui='true'] .btn-primary,
+:root[data-lite-ui='true'] .btn-secondary,
+:root[data-lite-ui='true'] .chip-btn,
+:root[data-lite-ui='true'] .user-pill,
+:root[data-lite-ui='true'] .stat-card,
+:root[data-lite-ui='true'] .word-item {
+  box-shadow: none;
+}
+
+:root[data-lite-ui='true'] .streak-flame.is-lit,
+:root[data-lite-ui='true'] .spin {
+  animation: none;
+}
+
+:root[data-lite-ui='true'] .btn-primary,
+:root[data-lite-ui='true'] .btn-secondary,
+:root[data-lite-ui='true'] .chip-btn,
+:root[data-lite-ui='true'] .tab-btn,
+:root[data-lite-ui='true'] .word-item {
+  transition: none;
+}
+
 @media (max-width: 600px) {
   .app {
     padding: 18px 16px 28px;

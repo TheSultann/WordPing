@@ -8,6 +8,7 @@ yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 dist
+coverage
 prisma/generated
 src/generated
 

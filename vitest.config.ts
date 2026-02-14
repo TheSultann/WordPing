@@ -6,5 +6,11 @@ export default defineConfig({
     include: ['tests/**/*.test.ts'],
     threads: false,
     setupFiles: ['tests/setup.ts'],
+    coverage: {
+      provider: 'v8',
+      reporter: ['text', 'html'],
+      include: ['src/**/*.ts', 'web/src/**/*.ts'],
+      exclude: ['src/generated/**', '**/*.d.ts'],
+    },
   },
 });

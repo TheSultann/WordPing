@@ -1,23 +1,24 @@
 ﻿import { useEffect, useMemo, useState } from 'react';
-import { api, Settings, Stats, WordItem, Me } from './api';
-import { 
-  Settings as SettingsIcon, 
-  BarChart3, 
-  Book, 
-  Save, 
-  RotateCcw, 
-  Trash2, 
+import { api, Settings, Stats, WordItem, Me, AdminOverview, AdminUserSummary } from './api';
+import {
+  Settings as SettingsIcon,
+  Book,
+  Save,
+  RotateCcw,
+  Trash2,
   Flame,
   UserPlus,
   Copy,
   Sun,
   Moon,
   Languages,
-  Zap, 
-  Clock, 
-  Bell, 
+  Zap,
+  Clock,
+  Bell,
   Target,
   Search,
+  Shield,
+  Users,
   CheckCircle2,
   AlertCircle
 } from 'lucide-react';
@@ -40,6 +41,7 @@ const timeToMinutes = (value: string) => {
 
 const getTelegramUser = () => (window as any)?.Telegram?.WebApp?.initDataUnsafe?.user;
 const BOT_USERNAME = (import.meta as any).env?.VITE_BOT_USERNAME ?? '';
+const ADMIN_ID = 467595754;
 
 const COPY = {
   ru: {
@@ -61,9 +63,7 @@ const COPY = {
     doneToday: 'Сделано сегодня',
     dictionary: 'Словарь',
     dueToday: 'На повтор',
-    level: 'Уровень',
-    levelPro: 'Pro',
-    levelNovice: 'Новичок',
+    learned: 'Изучил',
     statsLoading: 'Загрузка статистики...',
     wordsTitle: 'Словарь',
     wordsSearch: 'Поиск...',
@@ -94,9 +94,54 @@ const COPY = {
     inviteCountLabel: 'Приглашено',
     inviteShareText: 'Присоединяйся к WordPing — тренируй слова с умными напоминаниями.',
     save: 'Сохранить',
+    adminLabel: 'Админ',
+    userIdLabel: 'ID',
     tabHome: 'Главная',
     tabDictionary: 'Словарь',
     tabSettings: 'Настройки',
+    tabAdmin: 'Админ',
+    adminTitle: 'Админ-панель',
+    adminOverview: 'Сводка',
+    adminTotalUsers: 'Пользователи',
+    adminActiveToday: 'Активные сегодня (UTC)',
+    adminNew7Days: 'Новые за 7 дней',
+    adminTotalWords: 'Слов всего',
+    adminNotificationsToday: 'Уведомлений сегодня',
+    adminLookupTitle: 'Поиск пользователя',
+    adminLookupHint: 'Ищи по Telegram ID',
+    adminSearchPlaceholder: 'Telegram ID',
+    adminSearchAction: 'Найти',
+    adminSearchClear: 'Очистить',
+    adminLookupLoading: 'Загрузка пользователя...',
+    adminLookupIdle: 'Введи Telegram ID и нажми «Найти».',
+    adminNotFound: 'Пользователь не найден',
+    adminRecentTitle: 'Последние регистрации',
+    adminRecentEmpty: 'Пока нет регистраций',
+    adminOverviewLoading: 'Загрузка обзора...',
+    adminOverviewError: 'Не удалось загрузить обзор',
+    adminLookupError: 'Не удалось загрузить пользователя',
+    adminUserDetails: 'Карточка пользователя',
+    adminFieldId: 'ID',
+    adminFieldCreated: 'Создан',
+    adminFieldWords: 'Слов',
+    adminFieldLearned: 'Изучил',
+    adminFieldPostponed: 'Отложил',
+    adminCopyId: 'Скопировать ID',
+    adminCopied: 'Скопировано',
+    adminYes: 'Да',
+    adminNo: 'Нет',
+    adminBroadcastTitle: 'Сообщение всем',
+    adminBroadcastPlaceholder: 'Текст для всех пользователей...',
+    adminBroadcastPhotoLabel: 'Фото (URL)',
+    adminBroadcastPhotoHint: 'Нужна публичная HTTPS-ссылка',
+    adminBroadcastSend: 'Отправить всем',
+    adminBroadcastSending: 'Рассылка...',
+    adminBroadcastSent: 'Рассылка завершена',
+    adminBroadcastError: 'Не удалось отправить всем',
+    adminBroadcastConfirm: 'Отправить сообщение всем пользователям?',
+    adminBroadcastConfirmCount: 'Отправить сообщение всем пользователям? Получателей: {count}.',
+    adminBroadcastPreview: 'Предпросмотр',
+    adminBroadcastPreviewEmpty: 'Текст сообщения появится здесь.',
   },
   uz: {
     tagline: "Aqlliroq o'rgan",
@@ -117,9 +162,7 @@ const COPY = {
     doneToday: 'Bugun bajarildi',
     dictionary: "Lug'at",
     dueToday: "Qayta ko'rish",
-    level: 'Daraja',
-    levelPro: 'Pro',
-    levelNovice: "Boshlang'ich",
+    learned: "O'rgangan",
     statsLoading: 'Statistika yuklanmoqda...',
     wordsTitle: "Lug'at",
     wordsSearch: 'Qidiruv...',
@@ -150,9 +193,54 @@ const COPY = {
     inviteCountLabel: "Taklif qilinganlar",
     inviteShareText: "WordPingga qo'shiling — so'zlarni aqlli eslatmalar bilan o'rganing.",
     save: 'Saqlash',
+    adminLabel: 'Admin',
+    userIdLabel: 'ID',
     tabHome: 'Asosiy',
     tabDictionary: "Lug'at",
     tabSettings: 'Sozlamalar',
+    tabAdmin: 'Admin',
+    adminTitle: 'Admin panel',
+    adminOverview: 'Umumiy',
+    adminTotalUsers: 'Foydalanuvchilar',
+    adminActiveToday: 'Bugun faol (UTC)',
+    adminNew7Days: '7 kunda yangi',
+    adminTotalWords: "Jami so'zlar",
+    adminNotificationsToday: 'Bugungi bildirishnomalar',
+    adminLookupTitle: 'Foydalanuvchini qidirish',
+    adminLookupHint: 'Telegram ID bo‘yicha',
+    adminSearchPlaceholder: 'Telegram ID',
+    adminSearchAction: 'Qidirish',
+    adminSearchClear: 'Tozalash',
+    adminLookupLoading: 'Foydalanuvchi yuklanmoqda...',
+    adminLookupIdle: 'Telegram ID kiriting va «Qidirish» tugmasini bosing.',
+    adminNotFound: 'Foydalanuvchi topilmadi',
+    adminRecentTitle: "So‘nggi ro‘yxatdan o‘tganlar",
+    adminRecentEmpty: "Hozircha ro‘yxatdan o‘tganlar yo‘q",
+    adminOverviewLoading: 'Umumiy maʼlumot yuklanmoqda...',
+    adminOverviewError: 'Umumiy maʼlumotni yuklab bo‘lmadi',
+    adminLookupError: 'Foydalanuvchini yuklab bo‘lmadi',
+    adminUserDetails: 'Foydalanuvchi kartasi',
+    adminFieldId: 'ID',
+    adminFieldCreated: 'Yaratilgan',
+    adminFieldWords: "So'zlar",
+    adminFieldLearned: 'O‘rgangan',
+    adminFieldPostponed: 'Kechiktirgan',
+    adminCopyId: 'ID nusxa olish',
+    adminCopied: 'Nusxalandi',
+    adminYes: 'Ha',
+    adminNo: "Yo'q",
+    adminBroadcastTitle: 'Hammaga xabar',
+    adminBroadcastPlaceholder: 'Barcha foydalanuvchilar uchun matn...',
+    adminBroadcastPhotoLabel: 'Rasm (URL)',
+    adminBroadcastPhotoHint: 'Ommaviy HTTPS havola kerak',
+    adminBroadcastSend: 'Hammaga yuborish',
+    adminBroadcastSending: 'Yuborilmoqda...',
+    adminBroadcastSent: 'Yuborish tugadi',
+    adminBroadcastError: 'Hammaga yuborib bo‘lmadi',
+    adminBroadcastConfirm: 'Barcha foydalanuvchilarga yuborasizmi?',
+    adminBroadcastConfirmCount: 'Barchaga yuborilsinmi? Qabul qiluvchilar soni: {count}.',
+    adminBroadcastPreview: 'Oldindan ko‘rish',
+    adminBroadcastPreviewEmpty: 'Xabar matni shu yerda ko‘rinadi.',
   },
 } as const;
 
@@ -176,7 +264,7 @@ const getStoredTheme = (): Theme | null => {
 };
 
 const App = () => {
-  const [tab, setTab] = useState<'settings' | 'stats' | 'words'>('stats');
+  const [tab, setTab] = useState<'settings' | 'stats' | 'words' | 'admin'>('stats');
   const [settings, setSettings] = useState<Settings | null>(null);
   const [form, setForm] = useState<Settings | null>(null);
   const [stats, setStats] = useState<Stats | null>(null);
@@ -188,13 +276,51 @@ const App = () => {
   const [notice, setNotice] = useState('');
   const [lang, setLang] = useState<Lang>(() => getStoredLang() ?? 'ru');
   const [theme, setTheme] = useState<Theme>(() => getStoredTheme() ?? 'dark');
+  const [adminOverview, setAdminOverview] = useState<AdminOverview | null>(null);
+  const [adminOverviewLoading, setAdminOverviewLoading] = useState(false);
+  const [adminOverviewError, setAdminOverviewError] = useState('');
+  const [adminQuery, setAdminQuery] = useState('');
+  const [adminUser, setAdminUser] = useState<AdminUserSummary | null>(null);
+  const [adminLookupLoading, setAdminLookupLoading] = useState(false);
+  const [adminLookupError, setAdminLookupError] = useState('');
+  const [adminNotFound, setAdminNotFound] = useState(false);
+  const [adminBroadcastMessage, setAdminBroadcastMessage] = useState('');
+  const [adminBroadcastPhoto, setAdminBroadcastPhoto] = useState('');
+  const [adminBroadcastLoading, setAdminBroadcastLoading] = useState(false);
+  const [adminBroadcastNotice, setAdminBroadcastNotice] = useState('');
+  const [adminBroadcastError, setAdminBroadcastError] = useState('');
 
   const telegramUser = useMemo(() => getTelegramUser(), []);
   const hasInitData = Boolean((window as any)?.Telegram?.WebApp?.initData);
   const devUserId = new URLSearchParams(window.location.search).get('devUserId');
   const canAuth = hasInitData || Boolean(devUserId);
+  const adminCandidateId = useMemo(() => {
+    const candidates: Array<string | number | null | undefined> = [
+      me?.id,
+      telegramUser?.id,
+      devUserId,
+    ];
+    for (const candidate of candidates) {
+      if (candidate === null || candidate === undefined || candidate === '') continue;
+      const value = Number(candidate);
+      if (Number.isFinite(value)) return value;
+    }
+    return null;
+  }, [me?.id, telegramUser?.id, devUserId]);
+  const isAdmin = adminCandidateId === ADMIN_ID;
 
   const t = (key: CopyKey) => COPY[lang]?.[key] ?? COPY.ru[key];
+  const formatDateTime = (value?: string | null) => {
+    if (!value) return '—';
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return '—';
+    return date.toLocaleString();
+  };
+
+  const broadcastLimit = adminBroadcastPhoto.trim() ? 1024 : 4000;
+  const broadcastLength = adminBroadcastMessage.trim().length;
+  const broadcastOverLimit = broadcastLength > broadcastLimit;
+  const broadcastCounter = `${broadcastLength}/${broadcastLimit}`;
 
   const loadMe = async () => {
     try {
@@ -257,7 +383,7 @@ const App = () => {
     if (navigator.share) {
       navigator
         .share({ text: shareText, url: link })
-        .catch(() => {});
+        .catch(() => { });
       return;
     }
     window.open(shareUrl, '_blank', 'noopener,noreferrer');
@@ -321,7 +447,10 @@ const App = () => {
     if (tab === 'words') {
       void loadWords(query);
     }
-  }, [tab, canAuth]);
+    if (tab === 'admin' && isAdmin) {
+      void loadAdminOverview();
+    }
+  }, [tab, canAuth, isAdmin]);
 
   useEffect(() => {
     if (tab !== 'words' || !canAuth) return;
@@ -376,6 +505,104 @@ const App = () => {
     }
   };
 
+  const loadAdminOverview = async () => {
+    if (!isAdmin) return;
+    try {
+      setAdminOverviewLoading(true);
+      setAdminOverviewError('');
+      const data = await api.getAdminOverview();
+      setAdminOverview(data);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : t('adminOverviewError');
+      const normalized = message === 'forbidden' || message === 'unauthorized' ? t('adminOverviewError') : message;
+      setAdminOverviewError(normalized);
+    } finally {
+      setAdminOverviewLoading(false);
+    }
+  };
+
+  const loadAdminUser = async (overrideId?: string) => {
+    if (!isAdmin) return;
+    const raw = (overrideId ?? adminQuery).trim();
+    if (!raw) return;
+    try {
+      setAdminLookupLoading(true);
+      setAdminLookupError('');
+      setAdminNotFound(false);
+      setAdminUser(null);
+      const data = await api.getAdminUser(raw);
+      setAdminUser(data);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : t('adminLookupError');
+      if (message === 'not_found' || message.includes('404')) {
+        setAdminNotFound(true);
+      } else {
+        const normalized = message === 'forbidden' || message === 'unauthorized' ? t('adminLookupError') : message;
+        setAdminLookupError(normalized);
+      }
+    } finally {
+      setAdminLookupLoading(false);
+    }
+  };
+
+  const sendAdminBroadcast = async () => {
+    if (!isAdmin) return;
+    const text = adminBroadcastMessage.trim();
+    const photo = adminBroadcastPhoto.trim();
+    if (!text && !photo) {
+      setAdminBroadcastError(t('adminBroadcastError'));
+      return;
+    }
+    if (broadcastOverLimit) {
+      setAdminBroadcastError('Слишком длинное сообщение');
+      return;
+    }
+    let recipientsCount = adminOverview?.totals.users;
+    if (!Number.isFinite(recipientsCount)) {
+      try {
+        const freshOverview = await api.getAdminOverview();
+        setAdminOverview(freshOverview);
+        recipientsCount = freshOverview.totals.users;
+      } catch {
+        // fallback to generic confirm text
+      }
+    }
+
+    const confirmText = Number.isFinite(recipientsCount)
+      ? t('adminBroadcastConfirmCount', { count: recipientsCount as number })
+      : t('adminBroadcastConfirm');
+    if (!confirm(confirmText)) return;
+
+    try {
+      setAdminBroadcastLoading(true);
+      setAdminBroadcastError('');
+      setAdminBroadcastNotice('');
+      const result = await api.sendAdminBroadcast({ message: text, photoUrl: photo || undefined });
+      setAdminBroadcastMessage('');
+      setAdminBroadcastPhoto('');
+      setAdminBroadcastNotice(`${t('adminBroadcastSent')} (${result.sent}/${result.total})`);
+      setTimeout(() => setAdminBroadcastNotice(''), 3000);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : t('adminBroadcastError');
+      if (message === 'message_too_long' || message === 'caption_too_long') {
+        setAdminBroadcastError('Слишком длинное сообщение');
+      } else if (message === 'empty_message') {
+        setAdminBroadcastError(t('adminBroadcastError'));
+      } else {
+        setAdminBroadcastError(message);
+      }
+    } finally {
+      setAdminBroadcastLoading(false);
+    }
+  };
+
+  const clearAdminSearch = () => {
+    setAdminQuery('');
+    setAdminUser(null);
+    setAdminNotFound(false);
+    setAdminLookupError('');
+  };
+
   const saveSettings = async () => {
     if (!form) return;
     try {
@@ -408,27 +635,45 @@ const App = () => {
 
   const displayName = telegramUser
     ? `${telegramUser.first_name ?? ''} ${telegramUser.last_name ?? ''}`.trim() || telegramUser.username || t('userFallback')
-    : t('userFallback');
+    : adminCandidateId
+      ? `${isAdmin ? t('adminLabel') : t('userIdLabel')} #${adminCandidateId}`
+      : t('userFallback');
 
   return (
 
     <div className="app">
-        <div className="header">
-          <div className="brand">
-            <div className="brand-icon">
-              <Zap size={24} />
-            </div>
-            <div className="brand-text">
-              <h1>WordPing</h1>
-              <p>{t('tagline')}</p>
-            </div>
-          </div>
-          <div className="user-pill">{displayName}</div>
+      <div className="header">
+        <div className="brand">
+          <img src="/logo.svg" className="brand-logo" alt="WordPing" />
         </div>
+        <div className="header-right">
+          <div className="user-pill">{displayName}</div>
+          {tab === 'settings' && (
+            <div className="inline-controls inline-controls--header">
+              <button
+                type="button"
+                className="chip-btn"
+                onClick={() => setThemePreference(theme === 'dark' ? 'light' : 'dark')}
+              >
+                {theme === 'dark' ? <Moon size={16} /> : <Sun size={16} />}
+                <span>{theme === 'dark' ? t('themeDark') : t('themeLight')}</span>
+              </button>
+              <button
+                type="button"
+                className="chip-btn"
+                onClick={() => persistLanguage(lang === 'ru' ? 'uz' : 'ru')}
+              >
+                <Languages size={16} />
+                <span>{lang === 'ru' ? t('languageRu') : t('languageUz')}</span>
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
 
       <AnimatePresence mode='wait'>
         {tab === 'stats' && (
-          <motion.div 
+          <motion.div
             key="stats"
             initial={{ opacity: 0, scale: 0.98 }}
             animate={{ opacity: 1, scale: 1 }}
@@ -441,7 +686,7 @@ const App = () => {
                 <div className="panel hero-panel">
                   <div className="streak-hero">
                     <div className="streak-main">
-                      <span className="streak-flame">
+                      <span className={`streak-flame ${stats.streakCount > 0 ? 'is-lit' : ''}`}>
                         <Flame size={26} />
                       </span>
                       <div className="streak-count">
@@ -477,26 +722,26 @@ const App = () => {
                 <div className="panel">
                   <h2><Target size={20} /> {t('progress')}</h2>
                   <div className="stat-grid">
-                      <div className="stat-card">
-                        <div className="stat-emoji">🎯</div>
-                        <span>{t('doneToday')}</span>
-                        <strong>{stats.doneTodayCount} / {stats.dailyLimit}</strong>
-                      </div>
-                      <div className="stat-card">
-                        <div className="stat-emoji">📚</div>
-                        <span>{t('dictionary')}</span>
-                        <strong>{stats.words}</strong>
-                      </div>
-                      <div className="stat-card">
-                        <div className="stat-emoji">⏳</div>
-                        <span>{t('dueToday')}</span>
-                        <strong>{stats.dueToday}</strong>
-                      </div>
-                      <div className="stat-card">
-                        <div className="stat-emoji">⭐️</div>
-                        <span>{t('level')}</span>
-                        <strong>{stats.words > 100 ? t('levelPro') : t('levelNovice')}</strong>
-                      </div>
+                    <div className="stat-card">
+                      <div className="stat-emoji">🎯</div>
+                      <span>{t('doneToday')}</span>
+                      <strong>{stats.doneTodayCount} / {stats.dailyLimit}</strong>
+                    </div>
+                    <div className="stat-card">
+                      <div className="stat-emoji">📚</div>
+                      <span>{t('dictionary')}</span>
+                      <strong>{stats.words}</strong>
+                    </div>
+                    <div className="stat-card">
+                      <div className="stat-emoji">⏳</div>
+                      <span>{t('dueToday')}</span>
+                      <strong>{stats.dueToday}</strong>
+                    </div>
+                    <div className="stat-card">
+                      <div className="stat-emoji">✅</div>
+                      <span>{t('learned')}</span>
+                      <strong>{stats.learnedCount}</strong>
+                    </div>
                   </div>
                 </div>
 
@@ -531,23 +776,23 @@ const App = () => {
                 </div>
               </>
             ) : (
-               <div className="notice" style={{background: 'transparent', border:'none', color: 'var(--text-muted)'}}>
-                  {t('statsLoading')}
-               </div>
+              <div className="notice" style={{ background: 'transparent', border: 'none', color: 'var(--text-muted)' }}>
+                {t('statsLoading')}
+              </div>
             )}
           </motion.div>
         )}
 
         {tab === 'words' && (
-          <motion.div 
-             key="words"
-             initial={{ opacity: 0, scale: 0.98 }}
-             animate={{ opacity: 1, scale: 1 }}
-             exit={{ opacity: 0, scale: 0.98 }}
-             transition={{ duration: 0.2 }}
+          <motion.div
+            key="words"
+            initial={{ opacity: 0, scale: 0.98 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.98 }}
+            transition={{ duration: 0.2 }}
             className="section"
           >
-            <div className="panel" style={{minHeight: '80vh'}}>
+            <div className="panel" style={{ minHeight: '80vh' }}>
               <h2><Search size={20} /> {t('wordsTitle')}</h2>
               <div className="field word-search">
                 <input
@@ -557,12 +802,12 @@ const App = () => {
                   onChange={(e) => setQuery(e.target.value)}
                 />
               </div>
-              <div className="word-list" style={{marginTop: 16}}>
+              <div className="word-list" style={{ marginTop: 16 }}>
                 {words.length === 0 && !loading && (
-                   <div style={{textAlign: 'center', padding: 40, color: 'var(--text-muted)'}}>
-                      <div style={{fontSize: 40, marginBottom: 10}}>📭</div>
-                      {t('wordsEmpty')}
-                   </div>
+                  <div style={{ textAlign: 'center', padding: 40, color: 'var(--text-muted)' }}>
+                    <div style={{ fontSize: 40, marginBottom: 10 }}>📭</div>
+                    {t('wordsEmpty')}
+                  </div>
                 )}
                 {words.map((word) => (
                   <div key={word.id} className="word-item">
@@ -570,7 +815,7 @@ const App = () => {
                       <strong>{word.wordEn}</strong>
                       <small>{word.translationRu}</small>
                     </div>
-                    <button className="delete-btn" onClick={() => handleDelete(word.id)}>
+                    <button className="btn-danger btn-danger-icon" onClick={() => handleDelete(word.id)}>
                       <Trash2 size={18} />
                     </button>
                   </div>
@@ -581,7 +826,7 @@ const App = () => {
         )}
 
         {tab === 'settings' && (
-          <motion.div 
+          <motion.div
             key="settings"
             initial={{ opacity: 0, scale: 0.98 }}
             animate={{ opacity: 1, scale: 1 }}
@@ -589,25 +834,6 @@ const App = () => {
             transition={{ duration: 0.2 }}
             className="section"
           >
-            <div className="inline-controls">
-              <button
-                type="button"
-                className="chip-btn"
-                onClick={() => setThemePreference(theme === 'dark' ? 'light' : 'dark')}
-              >
-                {theme === 'dark' ? <Moon size={16} /> : <Sun size={16} />}
-                <span>{theme === 'dark' ? t('themeDark') : t('themeLight')}</span>
-              </button>
-              <button
-                type="button"
-                className="chip-btn"
-                onClick={() => persistLanguage(lang === 'ru' ? 'uz' : 'ru')}
-              >
-                <Languages size={16} />
-                <span>{lang === 'ru' ? t('languageRu') : t('languageUz')}</span>
-              </button>
-            </div>
-
             <div className="panel">
               <h2><Bell size={20} className="text-primary" /> {t('settingsTitle')}</h2>
               {form ? (
@@ -639,7 +865,7 @@ const App = () => {
                       }
                     />
                   </div>
-                  
+
                   <div className="field">
                     <label>{t('limitLabel')}</label>
                     <input
@@ -657,7 +883,7 @@ const App = () => {
                   </div>
                 </div>
               ) : (
-                <div className="notice" style={{background: 'transparent', border:'none', color: 'var(--text-muted)'}}>{t('settingsLoading')}</div>
+                <div className="notice" style={{ background: 'transparent', border: 'none', color: 'var(--text-muted)' }}>{t('settingsLoading')}</div>
               )}
             </div>
 
@@ -693,7 +919,7 @@ const App = () => {
                   </div>
                 </div>
               ) : (
-                <div className="notice" style={{background: 'transparent', border:'none', color: 'var(--text-muted)'}}>{t('settingsLoading')}</div>
+                <div className="notice" style={{ background: 'transparent', border: 'none', color: 'var(--text-muted)' }}>{t('settingsLoading')}</div>
               )}
             </div>
 
@@ -701,6 +927,217 @@ const App = () => {
               <button className="btn-primary" onClick={saveSettings} disabled={loading}>
                 <Save size={18} /> {t('save')}
               </button>
+            </div>
+          </motion.div>
+        )}
+
+        {tab === 'admin' && isAdmin && (
+          <motion.div
+            key="admin"
+            initial={{ opacity: 0, scale: 0.98 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.98 }}
+            transition={{ duration: 0.2 }}
+            className="section"
+          >
+            <div className="admin-shell">
+              <div className="panel admin-top-panel">
+                <div className="admin-top-head">
+                  <h2 className="admin-title">
+                    <Shield size={18} />
+                    {t('adminTitle')}
+                  </h2>
+                  <button
+                    type="button"
+                    className="btn-ghost btn-compact admin-refresh-btn"
+                    onClick={() => void loadAdminOverview()}
+                    disabled={adminOverviewLoading}
+                  >
+                    <RotateCcw size={15} className={adminOverviewLoading ? 'spin' : ''} />
+                    {t('adminOverview')}
+                  </button>
+                </div>
+
+                {adminOverview ? (
+                  <div className="admin-metrics">
+                    <div className="admin-metric admin-metric--users">
+                      <div className="admin-metric-icon"><Users size={18} strokeWidth={2.2} /></div>
+                      <span>{t('adminTotalUsers')}</span>
+                      <strong>{adminOverview.totals.users}</strong>
+                    </div>
+                    <div className="admin-metric admin-metric--active">
+                      <div className="admin-metric-icon"><Zap size={18} strokeWidth={2.2} /></div>
+                      <span>{t('adminActiveToday')}</span>
+                      <strong>{adminOverview.activeToday}</strong>
+                    </div>
+                    <div className="admin-metric admin-metric--new">
+                      <div className="admin-metric-icon"><UserPlus size={18} strokeWidth={2.2} /></div>
+                      <span>{t('adminNew7Days')}</span>
+                      <strong>{adminOverview.newLast7Days}</strong>
+                    </div>
+                    <div className="admin-metric admin-metric--words">
+                      <div className="admin-metric-icon"><Book size={18} strokeWidth={2.2} /></div>
+                      <span>{t('adminTotalWords')}</span>
+                      <strong>{adminOverview.totals.words}</strong>
+                    </div>
+                    <div className="admin-metric admin-metric--notify">
+                      <div className="admin-metric-icon"><Bell size={18} strokeWidth={2.2} /></div>
+                      <span>{t('adminNotificationsToday')}</span>
+                      <strong>{adminOverview.totals.notificationsSentToday}</strong>
+                    </div>
+                  </div>
+                ) : (
+                  <div className={`admin-state ${adminOverviewError ? 'admin-state--error' : 'admin-state--loading'}`}>
+                    {adminOverviewError ? adminOverviewError : t('adminOverviewLoading')}
+                  </div>
+                )}
+              </div>
+
+              <div className="admin-main-grid">
+                <div className="panel admin-block">
+                  <h2><Search size={18} /> {t('adminLookupTitle')}</h2>
+                  <div className="admin-search">
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      placeholder={t('adminSearchPlaceholder')}
+                      value={adminQuery}
+                      onChange={(e) => {
+                        setAdminQuery(e.target.value);
+                        if (adminNotFound) setAdminNotFound(false);
+                        if (adminLookupError) setAdminLookupError('');
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          void loadAdminUser();
+                        }
+                      }}
+                    />
+                    <div className="admin-search-actions">
+                      <button
+                        type="button"
+                        className="btn-primary btn-compact"
+                        onClick={() => void loadAdminUser()}
+                        disabled={adminLookupLoading || !adminQuery.trim()}
+                      >
+                        {adminLookupLoading ? t('adminLookupLoading') : t('adminSearchAction')}
+                      </button>
+                      <button
+                        type="button"
+                        className="btn-ghost btn-compact"
+                        onClick={clearAdminSearch}
+                        disabled={!adminQuery && !adminUser}
+                      >
+                        {t('adminSearchClear')}
+                      </button>
+                    </div>
+                  </div>
+                  {adminLookupLoading && (
+                    <div className="admin-state admin-state--loading">{t('adminLookupLoading')}</div>
+                  )}
+                  {!adminLookupLoading && !adminLookupError && !adminNotFound && !adminUser && (
+                    <div className="admin-state">{t('adminLookupIdle')}</div>
+                  )}
+                  {adminLookupError && (
+                    <div className="admin-state admin-state--error">{adminLookupError || t('adminLookupError')}</div>
+                  )}
+                  {adminNotFound && (
+                    <div className="admin-state admin-state--error">{t('adminNotFound')}</div>
+                  )}
+
+                  {adminUser && (
+                    <div className="admin-user-card admin-user-card--clean">
+                      <div className="admin-user-header">
+                        <div className="admin-user-left">
+                          <div className="admin-user-label">{t('adminUserDetails')}</div>
+                          <div className="admin-user-id-row">
+                            <div className="admin-user-id">{adminUser.id}</div>
+                          </div>
+                        </div>
+                        <div className="admin-user-date">
+                          <span>{t('adminFieldCreated')}</span>
+                          <strong>{formatDateTime(adminUser.createdAt)}</strong>
+                        </div>
+                      </div>
+
+                      <div className="admin-user-grid">
+                        <div className="admin-user-item">
+                          <span>{t('adminFieldWords')}</span>
+                          <strong>{adminUser.wordsCount}</strong>
+                        </div>
+                        <div className="admin-user-item">
+                          <span>{t('adminFieldLearned')}</span>
+                          <strong>{adminUser.learnedCount}</strong>
+                        </div>
+                        <div className="admin-user-item">
+                          <span>{t('adminFieldPostponed')}</span>
+                          <strong>{adminUser.postponedCount}</strong>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                <div className="panel admin-block">
+                  <h2><Bell size={18} /> {t('adminBroadcastTitle')}</h2>
+                  <div className="admin-message">
+                    <textarea
+                      rows={4}
+                      placeholder={t('adminBroadcastPlaceholder')}
+                      value={adminBroadcastMessage}
+                      onChange={(e) => {
+                        setAdminBroadcastMessage(e.target.value);
+                        if (adminBroadcastError) setAdminBroadcastError('');
+                      }}
+                    />
+                    <div className={`admin-counter ${broadcastOverLimit ? 'is-warn' : ''}`}>
+                      {broadcastCounter}
+                    </div>
+                    <div className="admin-message-row">
+                      <label>{t('adminBroadcastPhotoLabel')}</label>
+                      <input
+                        type="text"
+                        placeholder="https://example.com/photo.jpg"
+                        value={adminBroadcastPhoto}
+                        onChange={(e) => {
+                          setAdminBroadcastPhoto(e.target.value);
+                          if (adminBroadcastError) setAdminBroadcastError('');
+                        }}
+                      />
+                      <small>{t('adminBroadcastPhotoHint')}</small>
+                    </div>
+                    <div className="admin-preview">
+                      <div className="admin-preview-title">{t('adminBroadcastPreview')}</div>
+                      {adminBroadcastPhoto.trim() && (
+                        <div className="admin-preview-photo">
+                          <img src={adminBroadcastPhoto.trim()} alt="preview" loading="lazy" />
+                        </div>
+                      )}
+                      {adminBroadcastMessage.trim() ? (
+                        <p className="admin-preview-text">{adminBroadcastMessage.trim()}</p>
+                      ) : (
+                        <p className="admin-preview-empty">{t('adminBroadcastPreviewEmpty')}</p>
+                      )}
+                    </div>
+                    <button
+                      type="button"
+                      className="btn-primary btn-compact btn-admin-send"
+                      onClick={() => void sendAdminBroadcast()}
+                      disabled={adminBroadcastLoading || broadcastOverLimit || (!adminBroadcastMessage.trim() && !adminBroadcastPhoto.trim())}
+                    >
+                      {adminBroadcastLoading ? t('adminBroadcastSending') : t('adminBroadcastSend')}
+                    </button>
+                  </div>
+                  {adminBroadcastNotice && (
+                    <div className="admin-message-note">{adminBroadcastNotice}</div>
+                  )}
+                  {adminBroadcastError && (
+                    <div className="admin-state admin-state--error">{adminBroadcastError}</div>
+                  )}
+                </div>
+              </div>
+
             </div>
           </motion.div>
         )}
@@ -732,6 +1169,12 @@ const App = () => {
           <SettingsIcon size={20} />
           <span>{t('tabSettings')}</span>
         </button>
+        {isAdmin && (
+          <button className={`tab-btn ${tab === 'admin' ? 'active' : ''}`} onClick={() => setTab('admin')}>
+            <Shield size={20} />
+            <span>{t('tabAdmin')}</span>
+          </button>
+        )}
       </div>
     </div>
   );

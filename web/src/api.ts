@@ -14,6 +14,7 @@ export type Stats = {
   doneTodayCount: number;
   dailyLimit: number;
   dueToday: number;
+  learnedCount: number;
 };
 
 export type Me = {
@@ -35,6 +36,25 @@ export type WordItem = {
   wordEn: string;
   translationRu: string;
   createdAt: string;
+};
+
+export type AdminUserSummary = {
+  id: string;
+  createdAt: string;
+  wordsCount: number;
+  learnedCount: number;
+  postponedCount: number;
+};
+
+export type AdminOverview = {
+  totals: {
+    users: number;
+    words: number;
+    notificationsSentToday: number;
+  };
+  activeToday: number;
+  newLast7Days: number;
+  recentUsers: AdminUserSummary[];
 };
 
 type ApiError = {
@@ -106,5 +126,12 @@ export const api = {
   },
   deleteWord: (id: number) =>
     apiFetch<{ ok: boolean }>(`/words/${id}`, { method: 'DELETE' }),
+  getAdminOverview: () => apiFetch<AdminOverview>('/admin/overview'),
+  getAdminUser: (id: string | number) => apiFetch<AdminUserSummary>(`/admin/users/${id}`),
+  sendAdminBroadcast: (payload: { message: string; photoUrl?: string }) =>
+    apiFetch<{ ok: boolean; total: number; sent: number; failed: number }>('/admin/broadcast', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
 };
 

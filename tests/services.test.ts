@@ -1,4 +1,4 @@
-import { beforeAll, afterAll, beforeEach, describe, expect, it } from 'vitest';
+import { beforeAll, afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PrismaClient } from '../src/generated/prisma';
 import { prepareTestDatabase } from './helpers/testDb';
 import { cleanupUserData } from './helpers/cleanup';
@@ -12,6 +12,10 @@ let applyRating: (...args: any[]) => Promise<any>;
 let markSkipped: (review: any) => Promise<any>;
 let recordCompletion: (user: any) => Promise<any>;
 let resetProgressIfNeeded: (user: any) => Promise<any>;
+let setQuietHours: (telegramId: number, startMinutes: number, endMinutes: number) => Promise<any>;
+let setNotificationInterval: (telegramId: number, minutes: number) => Promise<any>;
+let setNotificationLimit: (telegramId: number, maxPerDay: number) => Promise<any>;
+let DailyWordLimitErrorCtor: any;
 
 const userId = BigInt(900000002);
 
@@ -19,13 +23,17 @@ beforeAll(async () => {
   const testUrl = await prepareTestDatabase();
   process.env.DATABASE_URL = testUrl;
 
+  vi.resetModules();
   const userService = await import('../src/services/userService');
   const reviewService = await import('../src/services/reviewService');
-  const { DuplicateWordError } = reviewService;
+  DailyWordLimitErrorCtor = reviewService.DailyWordLimitError;
 
   ensureUser = userService.ensureUser;
   recordCompletion = userService.recordCompletion;
   resetProgressIfNeeded = userService.resetProgressIfNeeded;
+  setQuietHours = userService.setQuietHours;
+  setNotificationInterval = userService.setNotificationInterval;
+  setNotificationLimit = userService.setNotificationLimit;
 
   addWordForUser = reviewService.addWordForUser;
   findDueReview = reviewService.findDueReview;
@@ -54,7 +62,7 @@ describe('service integration', () => {
 
   it('addWordForUser creates word + review and findDueReview finds it', async () => {
     await ensureUser(Number(userId));
-    const { reviewId } = await addWordForUser(userId, 'test', 'тест');
+    const { reviewId } = await addWordForUser(userId, 'test', 'test-ru');
     const review = await loadReviewWithWord(reviewId);
     expect(review?.word?.wordEn).toBe('test');
 
@@ -64,19 +72,55 @@ describe('service integration', () => {
     });
     const due = await findDueReview(userId);
     expect(due?.word?.wordEn).toBe('test');
-    expect(due?.word?.wordEn).toBe('test');
   });
 
   it('addWordForUser throws DuplicateWordError if word exists', async () => {
     await ensureUser(Number(userId));
-    await addWordForUser(userId, 'duplicate', 'дубликат');
+    await addWordForUser(userId, 'duplicate', 'duplicate-ru');
     const { DuplicateWordError } = await import('../src/services/reviewService');
-    await expect(addWordForUser(userId, 'duplicate', 'дубликат')).rejects.toThrow(DuplicateWordError);
+    await expect(addWordForUser(userId, 'duplicate', 'duplicate-ru')).rejects.toThrow(DuplicateWordError);
+  });
+
+  it('addWordForUser enforces daily limit for regular users', async () => {
+    await ensureUser(Number(userId));
+
+    const previousAdminIds = process.env.ADMIN_USER_IDS;
+    const previousUnlimitedIds = process.env.UNLIMITED_WORD_ADD_IDS;
+    try {
+      process.env.ADMIN_USER_IDS = '';
+      process.env.UNLIMITED_WORD_ADD_IDS = '';
+
+      for (let i = 1; i <= 9; i += 1) {
+        await addWordForUser(userId, `limit-${i}`, `limit-ru-${i}`);
+      }
+      await expect(addWordForUser(userId, 'limit-10', 'limit-ru-10')).rejects.toThrow(DailyWordLimitErrorCtor);
+    } finally {
+      process.env.ADMIN_USER_IDS = previousAdminIds;
+      process.env.UNLIMITED_WORD_ADD_IDS = previousUnlimitedIds;
+    }
+  });
+
+  it('addWordForUser skips daily limit for unlimited IDs', async () => {
+    await ensureUser(Number(userId));
+
+    const previousAdminIds = process.env.ADMIN_USER_IDS;
+    const previousUnlimitedIds = process.env.UNLIMITED_WORD_ADD_IDS;
+    try {
+      process.env.ADMIN_USER_IDS = userId.toString();
+      process.env.UNLIMITED_WORD_ADD_IDS = '';
+
+      for (let i = 1; i <= 11; i += 1) {
+        await addWordForUser(userId, `free-${i}`, `free-ru-${i}`);
+      }
+    } finally {
+      process.env.ADMIN_USER_IDS = previousAdminIds;
+      process.env.UNLIMITED_WORD_ADD_IDS = previousUnlimitedIds;
+    }
   });
 
   it('markSkipped resets stage and sets lastResult', async () => {
     await ensureUser(Number(userId));
-    const { reviewId } = await addWordForUser(userId, 'skip', 'пропуск');
+    const { reviewId } = await addWordForUser(userId, 'skip', 'skip-ru');
     const review = await prisma.review.findUnique({ where: { id: reviewId } });
     const updated = await markSkipped(review!);
     expect(updated.stage).toBe(0);
@@ -86,9 +130,9 @@ describe('service integration', () => {
 
   it('applyRating updates review result and interval', async () => {
     await ensureUser(Number(userId));
-    const { reviewId } = await addWordForUser(userId, 'rate', 'оценка');
+    const { reviewId } = await addWordForUser(userId, 'rate', 'rate-ru');
     const review = await prisma.review.findUnique({ where: { id: reviewId } });
-    const updated = await applyRating(review!, 'GOOD', 'CORRECT', 'EN_TO_RU', 'ответ');
+    const updated = await applyRating(review!, 'GOOD', 'CORRECT', 'EN_TO_RU', 'answer');
     expect(updated.lastResult).toBe('CORRECT');
     expect(updated.intervalMinutes).toBeGreaterThan(0);
   });
@@ -121,5 +165,21 @@ describe('service integration', () => {
     const user = await prisma.user.findUnique({ where: { id: userId } });
     const updated = await resetProgressIfNeeded(user!);
     expect(updated.doneTodayCount).toBe(0);
+  });
+
+  it('setQuietHours enforces minimum span', async () => {
+    await ensureUser(Number(userId));
+    const updated = await setQuietHours(Number(userId), 600, 650);
+    expect(updated.quietHoursStartMinutes).toBe(600);
+    expect(updated.quietHoursEndMinutes).toBe(1080);
+  });
+
+  it('setNotificationInterval and limit clamp values', async () => {
+    await ensureUser(Number(userId));
+    const intervalUpdated = await setNotificationInterval(Number(userId), 9999);
+    expect(intervalUpdated.notificationIntervalMinutes).toBe(240);
+
+    const limitUpdated = await setNotificationLimit(Number(userId), -5);
+    expect(limitUpdated.maxNotificationsPerDay).toBe(5);
   });
 });

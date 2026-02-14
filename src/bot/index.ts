@@ -14,7 +14,7 @@ import {
 import { prisma } from '../db/client';
 import { ensureSession, getSession, resetState, setState } from '../services/sessionService';
 import { suggestTranslation } from '../services/translation';
-import { addWordForUser, applyRating, loadReviewWithWord, DuplicateWordError } from '../services/reviewService';
+import { addWordForUser, applyRating, loadReviewWithWord, DailyWordLimitError, DuplicateWordError } from '../services/reviewService';
 import { CardDirection, ReviewResult } from '../generated/prisma';
 import { checkAnswer } from '../services/answerChecker';
 import { Rating } from '../services/reviewScheduler';
@@ -372,6 +372,9 @@ bot.on('text', async (ctx) => {
           { parse_mode: 'HTML' }
         );
       } catch (error) {
+        if (error instanceof DailyWordLimitError) {
+          await ctx.reply(t(lang, 'add.dailyLimit', { limit: error.limit }), { parse_mode: 'HTML' });
+        } else
         if (error instanceof DuplicateWordError) {
           await ctx.reply(t(lang, 'add.duplicate', { en: payload.wordEn }), { parse_mode: 'HTML' });
         } else {
@@ -545,6 +548,9 @@ bot.on('callback_query', async (ctx) => {
         { parse_mode: 'HTML' }
       );
     } catch (error) {
+      if (error instanceof DailyWordLimitError) {
+        await ctx.reply(t(lang, 'add.dailyLimit', { limit: error.limit }), { parse_mode: 'HTML' });
+      } else
       if (error instanceof DuplicateWordError) {
         await ctx.reply(t(lang, 'add.duplicate', { en: payload.wordEn }), { parse_mode: 'HTML' });
       } else {

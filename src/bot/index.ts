@@ -335,22 +335,43 @@ bot.on('text', async (ctx) => {
       break;
     }
     case 'SETTINGS_WAIT_GOAL': {
+      const onboardingLang = (session.payload as any)?.onboarding?.lang as Lang | undefined;
+      const effectiveLang: Lang = onboardingLang ?? lang;
+      const inOnboarding = !!(session.payload as any)?.onboarding;
       const value = parseInt(text, 10);
       if (!Number.isFinite(value)) {
-        await ctx.reply(t(lang, 'settings.limit.needNumber'), { parse_mode: 'HTML' });
+        const msg = inOnboarding ? t(effectiveLang, 'goalNeedNumber') : t(effectiveLang, 'settings.limit.needNumber');
+        await ctx.reply(msg, { parse_mode: 'HTML' });
         return;
       }
       if (value < MIN_NOTIFICATIONS_PER_DAY || value > MAX_NOTIFICATIONS_PER_DAY) {
+        const msg = inOnboarding
+          ? t(effectiveLang, 'goalOutOfRange', { min: MIN_NOTIFICATIONS_PER_DAY, max: MAX_NOTIFICATIONS_PER_DAY })
+          : t(effectiveLang, 'settings.limit.outRange', { min: MIN_NOTIFICATIONS_PER_DAY, max: MAX_NOTIFICATIONS_PER_DAY });
         await ctx.reply(
-          t(lang, 'settings.limit.outRange', { min: MIN_NOTIFICATIONS_PER_DAY, max: MAX_NOTIFICATIONS_PER_DAY }),
+          msg,
           { parse_mode: 'HTML' }
         );
         return;
       }
       await setNotificationLimit(userId, value);
-      await resetState(BigInt(userId));
-      await ctx.reply(t(lang, 'settings.limit.saved', { value }), { parse_mode: 'HTML' });
-      await sendSettings(ctx, userId, 'main', true);
+      if (inOnboarding) {
+        await setState(BigInt(userId), 'SETTINGS_WAIT_INTERVAL', {
+          payload: { onboarding: { lang: effectiveLang } },
+        });
+        await ctx.reply(
+          t(effectiveLang, 'askInterval', {
+            current: user.notificationIntervalMinutes,
+            min: MIN_NOTIFICATION_INTERVAL,
+            max: MAX_NOTIFICATION_INTERVAL,
+          }),
+          { parse_mode: 'HTML' }
+        );
+      } else {
+        await resetState(BigInt(userId));
+        await ctx.reply(t(effectiveLang, 'settings.limit.saved', { value }), { parse_mode: 'HTML' });
+        await sendSettings(ctx, userId, 'main', true);
+      }
       break;
     }
     case 'ADDING_WORD_WAIT_EN': {
@@ -454,12 +475,12 @@ bot.on('callback_query', async (ctx) => {
     const lang = (user.language as Lang) || 'ru';
     await ctx.answerCbQuery();
     await ctx.editMessageReplyMarkup({ inline_keyboard: [] }); // remove button
-    await setState(BigInt(userId), 'SETTINGS_WAIT_INTERVAL', { payload: { onboarding: { lang } } });
+    await setState(BigInt(userId), 'SETTINGS_WAIT_GOAL', { payload: { onboarding: { lang } } });
     await ctx.reply(
-      t(lang, 'askInterval', {
-        current: user.notificationIntervalMinutes,
-        min: MIN_NOTIFICATION_INTERVAL,
-        max: MAX_NOTIFICATION_INTERVAL,
+      t(lang, 'askGoal', {
+        current: user.maxNotificationsPerDay,
+        min: MIN_NOTIFICATIONS_PER_DAY,
+        max: MAX_NOTIFICATIONS_PER_DAY,
       }),
       { parse_mode: 'HTML' }
     );

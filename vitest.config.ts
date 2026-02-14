@@ -5,6 +5,8 @@ export default defineConfig({
     environment: 'node',
     include: ['tests/**/*.test.ts'],
     threads: false,
+    fileParallelism: false,
+    hookTimeout: 30000,
     setupFiles: ['tests/setup.ts'],
     coverage: {
       provider: 'v8',

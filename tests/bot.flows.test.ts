@@ -85,7 +85,7 @@ beforeEach(async () => {
 afterAll(async () => {
   await cleanupUserData(prisma, BigInt(userId));
   await cleanupUserData(prisma, BigInt(referrerId));
-  await prisma.$disconnect();
+  await prisma?.$disconnect();
 });
 
 describe('bot extended flows', () => {
@@ -124,7 +124,7 @@ describe('bot extended flows', () => {
     expect(sentTexts(callApiSpy)).toContain(t('uz', 'hint'));
   });
 
-  it('onboarding next moves to SETTINGS_WAIT_INTERVAL', async () => {
+  it('onboarding next moves to SETTINGS_WAIT_GOAL', async () => {
     await prisma.user.create({ data: { id: BigInt(userId), language: 'uz' } });
     await setState(BigInt(userId), 'IDLE');
 
@@ -135,12 +135,30 @@ describe('bot extended flows', () => {
     await bot.handleUpdate(makeCallbackUpdate('onboarding:next', 3), {} as any);
 
     const session = await prisma.userSession.findUnique({ where: { userId: BigInt(userId) } });
-    expect(session?.state).toBe('SETTINGS_WAIT_INTERVAL');
+    expect(session?.state).toBe('SETTINGS_WAIT_GOAL');
     expect((session?.payload as any)?.onboarding?.lang).toBe('uz');
 
     const hasEditMarkup = callApiSpy.mock.calls.some(([method]: any[]) => method === 'editMessageReplyMarkup');
     expect(hasEditMarkup).toBe(true);
-    expect(sentTexts(callApiSpy).some((text) => text.includes(t('uz', 'askInterval').split('{')[0]!))).toBe(true);
+    expect(sentTexts(callApiSpy).some((text) => text.includes(t('uz', 'askGoal').split('{')[0]!))).toBe(true);
+  });
+
+  it('SETTINGS_WAIT_GOAL in onboarding saves goal and asks interval', async () => {
+    await prisma.user.create({ data: { id: BigInt(userId), language: 'ru', notificationIntervalMinutes: 30 } });
+    await setState(BigInt(userId), 'SETTINGS_WAIT_GOAL', { payload: { onboarding: { lang: 'ru' } } });
+    const callApiSpy = vi
+      .spyOn(Object.getPrototypeOf(bot.telegram), 'callApi')
+      .mockResolvedValue({} as any);
+
+    await bot.handleUpdate(makeMessageUpdate('25', 58), {} as any);
+
+    const user = await prisma.user.findUnique({ where: { id: BigInt(userId) } });
+    const session = await prisma.userSession.findUnique({ where: { userId: BigInt(userId) } });
+
+    expect(user?.maxNotificationsPerDay).toBe(25);
+    expect(session?.state).toBe('SETTINGS_WAIT_INTERVAL');
+    expect((session?.payload as any)?.onboarding?.lang).toBe('ru');
+    expect(sentTexts(callApiSpy).some((text) => text.includes(t('ru', 'askInterval').split('{')[0]!))).toBe(true);
   });
 
   it('SETTINGS_WAIT_INTERVAL rejects non-numeric value', async () => {

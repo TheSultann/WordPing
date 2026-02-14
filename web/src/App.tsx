@@ -1,16 +1,15 @@
-﻿import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { api, Settings, Stats, WordItem, Me, AdminOverview, AdminUserSummary } from './api';
 import {
   Settings as SettingsIcon,
   Book,
+  BookOpen,
+  House,
   Save,
   RotateCcw,
   Trash2,
   Flame,
   UserPlus,
-  Copy,
-  Sun,
-  Moon,
   Languages,
   Zap,
   Clock,
@@ -22,7 +21,6 @@ import {
   CheckCircle2,
   AlertCircle
 } from 'lucide-react';
-import { motion, AnimatePresence } from 'framer-motion';
 
 const minutesToTime = (minutes: number) => {
   const m = ((minutes % 1440) + 1440) % 1440;
@@ -216,8 +214,8 @@ const COPY = {
     adminNotFound: 'Foydalanuvchi topilmadi',
     adminRecentTitle: "So‘nggi ro‘yxatdan o‘tganlar",
     adminRecentEmpty: "Hozircha ro‘yxatdan o‘tganlar yo‘q",
-    adminOverviewLoading: 'Umumiy maʼlumot yuklanmoqda...',
-    adminOverviewError: 'Umumiy maʼlumotni yuklab bo‘lmadi',
+    adminOverviewLoading: "Umumiy ma'lumot yuklanmoqda...",
+    adminOverviewError: "Umumiy ma'lumotni yuklab bo'lmadi",
     adminLookupError: 'Foydalanuvchini yuklab bo‘lmadi',
     adminUserDetails: 'Foydalanuvchi kartasi',
     adminFieldId: 'ID',
@@ -246,21 +244,27 @@ const COPY = {
 
 type Lang = keyof typeof COPY;
 type CopyKey = keyof (typeof COPY)['ru'];
-type Theme = 'light' | 'dark';
+type WordStatus = 'learned' | 'due' | 'new';
 
 const LANG_STORAGE_KEY = 'wordping.lang';
-const THEME_STORAGE_KEY = 'wordping.theme';
+const DATA_CACHE_TTL_MS = 30_000;
+const LEARNED_STAGE_MIN = 4;
+
+const resolveWordStatus = (word: WordItem): WordStatus => {
+  if (word.nextReviewAt) {
+    const nextReviewAtMs = Date.parse(word.nextReviewAt);
+    if (Number.isFinite(nextReviewAtMs) && nextReviewAtMs <= Date.now()) {
+      return 'due';
+    }
+  }
+  if ((word.stage ?? 0) >= LEARNED_STAGE_MIN) return 'learned';
+  return 'new';
+};
 
 const getStoredLang = (): Lang | null => {
   if (typeof window === 'undefined') return null;
   const value = window.localStorage.getItem(LANG_STORAGE_KEY);
   return value === 'uz' || value === 'ru' ? value : null;
-};
-
-const getStoredTheme = (): Theme | null => {
-  if (typeof window === 'undefined') return null;
-  const value = window.localStorage.getItem(THEME_STORAGE_KEY);
-  return value === 'dark' || value === 'light' ? value : null;
 };
 
 const App = () => {
@@ -275,7 +279,6 @@ const App = () => {
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [lang, setLang] = useState<Lang>(() => getStoredLang() ?? 'ru');
-  const [theme, setTheme] = useState<Theme>(() => getStoredTheme() ?? 'dark');
   const [adminOverview, setAdminOverview] = useState<AdminOverview | null>(null);
   const [adminOverviewLoading, setAdminOverviewLoading] = useState(false);
   const [adminOverviewError, setAdminOverviewError] = useState('');
@@ -316,6 +319,11 @@ const App = () => {
   const isAdmin = adminCandidateId === ADMIN_ID;
 
   const t = (key: CopyKey) => COPY[lang]?.[key] ?? COPY.ru[key];
+  const getWordStatusLabel = (status: WordStatus) => {
+    if (status === 'learned') return t('learned');
+    if (status === 'due') return t('dueToday');
+    return lang === 'uz' ? "O'rganilmagan" : 'Не выучено';
+  };
   const formatDateTime = (value?: string | null) => {
     if (!value) return '—';
     const date = new Date(value);
@@ -327,13 +335,25 @@ const App = () => {
   const broadcastLength = adminBroadcastMessage.trim().length;
   const broadcastOverLimit = broadcastLength > broadcastLimit;
   const broadcastCounter = `${broadcastLength}/${broadcastLimit}`;
+  const cacheTsRef = useRef({
+    me: 0,
+    settings: 0,
+    stats: 0,
+    adminOverview: 0,
+  });
+  const wordsCacheRef = useRef<Map<string, { items: WordItem[]; loadedAt: number }>>(new Map());
+  const skipWordsDebounceOnceRef = useRef(false);
+  const wordsRequestTokenRef = useRef(0);
+  const isFresh = (timestamp: number) => (Date.now() - timestamp) < DATA_CACHE_TTL_MS;
 
-  const loadMe = async () => {
+  const loadMe = async (force = false) => {
+    if (!force && me && isFresh(cacheTsRef.current.me)) return;
     try {
       const data = await api.getMe();
       setMe(data);
       const value = data.language === 'uz' ? 'uz' : 'ru';
       setLangOverride(value);
+      cacheTsRef.current.me = Date.now();
     } catch {
       // keep default language
     }
@@ -353,15 +373,10 @@ const App = () => {
       const data = await api.updateMe({ language: value });
       const normalized = data.language === 'uz' ? 'uz' : 'ru';
       setLangOverride(normalized);
+      setMe(data);
+      cacheTsRef.current.me = Date.now();
     } catch (err) {
       setError(err instanceof Error ? err.message : t('saveLanguageError'));
-    }
-  };
-
-  const setThemePreference = (value: Theme) => {
-    setTheme(value);
-    if (typeof window !== 'undefined') {
-      window.localStorage.setItem(THEME_STORAGE_KEY, value);
     }
   };
 
@@ -395,21 +410,6 @@ const App = () => {
     window.open(shareUrl, '_blank', 'noopener,noreferrer');
   };
 
-  const handleCopyInvite = async () => {
-    const link = buildReferralLink();
-    if (!link) {
-      setError(t('inviteMissingBot'));
-      return;
-    }
-    try {
-      await navigator.clipboard.writeText(link);
-      setNotice(t('inviteCopied'));
-      setTimeout(() => setNotice(''), 2000);
-    } catch {
-      setError(t('inviteCopyFailed'));
-    }
-  };
-
   useEffect(() => {
     const tg = (window as any)?.Telegram?.WebApp;
     tg?.ready?.();
@@ -417,16 +417,16 @@ const App = () => {
   }, []);
 
   useEffect(() => {
-    if (typeof document !== 'undefined') {
-      document.documentElement.setAttribute('data-theme', theme);
+    if (typeof window !== 'undefined') {
+      window.localStorage.removeItem('wordping.theme');
     }
     const tg = (window as any)?.Telegram?.WebApp;
     if (tg) {
-      const bg = theme === 'dark' ? '#0b0f14' : '#F4F1EC';
+      const bg = '#0b0f14';
       tg.setHeaderColor?.(bg);
       tg.setBackgroundColor?.(bg);
     }
-  }, [theme]);
+  }, []);
 
   useEffect(() => {
     if (typeof document === 'undefined') return;
@@ -453,25 +453,34 @@ const App = () => {
   useEffect(() => {
     if (!canAuth) return;
     void loadMe();
+  }, [canAuth]);
+
+  useEffect(() => {
+    if (!canAuth) return;
     if (tab === 'settings') {
       void loadSettings();
     }
     if (tab === 'stats') {
       void loadStats();
     }
-    if (tab === 'words') {
-      void loadWords(query);
-    }
     if (tab === 'admin' && isAdmin) {
       void loadAdminOverview();
+    }
+    if (tab === 'words') {
+      skipWordsDebounceOnceRef.current = true;
+      void loadWords(query);
     }
   }, [tab, canAuth, isAdmin]);
 
   useEffect(() => {
     if (tab !== 'words' || !canAuth) return;
+    if (skipWordsDebounceOnceRef.current) {
+      skipWordsDebounceOnceRef.current = false;
+      return;
+    }
     const handle = setTimeout(() => {
       void loadWords(query);
-    }, 300);
+    }, 250);
     return () => clearTimeout(handle);
   }, [query, tab, canAuth]);
 
@@ -481,12 +490,14 @@ const App = () => {
     }
   }, [settings]);
 
-  const loadSettings = async () => {
+  const loadSettings = async (force = false) => {
+    if (!force && settings && isFresh(cacheTsRef.current.settings)) return;
     try {
       setLoading(true);
       setError('');
       const data = await api.getSettings();
       setSettings(data);
+      cacheTsRef.current.settings = Date.now();
     } catch (err) {
       setError(err instanceof Error ? err.message : t('loadSettingsError'));
     } finally {
@@ -494,12 +505,14 @@ const App = () => {
     }
   };
 
-  const loadStats = async () => {
+  const loadStats = async (force = false) => {
+    if (!force && stats && isFresh(cacheTsRef.current.stats)) return;
     try {
       setLoading(true);
       setError('');
       const data = await api.getStats();
       setStats(data);
+      cacheTsRef.current.stats = Date.now();
     } catch (err) {
       setError(err instanceof Error ? err.message : t('loadStatsError'));
     } finally {
@@ -507,26 +520,45 @@ const App = () => {
     }
   };
 
-  const loadWords = async (q?: string) => {
+  const loadWords = async (q?: string, force = false) => {
+    const normalizedQuery = (q ?? '').trim();
+    const cacheKey = normalizedQuery.toLowerCase();
+    const cached = wordsCacheRef.current.get(cacheKey);
+    if (!force && cached && isFresh(cached.loadedAt)) {
+      setWords(cached.items);
+      return;
+    }
+    const requestToken = wordsRequestTokenRef.current + 1;
+    wordsRequestTokenRef.current = requestToken;
     try {
       setLoading(true);
       setError('');
-      const data = await api.getWords(q);
+      const data = await api.getWords(normalizedQuery || undefined);
+      if (requestToken !== wordsRequestTokenRef.current) return;
       setWords(data.items);
+      wordsCacheRef.current.set(cacheKey, { items: data.items, loadedAt: Date.now() });
+      if (wordsCacheRef.current.size > 20) {
+        const oldestKey = wordsCacheRef.current.keys().next().value as string | undefined;
+        if (oldestKey) wordsCacheRef.current.delete(oldestKey);
+      }
     } catch (err) {
+      if (requestToken !== wordsRequestTokenRef.current) return;
       setError(err instanceof Error ? err.message : t('loadWordsError'));
     } finally {
+      if (requestToken !== wordsRequestTokenRef.current) return;
       setLoading(false);
     }
   };
 
-  const loadAdminOverview = async () => {
+  const loadAdminOverview = async (force = false) => {
     if (!isAdmin) return;
+    if (!force && adminOverview && isFresh(cacheTsRef.current.adminOverview)) return;
     try {
       setAdminOverviewLoading(true);
       setAdminOverviewError('');
       const data = await api.getAdminOverview();
       setAdminOverview(data);
+      cacheTsRef.current.adminOverview = Date.now();
     } catch (err) {
       const message = err instanceof Error ? err.message : t('adminOverviewError');
       const normalized = message === 'forbidden' || message === 'unauthorized' ? t('adminOverviewError') : message;
@@ -577,6 +609,7 @@ const App = () => {
       try {
         const freshOverview = await api.getAdminOverview();
         setAdminOverview(freshOverview);
+        cacheTsRef.current.adminOverview = Date.now();
         recipientsCount = freshOverview.totals.users;
       } catch {
         // fallback to generic confirm text
@@ -625,6 +658,7 @@ const App = () => {
       setError('');
       const data = await api.updateSettings(form);
       setSettings(data);
+      cacheTsRef.current.settings = Date.now();
       setNotice(t('saved'));
       setTimeout(() => setNotice(''), 2000);
     } catch (err) {
@@ -641,6 +675,11 @@ const App = () => {
       setError('');
       await api.deleteWord(id);
       setWords((prev) => prev.filter((item) => item.id !== id));
+      wordsCacheRef.current.forEach((entry, key) => {
+        const filtered = entry.items.filter((item) => item.id !== id);
+        wordsCacheRef.current.set(key, { ...entry, items: filtered, loadedAt: Date.now() });
+      });
+      cacheTsRef.current.stats = 0;
     } catch (err) {
       setError(err instanceof Error ? err.message : t('deleteError'));
     } finally {
@@ -658,42 +697,18 @@ const App = () => {
 
     <div className="app">
       <div className="header">
-        <div className="brand">
-          <img src="/logo.svg" className="brand-logo" alt="WordPing" />
-        </div>
         <div className="header-right">
-          <div className="user-pill">{displayName}</div>
-          {tab === 'settings' && (
-            <div className="inline-controls inline-controls--header">
-              <button
-                type="button"
-                className="chip-btn"
-                onClick={() => setThemePreference(theme === 'dark' ? 'light' : 'dark')}
-              >
-                {theme === 'dark' ? <Moon size={16} /> : <Sun size={16} />}
-                <span>{theme === 'dark' ? t('themeDark') : t('themeLight')}</span>
-              </button>
-              <button
-                type="button"
-                className="chip-btn"
-                onClick={() => persistLanguage(lang === 'ru' ? 'uz' : 'ru')}
-              >
-                <Languages size={16} />
-                <span>{lang === 'ru' ? t('languageRu') : t('languageUz')}</span>
-              </button>
-            </div>
-          )}
+          <div className="brand">
+            <img src="/logo.svg" className="brand-logo" alt="WordPing" />
+          </div>
+          {tab === 'stats' && <div className="user-pill">{displayName}</div>}
         </div>
       </div>
 
-      <AnimatePresence mode='wait' initial={!useLiteUi}>
+      <>
         {tab === 'stats' && (
-          <motion.div
+          <div
             key="stats"
-            initial={useLiteUi ? false : { opacity: 0, scale: 0.98 }}
-            animate={{ opacity: 1, scale: 1 }}
-            exit={useLiteUi ? { opacity: 1, scale: 1 } : { opacity: 0, scale: 0.98 }}
-            transition={{ duration: useLiteUi ? 0 : 0.2 }}
             className="section"
           >
             {stats ? (
@@ -737,57 +752,37 @@ const App = () => {
                 <div className="panel">
                   <h2><Target size={20} /> {t('progress')}</h2>
                   <div className="stat-grid">
-                    <div className="stat-card">
-                      <div className="stat-emoji">🎯</div>
+                    <div className="stat-card stat-card--today">
+                      <div className="stat-emoji stat-emoji--today"><Target size={18} strokeWidth={2.2} /></div>
                       <span>{t('doneToday')}</span>
                       <strong>{stats.doneTodayCount} / {stats.dailyLimit}</strong>
                     </div>
-                    <div className="stat-card">
-                      <div className="stat-emoji">📚</div>
+                    <div className="stat-card stat-card--dictionary">
+                      <div className="stat-emoji stat-emoji--dictionary"><Book size={18} strokeWidth={2.2} /></div>
                       <span>{t('dictionary')}</span>
                       <strong>{stats.words}</strong>
                     </div>
-                    <div className="stat-card">
-                      <div className="stat-emoji">⏳</div>
+                    <div className="stat-card stat-card--due">
+                      <div className="stat-emoji stat-emoji--due"><Clock size={18} strokeWidth={2.2} /></div>
                       <span>{t('dueToday')}</span>
                       <strong>{stats.dueToday}</strong>
                     </div>
-                    <div className="stat-card">
-                      <div className="stat-emoji">✅</div>
+                    <div className="stat-card stat-card--learned">
+                      <div className="stat-emoji stat-emoji--learned"><CheckCircle2 size={18} strokeWidth={2.2} /></div>
                       <span>{t('learned')}</span>
                       <strong>{stats.learnedCount}</strong>
                     </div>
                   </div>
                 </div>
 
-                <div className="panel invite-panel">
-                  <div className="invite-head">
-                    <h2><UserPlus size={20} className="text-primary" /> {t('inviteTitle')}</h2>
-                    <div className="invite-count">
-                      <span>{t('inviteCountLabel')}</span>
-                      <strong>{me?.referralCount ?? 0}</strong>
-                    </div>
-                  </div>
-                  <p className="invite-text">{t('inviteDesc')}</p>
-                  <div className="invite-actions">
-                    <button className="btn-primary" onClick={handleInvite}>
-                      <UserPlus size={18} /> {t('inviteButton')}
-                    </button>
-                    <button className="btn-secondary" onClick={handleCopyInvite}>
-                      <Copy size={18} /> {t('inviteCopy')}
-                    </button>
-                  </div>
-                  {BOT_USERNAME && (
-                    <div className="invite-link invite-link--click" onClick={handleCopyInvite} role="button" tabIndex={0} onKeyDown={(event) => {
-                      if (event.key === 'Enter' || event.key === ' ') {
-                        event.preventDefault();
-                        void handleCopyInvite();
-                      }
-                    }}>
-                      <span>{t('inviteLinkLabel')}</span>
-                      <code>{buildReferralLink()}</code>
-                    </div>
-                  )}
+                <div className="invite-row">
+                  <button className="invite-cta invite-cta--full" onClick={handleInvite}>
+                    <span className="invite-cta-main">
+                      <UserPlus size={18} />
+                      <span>{t('inviteButton')}</span>
+                    </span>
+                    <span className="invite-cta-badge">{me?.referralCount ?? 0}</span>
+                  </button>
                 </div>
               </>
             ) : (
@@ -795,16 +790,12 @@ const App = () => {
                 {t('statsLoading')}
               </div>
             )}
-          </motion.div>
+          </div>
         )}
 
         {tab === 'words' && (
-          <motion.div
+          <div
             key="words"
-            initial={useLiteUi ? false : { opacity: 0, scale: 0.98 }}
-            animate={{ opacity: 1, scale: 1 }}
-            exit={useLiteUi ? { opacity: 1, scale: 1 } : { opacity: 0, scale: 0.98 }}
-            transition={{ duration: useLiteUi ? 0 : 0.2 }}
             className="section"
           >
             <div className="panel" style={{ minHeight: '80vh' }}>
@@ -820,33 +811,37 @@ const App = () => {
               <div className="word-list" style={{ marginTop: 16 }}>
                 {words.length === 0 && !loading && (
                   <div style={{ textAlign: 'center', padding: 40, color: 'var(--text-muted)' }}>
-                    <div style={{ fontSize: 40, marginBottom: 10 }}>📭</div>
+                    <div style={{ marginBottom: 10 }}><BookOpen size={34} /></div>
                     {t('wordsEmpty')}
                   </div>
                 )}
-                {words.map((word) => (
-                  <div key={word.id} className="word-item">
-                    <div className="word-main">
-                      <strong>{word.wordEn}</strong>
-                      <small>{word.translationRu}</small>
+                {words.map((word) => {
+                  const wordStatus = resolveWordStatus(word);
+                  return (
+                    <div key={word.id} className="word-item">
+                      <div className="word-main">
+                        <strong>{word.wordEn}</strong>
+                        <small>{word.translationRu}</small>
+                      </div>
+                      <div className="word-actions">
+                        <span className={`word-status word-status--${wordStatus}`}>
+                          {getWordStatusLabel(wordStatus)}
+                        </span>
+                        <button className="btn-danger btn-danger-icon" onClick={() => handleDelete(word.id)}>
+                          <Trash2 size={18} />
+                        </button>
+                      </div>
                     </div>
-                    <button className="btn-danger btn-danger-icon" onClick={() => handleDelete(word.id)}>
-                      <Trash2 size={18} />
-                    </button>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
-          </motion.div>
+          </div>
         )}
 
         {tab === 'settings' && (
-          <motion.div
+          <div
             key="settings"
-            initial={useLiteUi ? false : { opacity: 0, scale: 0.98 }}
-            animate={{ opacity: 1, scale: 1 }}
-            exit={useLiteUi ? { opacity: 1, scale: 1 } : { opacity: 0, scale: 0.98 }}
-            transition={{ duration: useLiteUi ? 0 : 0.2 }}
             className="section"
           >
             <div className="panel">
@@ -938,22 +933,28 @@ const App = () => {
               )}
             </div>
 
-            <div className="actions">
+            <div className="actions settings-actions">
               <button className="btn-primary" onClick={saveSettings} disabled={loading}>
                 <Save size={18} /> {t('save')}
               </button>
             </div>
-          </motion.div>
+            <div className="actions settings-actions settings-actions--secondary">
+              <button
+                type="button"
+                className="chip-btn settings-lang-btn"
+                onClick={() => persistLanguage(lang === 'ru' ? 'uz' : 'ru')}
+              >
+                <Languages size={16} />
+                <span>{lang === 'ru' ? t('languageRu') : t('languageUz')}</span>
+              </button>
+            </div>
+          </div>
         )}
 
         {tab === 'admin' && isAdmin && (
-          <motion.div
+          <div
             key="admin"
-            initial={useLiteUi ? false : { opacity: 0, scale: 0.98 }}
-            animate={{ opacity: 1, scale: 1 }}
-            exit={useLiteUi ? { opacity: 1, scale: 1 } : { opacity: 0, scale: 0.98 }}
-            transition={{ duration: useLiteUi ? 0 : 0.2 }}
-            className="section"
+            className="section section--admin"
           >
             <div className="admin-shell">
               <div className="panel admin-top-panel">
@@ -965,11 +966,11 @@ const App = () => {
                   <button
                     type="button"
                     className="btn-ghost btn-compact admin-refresh-btn"
-                    onClick={() => void loadAdminOverview()}
+                    onClick={() => void loadAdminOverview(true)}
                     disabled={adminOverviewLoading}
                   >
                     <RotateCcw size={15} className={adminOverviewLoading ? 'spin' : ''} />
-                    {t('adminOverview')}
+                    <span className="admin-refresh-label">{t('adminOverview')}</span>
                   </button>
                 </div>
 
@@ -1051,9 +1052,6 @@ const App = () => {
                   {adminLookupLoading && (
                     <div className="admin-state admin-state--loading">{t('adminLookupLoading')}</div>
                   )}
-                  {!adminLookupLoading && !adminLookupError && !adminNotFound && !adminUser && (
-                    <div className="admin-state">{t('adminLookupIdle')}</div>
-                  )}
                   {adminLookupError && (
                     <div className="admin-state admin-state--error">{adminLookupError || t('adminLookupError')}</div>
                   )}
@@ -1122,19 +1120,6 @@ const App = () => {
                       />
                       <small>{t('adminBroadcastPhotoHint')}</small>
                     </div>
-                    <div className="admin-preview">
-                      <div className="admin-preview-title">{t('adminBroadcastPreview')}</div>
-                      {adminBroadcastPhoto.trim() && (
-                        <div className="admin-preview-photo">
-                          <img src={adminBroadcastPhoto.trim()} alt="preview" loading="lazy" />
-                        </div>
-                      )}
-                      {adminBroadcastMessage.trim() ? (
-                        <p className="admin-preview-text">{adminBroadcastMessage.trim()}</p>
-                      ) : (
-                        <p className="admin-preview-empty">{t('adminBroadcastPreviewEmpty')}</p>
-                      )}
-                    </div>
                     <button
                       type="button"
                       className="btn-primary btn-compact btn-admin-send"
@@ -1154,51 +1139,45 @@ const App = () => {
               </div>
 
             </div>
-          </motion.div>
+          </div>
         )}
-      </AnimatePresence>
+      </>
 
       {notice && (
-        <motion.div
-          initial={useLiteUi ? false : { opacity: 0, y: -10 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: useLiteUi ? 0 : 0.15 }}
+        <div
           className="notice"
         >
           <CheckCircle2 size={16} style={{ display: 'inline', marginRight: 8, verticalAlign: 'text-bottom' }} />
           {notice}
-        </motion.div>
+        </div>
       )}
       {error && (
-        <motion.div
-          initial={useLiteUi ? false : { opacity: 0, y: -10 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: useLiteUi ? 0 : 0.15 }}
+        <div
           className="notice"
           style={{ color: '#ef4444', borderColor: '#ef4444', backgroundColor: 'rgba(239,68,68,0.1)' }}
         >
           <AlertCircle size={16} style={{ display: 'inline', marginRight: 8, verticalAlign: 'text-bottom' }} />
           {error}
-        </motion.div>
+        </div>
       )}
 
       <div className="tabs-container">
-        <button className={`tab-btn ${tab === 'stats' ? 'active' : ''}`} onClick={() => setTab('stats')}>
-          <Book size={20} /> {/* Used Book icon as 'Home' feel for studying */}
-          <span>{t('tabHome')}</span>
+        <button type="button" className={`tab-btn ${tab === 'stats' ? 'active' : ''}`} onClick={() => setTab('stats')}>
+          <span className="tab-icon"><House size={20} strokeWidth={2.1} /></span>
+          <span className="tab-label">{t('tabHome')}</span>
         </button>
-        <button className={`tab-btn ${tab === 'words' ? 'active' : ''}`} onClick={() => setTab('words')}>
-          <Search size={20} />
-          <span>{t('tabDictionary')}</span>
+        <button type="button" className={`tab-btn ${tab === 'words' ? 'active' : ''}`} onClick={() => setTab('words')}>
+          <span className="tab-icon"><BookOpen size={20} strokeWidth={2.1} /></span>
+          <span className="tab-label">{t('tabDictionary')}</span>
         </button>
-        <button className={`tab-btn ${tab === 'settings' ? 'active' : ''}`} onClick={() => setTab('settings')}>
-          <SettingsIcon size={20} />
-          <span>{t('tabSettings')}</span>
+        <button type="button" className={`tab-btn ${tab === 'settings' ? 'active' : ''}`} onClick={() => setTab('settings')}>
+          <span className="tab-icon"><SettingsIcon size={20} strokeWidth={2.1} /></span>
+          <span className="tab-label">{t('tabSettings')}</span>
         </button>
         {isAdmin && (
-          <button className={`tab-btn ${tab === 'admin' ? 'active' : ''}`} onClick={() => setTab('admin')}>
-            <Shield size={20} />
-            <span>{t('tabAdmin')}</span>
+          <button type="button" className={`tab-btn ${tab === 'admin' ? 'active' : ''}`} onClick={() => setTab('admin')}>
+            <span className="tab-icon"><Shield size={20} strokeWidth={2.1} /></span>
+            <span className="tab-label">{t('tabAdmin')}</span>
           </button>
         )}
       </div>

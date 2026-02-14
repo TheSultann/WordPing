@@ -5,9 +5,13 @@ const uz = {
     '👋 <b>Salom!</b>\n\nMen senga inglizcha so‘zlarni yodlashga yordam beraman. 🧠\n\n🎯 <b>Qanday ishlaymiz?</b>\n1. Sen so‘z yuborasan ➕\n2. Men o‘z vaqtida eslataman 🔔\n3. Sen yodlash qiyinligini baholaysan (Hard/Good/Easy) ⭐\n\nKetdikmi? 🚀',
   askInterval:
     '⏱ <b>Sening ritming</b>\n\nSo‘zlarni qanchalik tez yuboray?\n\n👇 Daqiqani yozing ({min} dan {max} gacha).\n<i>Masalan: 15, 30 yoki 60.</i>',
+  askGoal:
+    '🎯 <b>Kunlik maqsad</b>\n\nKuniga nechta so‘z o‘rganmoqchisiz?\n\n👇 Son yozing ({min} dan {max} gacha).',
   intervalNeedNumber: '🤔 <b>Bu son emas.</b>\nOddiy raqam yozing, masalan: 10',
   intervalOutOfRange: '⚠️ <b>To‘g‘ri kemadi.</b>\nOraliq: {min}–{max} daqiqa bo‘lishi kerak.',
   intervalSaved: '✅ <b>Kelishdik!</b> Har {value} daqiqada yozaman.',
+  goalNeedNumber: '🤔 <b>Bu son emas.</b>\nMasalan, kuniga 20 ta so‘z deb yozing.',
+  goalOutOfRange: '⚠️ <b>{min} dan {max} gacha son kiriting.</b>\nBoshqa qiymat sinab ko‘ring.',
   settingsTip: '⚙️ Boshqa sozlamalar — menyuda.',
 
   'onboarding.chooseLang': '🌐 Tilni tanlang / Выбери язык:',
@@ -19,7 +23,7 @@ const uz = {
   'onboarding.intervalOutOfRange': '⚠️ <b>{min} dan {max} gacha.</b>\nBoshqa son yozib ko‘ring.',
   'onboarding.intervalSaved': '✅ <b>Ajoyib!</b> Oraliq: {value} daqiqa.',
   'onboarding.settingsTip': '⚙️ Qolganini menyudan topasiz.',
-  'onboarding.finished': '🚀 <b>Tayyorsiz!</b>\nOraliq: {value} daqiqa.\n\n👇 <b>Birinchi inglizcha so‘zni yuboring</b>, sehrni boshlaymiz! 🎩✨',
+  'onboarding.finished': '🚀 <b>Tayyorsiz!</b>\nOraliq: {value} daqiqa.\n\n👇 <b>Birinchi inglizcha so‘zni yuboring</b>, o‘rganishni boshlaymiz.',
   'onboarding.menuTip': '⚙️ <b>Sozlamalar menyusi</b> pastda paydo bo‘ldi.',
 
   'btn.settings': '⚙️ Sozlamalar',

@@ -50,7 +50,7 @@ beforeEach(async () => {
 
 afterAll(async () => {
   await cleanupUserData(prisma, userId);
-  await prisma.$disconnect();
+  await prisma?.$disconnect();
 });
 
 describe('service integration', () => {

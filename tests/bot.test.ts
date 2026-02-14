@@ -34,7 +34,7 @@ beforeEach(async () => {
 
 afterAll(async () => {
   await cleanupUserData(prisma, BigInt(userId));
-  await prisma.$disconnect();
+  await prisma?.$disconnect();
 });
 
 const makeMessageUpdate = (text: string, messageId = 1) => ({

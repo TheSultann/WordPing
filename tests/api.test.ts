@@ -31,7 +31,7 @@ beforeEach(async () => {
 afterAll(async () => {
   await cleanupUserData(prisma, userId);
   await cleanupUserData(prisma, otherUserId);
-  await prisma.$disconnect();
+  await prisma?.$disconnect();
 });
 
 afterEach(() => {

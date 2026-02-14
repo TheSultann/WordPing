@@ -301,6 +301,14 @@ app.get('/api/words', async (req, res) => {
     where,
     orderBy: { createdAt: 'desc' },
     take,
+    include: {
+      review: {
+        select: {
+          stage: true,
+          nextReviewAt: true,
+        },
+      },
+    },
   });
 
   res.json({
@@ -309,6 +317,8 @@ app.get('/api/words', async (req, res) => {
       wordEn: item.wordEn,
       translationRu: item.translationRu,
       createdAt: item.createdAt,
+      stage: item.review?.stage ?? null,
+      nextReviewAt: item.review?.nextReviewAt ?? null,
     })),
   });
 });

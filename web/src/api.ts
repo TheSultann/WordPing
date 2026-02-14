@@ -36,6 +36,8 @@ export type WordItem = {
   wordEn: string;
   translationRu: string;
   createdAt: string;
+  stage?: number | null;
+  nextReviewAt?: string | null;
 };
 
 export type AdminUserSummary = {

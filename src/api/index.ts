@@ -36,6 +36,27 @@ const defaultOrigins = process.env.NODE_ENV === 'production'
 
 const allowedOrigins = Array.from(new Set([...parseOrigins(process.env.WEB_ORIGIN), ...defaultOrigins]));
 
+const parseTimezone = (value?: string | null): string | null => {
+  const timezone = (value ?? '').trim();
+  if (!timezone || timezone.length > 64) return null;
+  try {
+    Intl.DateTimeFormat('en-US', { timeZone: timezone }).format(new Date());
+    return timezone;
+  } catch {
+    return null;
+  }
+};
+
+const persistTimezoneIfProvided = async (userId: bigint, timezoneHeader?: string | null) => {
+  const timezone = parseTimezone(timezoneHeader);
+  if (!timezone) return;
+  await prisma.user.upsert({
+    where: { id: userId },
+    update: { timezone },
+    create: { id: userId, timezone },
+  });
+};
+
 app.use(
   cors({
     origin: (origin, callback) => {
@@ -72,7 +93,7 @@ app.get('/api/health', (_req, res) => {
   res.json({ ok: true });
 });
 
-app.use('/api', (req, res, next) => {
+app.use('/api', async (req, res, next) => {
   const initData = req.header('x-telegram-init-data') ?? '';
   if (!initData) {
     if (allowDev) {
@@ -82,6 +103,11 @@ app.use('/api', (req, res, next) => {
         if (Number.isFinite(devId) && devId > 0) {
           req.telegramUserId = BigInt(devId);
           req.telegramUser = { id: devId } as any;
+          try {
+            await persistTimezoneIfProvided(req.telegramUserId, req.header('x-timezone'));
+          } catch (error) {
+            console.error('Failed to persist timezone', error);
+          }
           return next();
         }
       }
@@ -96,6 +122,11 @@ app.use('/api', (req, res, next) => {
 
   req.telegramUser = verified.user;
   req.telegramUserId = BigInt(verified.user.id);
+  try {
+    await persistTimezoneIfProvided(req.telegramUserId, req.header('x-timezone'));
+  } catch (error) {
+    console.error('Failed to persist timezone', error);
+  }
   return next();
 });
 

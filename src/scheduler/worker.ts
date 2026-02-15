@@ -101,7 +101,9 @@ export const processUser = async (user: any) => {
   );
 
   if (session.state === 'WAITING_ANSWER') {
-    await handleReminders(normalizedUser, session);
+    if (normalizedUser.notificationsEnabled && allowed) {
+      await handleReminders(normalizedUser, session);
+    }
     return;
   }
 

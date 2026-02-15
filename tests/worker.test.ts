@@ -83,16 +83,35 @@ describe('worker integration', () => {
 
   it('does not send outside quiet hours', async () => {
     vi.spyOn(telegram, 'sendMessage').mockResolvedValue({} as any);
+    const now = new Date();
+    const currentMinutes = now.getUTCHours() * 60 + now.getUTCMinutes();
+    const quietStart = (currentMinutes + 1) % 1440;
+    const quietEnd = (currentMinutes + 2) % 1440;
 
     await prisma.user.create({
       data: {
         id: userId,
         notificationsEnabled: true,
-        quietHoursStartMinutes: 600,
-        quietHoursEndMinutes: 1200,
+        quietHoursStartMinutes: quietStart,
+        quietHoursEndMinutes: quietEnd,
         timezone: 'UTC',
         notificationIntervalMinutes: 5,
         maxNotificationsPerDay: 100,
+      },
+    });
+    await prisma.word.create({
+      data: {
+        userId,
+        wordEn: 'night',
+        translationRu: 'РЅРѕС‡СЊ',
+        review: {
+          create: {
+            userId,
+            stage: 0,
+            intervalMinutes: 5,
+            nextReviewAt: new Date(Date.now() - 1000),
+          },
+        },
       },
     });
 
@@ -100,6 +119,8 @@ describe('worker integration', () => {
     await processUser(user);
 
     expect(telegram.sendMessage).not.toHaveBeenCalled();
+    const session = await prisma.userSession.findUnique({ where: { userId } });
+    expect(session?.state).toBe('IDLE');
   });
 
   it('does not send if notification limit reached', async () => {
@@ -440,6 +461,56 @@ describe('worker integration', () => {
 
     const updatedReview = await prisma.review.findUnique({ where: { id: review.id } });
     expect(updatedReview?.lastResult).toBe('SKIPPED');
+  });
+
+  it('does not send reminder outside quiet hours', async () => {
+    vi.spyOn(telegram, 'sendMessage').mockResolvedValue({} as any);
+    const now = new Date();
+    const currentMinutes = now.getUTCHours() * 60 + now.getUTCMinutes();
+    const quietStart = (currentMinutes + 1) % 1440;
+    const quietEnd = (currentMinutes + 2) % 1440;
+
+    await prisma.user.create({
+      data: {
+        id: userId,
+        notificationsEnabled: true,
+        quietHoursStartMinutes: quietStart,
+        quietHoursEndMinutes: quietEnd,
+        timezone: 'UTC',
+        notificationIntervalMinutes: 5,
+        maxNotificationsPerDay: 100,
+      },
+    });
+    const review = await prisma.review.create({
+      data: {
+        userId,
+        wordId: (await prisma.word.create({
+          data: { userId, wordEn: 'silent', translationRu: 'С‚РёС…Рѕ' },
+        })).id,
+        stage: 0,
+        intervalMinutes: 5,
+        nextReviewAt: new Date(Date.now() - 1000),
+      },
+    });
+
+    await prisma.userSession.create({
+      data: {
+        userId,
+        state: 'WAITING_ANSWER',
+        reviewId: review.id,
+        wordId: review.wordId,
+        sentAt: new Date(Date.now() - 6 * 60 * 1000),
+        reminderStep: 0,
+      },
+    });
+
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+    await processUser(user);
+
+    const session = await prisma.userSession.findUnique({ where: { userId } });
+    expect(session?.state).toBe('WAITING_ANSWER');
+    expect(session?.reminderStep).toBe(0);
+    expect(telegram.sendMessage).not.toHaveBeenCalled();
   });
 
   it('tick catches per-user errors and continues', async () => {

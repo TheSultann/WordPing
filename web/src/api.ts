@@ -71,10 +71,20 @@ const getDevUserId = () => {
   return params.get('devUserId') ?? import.meta.env.VITE_DEV_USER_ID ?? '';
 };
 
+const getTimezone = () => {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone ?? '';
+  } catch {
+    return '';
+  }
+};
+
 const buildHeaders = () => {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
   };
+  const timezone = getTimezone();
+  if (timezone) headers['x-timezone'] = timezone;
   const initData = getTelegramInitData();
   if (initData) {
     headers['x-telegram-init-data'] = initData;

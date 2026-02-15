@@ -61,6 +61,19 @@ describe('API integration', () => {
     expect(res.body.maxNotificationsPerDay).toBe(20);
   });
 
+  it('persists timezone from x-timezone header', async () => {
+    const res = await request(app)
+      .get('/api/me')
+      .set('x-dev-user-id', userId.toString())
+      .set('x-timezone', 'Asia/Tashkent');
+
+    expect(res.status).toBe(200);
+    expect(res.body.timezone).toBe('Asia/Tashkent');
+
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+    expect(user?.timezone).toBe('Asia/Tashkent');
+  });
+
   it('PATCH /api/settings updates values', async () => {
     const res = await request(app)
       .patch('/api/settings')

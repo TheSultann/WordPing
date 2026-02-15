@@ -44,6 +44,7 @@
 - `npm run migrate:dev` — prisma migrate dev.
 - `npm run migrate:deploy` — применить миграции в проде.
 - `npm run prisma:generate` — пересоздать клиент.
+- Путь проекта на AWS-сервере (текущий): `~/apps/WordPing`.
 
 Логи пишутся в stdout/stderr (Telegraf и воркер).
 

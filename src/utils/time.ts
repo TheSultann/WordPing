@@ -5,30 +5,44 @@ import timezone from 'dayjs/plugin/timezone';
 dayjs.extend(utc);
 dayjs.extend(timezone);
 
+export const DEFAULT_TIMEZONE = 'Asia/Tashkent';
+
+const UTC_LIKE = new Set([
+  'utc',
+  'etc/utc',
+  'gmt',
+  'etc/gmt',
+  'etc/gmt+0',
+  'etc/gmt-0',
+]);
+
+const resolveTimezone = (tz?: string | null): string => {
+  const value = (tz ?? '').trim();
+  if (!value) return DEFAULT_TIMEZONE;
+  if (UTC_LIKE.has(value.toLowerCase())) return DEFAULT_TIMEZONE;
+  return value.length > 0 ? value : DEFAULT_TIMEZONE;
+};
+
 export const nowUtc = (): Dayjs => dayjs().utc();
 export const toUtcDate = (d: Dayjs): Date => d.toDate();
 
 export const userNow = (tz?: string | null): Dayjs => {
-  if (tz) {
-    try {
-      return dayjs().tz(tz as string);
-    } catch (e) {
-      return dayjs().utc();
-    }
+  const zone = resolveTimezone(tz);
+  try {
+    return dayjs().tz(zone);
+  } catch (e) {
+    return dayjs().tz(DEFAULT_TIMEZONE);
   }
-  return dayjs().utc();
 };
 
 export const toUserTime = (date: Date | Dayjs, tz?: string | null): Dayjs => {
   const base = dayjs.isDayjs(date) ? date : dayjs(date);
-  if (tz) {
-    try {
-      return base.tz(tz as string);
-    } catch (e) {
-      return base.utc();
-    }
+  const zone = resolveTimezone(tz);
+  try {
+    return base.tz(zone);
+  } catch (e) {
+    return base.tz(DEFAULT_TIMEZONE);
   }
-  return base.utc();
 };
 
 export const isWithinWindow = (local: Dayjs, startMinutes: number, endMinutes: number): boolean => {
@@ -70,8 +84,8 @@ export const addMinutes = (date: Dayjs, minutes: number): Dayjs => date.add(minu
 
 export const formatDateTime = (date: Date | Dayjs, tz?: string | null): string => {
   const d = dayjs.isDayjs(date) ? date : dayjs(date);
-  const zone = tz ?? 'UTC';
-  const local = zone ? d.tz(zone as string) : d.utc();
+  const zone = resolveTimezone(tz);
+  const local = d.tz(zone as string);
   return local.format('YYYY-MM-DD HH:mm');
 };
 

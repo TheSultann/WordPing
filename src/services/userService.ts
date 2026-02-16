@@ -1,7 +1,7 @@
 import { DirectionMode, User } from '../generated/prisma';
 import { prisma } from '../db/client';
 import { ensureSession } from './sessionService';
-import { diffInDays, startOfUserDay, userNow } from '../utils/time';
+import { DEFAULT_TIMEZONE, diffInDays, startOfUserDay, userNow } from '../utils/time';
 import dayjs from '../utils/time';
 
 export const DEFAULT_QUIET_START = 480; // 08:00
@@ -18,14 +18,14 @@ export const STREAK_DAILY_TARGET = 3;
 const toId = (telegramId: number | string | bigint): bigint => BigInt(telegramId);
 
 const startOfDay = (tz: string | null | undefined, date?: Date | dayjs.Dayjs) =>
-  startOfUserDay(tz ?? 'UTC', date ? dayjs(date) : undefined);
+  startOfUserDay(tz, date ? dayjs(date) : undefined);
 
 export const ensureUser = async (telegramId: number): Promise<User> => {
   const id = toId(telegramId);
   const user = await prisma.user.upsert({
     where: { id },
     update: {},
-    create: { id },
+    create: { id, timezone: DEFAULT_TIMEZONE },
   });
   await ensureSession(id);
   return user;
@@ -114,7 +114,7 @@ export type DailyProgressResult = {
 };
 
 export const resetNotificationCountersIfNeeded = async (user: User): Promise<User> => {
-  const tz = user.timezone ?? 'UTC';
+  const tz = user.timezone;
   const now = userNow(tz);
   const today = startOfDay(tz, now);
   const lastDate = user.notificationsDate ? startOfDay(tz, user.notificationsDate) : null;
@@ -128,7 +128,7 @@ export const resetNotificationCountersIfNeeded = async (user: User): Promise<Use
 };
 
 export const resetProgressIfNeeded = async (user: User): Promise<User> => {
-  const tz = user.timezone ?? 'UTC';
+  const tz = user.timezone;
   const now = userNow(tz);
   const today = startOfDay(tz, now);
   const lastDoneDay = user.lastDoneDate ? startOfDay(tz, user.lastDoneDate) : null;
@@ -147,7 +147,7 @@ export const resetProgressIfNeeded = async (user: User): Promise<User> => {
 };
 
 export const recordCompletion = async (user: User): Promise<DailyProgressResult> => {
-  const tz = user.timezone ?? 'UTC';
+  const tz = user.timezone;
   const now = userNow(tz);
   const today = startOfDay(tz, now);
   const lastDoneDay = user.lastDoneDate ? startOfDay(tz, user.lastDoneDate) : null;
@@ -206,11 +206,12 @@ export const countUserWords = async (userId: bigint) => {
   return prisma.word.count({ where: { userId } });
 };
 
-export const countDueToday = async (userId: bigint, _todayStartUtc: Date, tomorrowStartUtc: Date) => {
+export const countDueToday = async (userId: bigint, todayStartUtc: Date, tomorrowStartUtc: Date) => {
   return prisma.review.count({
     where: {
       userId,
       nextReviewAt: {
+        gte: todayStartUtc,
         lt: tomorrowStartUtc,
       },
     },

@@ -417,6 +417,15 @@ bot.on('text', async (ctx) => {
         await ctx.reply(t(lang, 'session.lost'), { parse_mode: 'HTML' });
         return;
       }
+      if (review.lastResult === 'SKIPPED' && review.lastReviewAt && session.sentAt) {
+        const skippedAt = review.lastReviewAt.getTime();
+        const sentAt = session.sentAt.getTime();
+        if (skippedAt >= sentAt) {
+          await resetState(BigInt(userId));
+          await ctx.reply(t(lang, 'worker.skipped'), { parse_mode: 'HTML' });
+          return;
+        }
+      }
       const direction = session.direction;
       const { correct } = checkAnswer(direction, review.word.wordEn, review.word.translationRu, text);
       const correctAnswer = direction === 'RU_TO_EN' ? review.word.wordEn : review.word.translationRu;

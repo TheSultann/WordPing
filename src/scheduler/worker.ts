@@ -43,7 +43,7 @@ const canSendNotification = (user: any, now: dayjs.Dayjs) => {
 };
 
 const registerNotification = async (user: any) => {
-  const tz = user.timezone ?? 'UTC';
+  const tz = user.timezone;
   const today = startOfUserDay(tz, userNow(tz)).toDate();
   await prisma.user.update({
     where: { id: user.id },
@@ -60,7 +60,7 @@ const sendCard = async (userId: number, direction: CardDirection, phrase: string
   await telegram.sendMessage(userId, prompt);
 };
 
-export const handleReminders = async (user: any, session: SessionLike) => {
+export const handleReminders = async (user: any, session: SessionLike, canNotify: boolean) => {
   if (!session.sentAt || !session.reviewId) return;
   const sentAt = dayjs(session.sentAt);
   const now = nowUtc();
@@ -68,8 +68,21 @@ export const handleReminders = async (user: any, session: SessionLike) => {
   const step = session.reminderStep ?? 0;
   const lang = (user.language as Lang) || 'ru';
 
+  // Skip after 20 minutes (total time from sentAt)
+  if (diff >= 20) {
+    const review = await prisma.review.findUnique({ where: { id: session.reviewId } });
+    if (review) {
+      await markSkipped(review);
+    }
+    if (canNotify) {
+      await telegram.sendMessage(Number(user.id), t(lang, 'worker.skipped'), { parse_mode: 'HTML' });
+    }
+    await setState(BigInt(user.id), 'IDLE');
+    return;
+  }
+
   // 1. Reminder after 5 minutes
-  if (diff >= 5 && step === 0) {
+  if (diff >= 5 && step === 0 && canNotify) {
     await telegram.sendMessage(Number(user.id), t(lang, 'worker.reminder'), { parse_mode: 'HTML' });
     await setState(BigInt(user.id), 'WAITING_ANSWER', {
       ...session,
@@ -77,23 +90,12 @@ export const handleReminders = async (user: any, session: SessionLike) => {
     });
     return;
   }
-
-  // 2. Skip after 20 minutes (total time from sentAt)
-  if (diff >= 20 && step === 1) {
-    const review = await prisma.review.findUnique({ where: { id: session.reviewId } });
-    if (review) {
-      await markSkipped(review);
-    }
-    await telegram.sendMessage(Number(user.id), t(lang, 'worker.skipped'), { parse_mode: 'HTML' });
-    await setState(BigInt(user.id), 'IDLE');
-    return;
-  }
 };
 
 export const processUser = async (user: any) => {
   let normalizedUser = await resetNotificationCountersIfNeeded(user);
   const session = await ensureSession(normalizedUser.id);
-  const localNow = userNow(normalizedUser.timezone ?? 'UTC');
+  const localNow = userNow(normalizedUser.timezone);
   const allowed = isWithinWindow(
     localNow,
     normalizedUser.quietHoursStartMinutes ?? DEFAULT_QUIET_START,
@@ -101,9 +103,8 @@ export const processUser = async (user: any) => {
   );
 
   if (session.state === 'WAITING_ANSWER') {
-    if (normalizedUser.notificationsEnabled && allowed) {
-      await handleReminders(normalizedUser, session);
-    }
+    const canNotify = normalizedUser.notificationsEnabled && allowed;
+    await handleReminders(normalizedUser, session, canNotify);
     return;
   }
 

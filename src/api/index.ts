@@ -19,7 +19,7 @@ import {
   MIN_NOTIFICATIONS_PER_DAY,
   MAX_NOTIFICATIONS_PER_DAY,
 } from '../services/userService';
-import { nowUtc, startOfUserDay, userNow } from '../utils/time';
+import { DEFAULT_TIMEZONE, nowUtc, startOfUserDay, userNow } from '../utils/time';
 import { verifyInitData } from './auth';
 
 export const app = express();
@@ -38,12 +38,23 @@ const allowedOrigins = Array.from(new Set([...parseOrigins(process.env.WEB_ORIGI
 
 const parseTimezone = (value?: string | null): string | null => {
   const timezone = (value ?? '').trim();
-  if (!timezone || timezone.length > 64) return null;
+  if (!timezone || timezone.length > 64) return DEFAULT_TIMEZONE;
+  const normalized = timezone.toLowerCase();
+  if (
+    normalized === 'utc' ||
+    normalized === 'etc/utc' ||
+    normalized === 'gmt' ||
+    normalized === 'etc/gmt' ||
+    normalized === 'etc/gmt+0' ||
+    normalized === 'etc/gmt-0'
+  ) {
+    return DEFAULT_TIMEZONE;
+  }
   try {
     Intl.DateTimeFormat('en-US', { timeZone: timezone }).format(new Date());
     return timezone;
   } catch {
-    return null;
+    return DEFAULT_TIMEZONE;
   }
 };
 
@@ -228,8 +239,8 @@ app.get('/api/stats', async (req, res) => {
   const userId = req.telegramUserId!;
   const user = await resetProgressIfNeeded(await ensureUser(Number(userId)));
   const words = await countUserWords(user.id);
-  const now = userNow(user.timezone ?? 'UTC');
-  const todayStart = startOfUserDay(user.timezone ?? 'UTC', now);
+  const now = userNow(user.timezone);
+  const todayStart = startOfUserDay(user.timezone, now);
   const tomorrow = todayStart.add(1, 'day');
   const dueToday = await countDueToday(
     user.id,

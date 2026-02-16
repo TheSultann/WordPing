@@ -71,7 +71,7 @@ export const addWordForUser = async (
       where: { id: userId },
       select: { timezone: true },
     });
-    const dayStart = startOfUserDay(user?.timezone ?? 'UTC', now);
+    const dayStart = startOfUserDay(user?.timezone, now);
     const dayEnd = dayStart.add(1, 'day');
 
     const addedToday = await prisma.word.count({

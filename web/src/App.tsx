@@ -875,12 +875,14 @@ const App = () => {
                       min={5}
                       max={240}
                       value={form.notificationIntervalMinutes}
-                      onChange={(e) =>
+                      onChange={(e) => {
+                        const raw = e.target.value.replace(/^0+(?=\d)/, '');
                         setForm({
                           ...form,
-                          notificationIntervalMinutes: Number(e.target.value),
-                        })
-                      }
+                          notificationIntervalMinutes: Number(raw),
+                        });
+                        e.target.value = raw;
+                      }}
                     />
                   </div>
 
@@ -891,12 +893,14 @@ const App = () => {
                       min={5}
                       max={40}
                       value={form.maxNotificationsPerDay}
-                      onChange={(e) =>
+                      onChange={(e) => {
+                        const raw = e.target.value.replace(/^0+(?=\d)/, '');
                         setForm({
                           ...form,
-                          maxNotificationsPerDay: Number(e.target.value),
-                        })
-                      }
+                          maxNotificationsPerDay: Number(raw),
+                        });
+                        e.target.value = raw;
+                      }}
                     />
                   </div>
                 </div>

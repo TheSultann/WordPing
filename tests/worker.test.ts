@@ -246,7 +246,7 @@ describe('worker integration', () => {
         review: {
           create: {
             userId,
-            stage: 0,
+            stage: 1,
             intervalMinutes: 5,
             nextReviewAt: new Date(Date.now() - 1000),
           },
@@ -260,9 +260,8 @@ describe('worker integration', () => {
     expect(telegram.sendMessage).not.toHaveBeenCalled();
   });
 
-  it('logs when there are no due reviews', async () => {
+  it('does not send when there are no due reviews', async () => {
     vi.spyOn(telegram, 'sendMessage').mockResolvedValue({} as any);
-    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
 
     await prisma.user.create({
       data: {
@@ -279,7 +278,6 @@ describe('worker integration', () => {
     const user = await prisma.user.findUnique({ where: { id: userId } });
     await processUser(user);
 
-    expect(logSpy).toHaveBeenCalledWith(`User ${userId.toString()}: No due reviews`);
     expect(telegram.sendMessage).not.toHaveBeenCalled();
   });
 
@@ -514,7 +512,7 @@ describe('worker integration', () => {
   });
 
   it('tick catches per-user errors and continues', async () => {
-    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => { });
     const dbClient = await import('../src/db/client');
     const findManySpy = vi
       .spyOn(dbClient.prisma.user, 'findMany')
@@ -530,8 +528,8 @@ describe('worker integration', () => {
     const cron = await import('node-cron');
     const scheduleSpy = vi
       .spyOn(cron.default, 'schedule')
-      .mockImplementation(() => ({ stop: () => {} } as any));
-    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+      .mockImplementation(() => ({ stop: () => { } } as any));
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => { });
     const dbClient = await import('../src/db/client');
     vi.spyOn(dbClient.prisma.user, 'findMany').mockResolvedValue([]);
 

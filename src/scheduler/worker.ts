@@ -136,13 +136,12 @@ export const processUser = async (user: any) => {
   if (session.state !== 'IDLE') return;
 
   const now = nowUtc();
-  if (!canSendNotification(normalizedUser, now)) return;
-
   const review = await findDueReview(normalizedUser.id, now);
-  if (!review || !review.word) {
-    console.log(`User ${user.id}: No due reviews`);
-    return;
-  }
+  if (!review || !review.word) return;
+
+  // New words (stage=0) always come through immediately (default 5 min after creation).
+  // Older reviews respect the user's notification interval.
+  if (review.stage > 0 && !canSendNotification(normalizedUser, now)) return;
 
   const direction = pickDirection(normalizedUser.directionMode);
   const phrase = direction === 'RU_TO_EN' ? review.word.translationRu : review.word.wordEn;

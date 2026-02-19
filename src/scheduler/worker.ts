@@ -1,4 +1,4 @@
-import 'dotenv/config';
+п»їimport 'dotenv/config';
 import { t, Lang } from '../i18n';
 import cron from 'node-cron';
 import { Telegraf } from 'telegraf';
@@ -56,26 +56,26 @@ const registerNotification = async (user: any) => {
 };
 
 const sendCard = async (userId: number, direction: CardDirection, phrase: string) => {
-  const prompt = `Переведи: ${phrase}\n(Ответь сообщением)`;
+  const prompt = `Translate: ${phrase}\n(Reply with text)`;
   await telegram.sendMessage(userId, prompt);
 };
 
 const buildHint = (direction: CardDirection, word: { wordEn: string; translationRu: string }, hardStreak?: number) => {
   if ((hardStreak ?? 0) < 2) return null;
+
   if (direction === 'EN_TO_RU') {
-    // Подсказка: первая буква перевода + длина, без полного слова
     const tr = word.translationRu.trim();
     if (!tr) return null;
-    if (tr.length <= 2) return `?? Подсказка: перевод начинается на “${tr[0] ?? ''}”`;
+    if (tr.length <= 2) return `Hint: translation starts with "${tr[0] ?? ''}"`;
     const mask = `${tr[0]}${'_'.repeat(Math.max(tr.length - 1, 1))}`;
-    return `?? Подсказка: перевод ${tr.length} букв, начинаетcя как “${mask}”`;
+    return `Hint: translation has ${tr.length} letters, starts as "${mask}"`;
   }
-  // RU_TO_EN: даём маску английского слова
+
   const src = word.wordEn.trim();
   if (!src) return null;
-  if (src.length <= 2) return `?? Подсказка: начинается на “${src[0] ?? ''}”`;
+  if (src.length <= 2) return `Hint: starts with "${src[0] ?? ''}"`;
   const masked = `${src[0]}${'_'.repeat(Math.max(src.length - 2, 1))}${src[src.length - 1]}`;
-  return `?? Подсказка: ${masked}`;
+  return `Hint: ${masked}`;
 };
 
 export const handleReminders = async (user: any, session: SessionLike, canNotify: boolean) => {
@@ -86,7 +86,6 @@ export const handleReminders = async (user: any, session: SessionLike, canNotify
   const step = session.reminderStep ?? 0;
   const lang = (user.language as Lang) || 'ru';
 
-  // Skip after 20 minutes (total time from sentAt)
   if (diff >= 20) {
     const review = await prisma.review.findUnique({ where: { id: session.reviewId } });
     if (review) {
@@ -99,7 +98,6 @@ export const handleReminders = async (user: any, session: SessionLike, canNotify
     return;
   }
 
-  // 1. Reminder after 5 minutes
   if (diff >= 5 && step === 0 && canNotify) {
     await telegram.sendMessage(Number(user.id), t(lang, 'worker.reminder'), { parse_mode: 'HTML' });
     await setState(BigInt(user.id), 'WAITING_ANSWER', {
@@ -111,7 +109,7 @@ export const handleReminders = async (user: any, session: SessionLike, canNotify
 };
 
 export const processUser = async (user: any) => {
-  let normalizedUser = await resetNotificationCountersIfNeeded(user);
+  const normalizedUser = await resetNotificationCountersIfNeeded(user);
   const session = await ensureSession(normalizedUser.id);
   const localNow = userNow(normalizedUser.timezone);
   const allowed = isWithinWindow(
@@ -127,7 +125,7 @@ export const processUser = async (user: any) => {
   }
 
   if (session.state === 'WAITING_GRADE') {
-    return; // wait for user grade
+    return;
   }
 
   if (!normalizedUser.notificationsEnabled) return;
@@ -136,21 +134,16 @@ export const processUser = async (user: any) => {
   if (session.state !== 'IDLE') return;
 
   const now = nowUtc();
-  // New words should be delivered immediately once due (stage=0),
-  // even if older cards are currently rate-limited by interval.
   const newReview = await findDueReviewByStage(normalizedUser.id, 0, now);
   const review = newReview ?? await findDueReview(normalizedUser.id, now);
   if (!review || !review.word) return;
 
-  // New words (stage=0) always come through immediately (default 5 min after creation).
-  // Older reviews respect the user's notification interval.
   if (review.stage > 0 && !canSendNotification(normalizedUser, now)) return;
 
   const direction = pickDirection(normalizedUser.directionMode);
   const phrase = direction === 'RU_TO_EN' ? review.word.translationRu : review.word.wordEn;
   const hint = buildHint(direction, review.word, (review as any).hardStreak);
 
-  // OPTIMISTIC LOCK: Only proceed if we can transition from IDLE atomically
   const locked = await setSessionActiveIfIdle(normalizedUser.id, 'WAITING_ANSWER', {
     reviewId: review.id,
     wordId: review.wordId,
@@ -160,21 +153,18 @@ export const processUser = async (user: any) => {
   });
 
   if (!locked) {
-    // User became busy (e.g. started /add flow) in the ms between check and update.
-    // Abort silently, we'll try again next tick if they become IDLE.
     return;
   }
 
-  // If locked successfully, send the message
   try {
     const lang = (normalizedUser.language as Lang) || 'ru';
     const base = `${t(lang, 'worker.verifyPrompt', { phrase })}\n${t(lang, 'worker.answerPrompt')}`;
     const prompt = hint ? `${base}\n\n${hint}` : base;
     await telegram.sendMessage(Number(normalizedUser.id), prompt, { parse_mode: 'HTML' });
-    // await sendCard(Number(normalizedUser.id), direction, phrase); // Replaced inline for localization
+    // Keep helper to allow quick swap during experiments.
+    // await sendCard(Number(normalizedUser.id), direction, phrase);
     await registerNotification(normalizedUser);
   } catch (e) {
-    // If sending fails, revert state to IDLE so we don't get stuck
     console.error('Failed to send card, reverting state', e);
     await setState(normalizedUser.id, 'IDLE');
   }
@@ -200,4 +190,3 @@ export const startWorker = () => {
 if (require.main === module) {
   startWorker();
 }
-

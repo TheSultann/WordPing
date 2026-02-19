@@ -1,4 +1,4 @@
-﻿import { CardDirection, SessionState, UserSession } from '../generated/prisma';
+import { CardDirection, SessionState, UserSession } from '../generated/prisma/client';
 import { prisma } from '../db/client';
 
 export type SessionData = {
@@ -94,3 +94,4 @@ export const resetState = async (userId: bigint) => {
   const payload = lang ? { lang } : null;
   return setState(userId, 'IDLE', { payload });
 };
+

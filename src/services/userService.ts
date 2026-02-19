@@ -1,4 +1,4 @@
-import { DirectionMode, User } from '../generated/prisma';
+import { DirectionMode, User } from '../generated/prisma/client';
 import { prisma } from '../db/client';
 import { ensureSession } from './sessionService';
 import { DEFAULT_TIMEZONE, diffInDays, startOfUserDay, userNow } from '../utils/time';
@@ -217,3 +217,4 @@ export const countDueToday = async (userId: bigint, todayStartUtc: Date, tomorro
     },
   });
 };
+

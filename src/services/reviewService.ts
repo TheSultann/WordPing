@@ -1,5 +1,5 @@
-﻿import { PrismaClientKnownRequestError } from '@prisma/client/runtime/library';
-import { CardDirection, DirectionMode, Review, ReviewResult } from '../generated/prisma';
+import { PrismaClientKnownRequestError } from '@prisma/client/runtime/library';
+import { CardDirection, DirectionMode, Review, ReviewResult } from '../generated/prisma/client';
 import { prisma } from '../db/client';
 import { initialReviewSchedule, Rating, scheduleNextReview, scheduleSkipped } from './reviewScheduler';
 import { nowUtc, startOfUserDay } from '../utils/time';
@@ -131,6 +131,18 @@ export const findDueReview = async (userId: bigint, now = nowUtc()) => {
   });
 };
 
+export const findDueReviewByStage = async (userId: bigint, stage: number, now = nowUtc()) => {
+  return prisma.review.findFirst({
+    where: {
+      userId,
+      stage,
+      nextReviewAt: { lte: now.toDate() },
+    },
+    orderBy: { nextReviewAt: 'asc' },
+    include: { word: true },
+  });
+};
+
 export const loadReviewWithWord = async (reviewId: number) => {
   return prisma.review.findUnique({ where: { id: reviewId }, include: { word: true } });
 };
@@ -179,3 +191,4 @@ export const markSkipped = async (review: Review) => {
     },
   });
 };
+

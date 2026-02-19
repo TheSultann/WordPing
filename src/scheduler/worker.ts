@@ -1,11 +1,11 @@
-ï»¿import 'dotenv/config';
+import 'dotenv/config';
 import { t, Lang } from '../i18n';
 import cron from 'node-cron';
 import { Telegraf } from 'telegraf';
 import { prisma } from '../db/client';
 import { ensureSession, setState, setSessionActiveIfIdle } from '../services/sessionService';
-import { findDueReview, markSkipped, pickDirection } from '../services/reviewService';
-import { CardDirection } from '../generated/prisma';
+import { findDueReview, findDueReviewByStage, markSkipped, pickDirection } from '../services/reviewService';
+import { CardDirection } from '../generated/prisma/client';
 import { isWithinWindow, nowUtc, startOfUserDay, userNow } from '../utils/time';
 import dayjs from 'dayjs';
 import {
@@ -56,26 +56,26 @@ const registerNotification = async (user: any) => {
 };
 
 const sendCard = async (userId: number, direction: CardDirection, phrase: string) => {
-  const prompt = `ÐŸÐµÑ€ÐµÐ²ÐµÐ´Ð¸: ${phrase}\n(ÐžÑ‚Ð²ÐµÑ‚ÑŒ ÑÐ¾Ð¾Ð±Ñ‰ÐµÐ½Ð¸ÐµÐ¼)`;
+  const prompt = `Ïåðåâåäè: ${phrase}\n(Îòâåòü ñîîáùåíèåì)`;
   await telegram.sendMessage(userId, prompt);
 };
 
 const buildHint = (direction: CardDirection, word: { wordEn: string; translationRu: string }, hardStreak?: number) => {
   if ((hardStreak ?? 0) < 2) return null;
   if (direction === 'EN_TO_RU') {
-    // ÐŸÐ¾Ð´ÑÐºÐ°Ð·ÐºÐ°: Ð¿ÐµÑ€Ð²Ð°Ñ Ð±ÑƒÐºÐ²Ð° Ð¿ÐµÑ€ÐµÐ²Ð¾Ð´Ð° + Ð´Ð»Ð¸Ð½Ð°, Ð±ÐµÐ· Ð¿Ð¾Ð»Ð½Ð¾Ð³Ð¾ ÑÐ»Ð¾Ð²Ð°
+    // Ïîäñêàçêà: ïåðâàÿ áóêâà ïåðåâîäà + äëèíà, áåç ïîëíîãî ñëîâà
     const tr = word.translationRu.trim();
     if (!tr) return null;
-    if (tr.length <= 2) return `ðŸ’¡ ÐŸÐ¾Ð´ÑÐºÐ°Ð·ÐºÐ°: Ð¿ÐµÑ€ÐµÐ²Ð¾Ð´ Ð½Ð°Ñ‡Ð¸Ð½Ð°ÐµÑ‚ÑÑ Ð½Ð° â€œ${tr[0] ?? ''}â€`;
+    if (tr.length <= 2) return `?? Ïîäñêàçêà: ïåðåâîä íà÷èíàåòñÿ íà “${tr[0] ?? ''}”`;
     const mask = `${tr[0]}${'_'.repeat(Math.max(tr.length - 1, 1))}`;
-    return `ðŸ’¡ ÐŸÐ¾Ð´ÑÐºÐ°Ð·ÐºÐ°: Ð¿ÐµÑ€ÐµÐ²Ð¾Ð´ ${tr.length} Ð±ÑƒÐºÐ², Ð½Ð°Ñ‡Ð¸Ð½Ð°ÐµÑ‚cÑ ÐºÐ°Ðº â€œ${mask}â€`;
+    return `?? Ïîäñêàçêà: ïåðåâîä ${tr.length} áóêâ, íà÷èíàåòcÿ êàê “${mask}”`;
   }
-  // RU_TO_EN: Ð´Ð°Ñ‘Ð¼ Ð¼Ð°ÑÐºÑƒ Ð°Ð½Ð³Ð»Ð¸Ð¹ÑÐºÐ¾Ð³Ð¾ ÑÐ»Ð¾Ð²Ð°
+  // RU_TO_EN: äà¸ì ìàñêó àíãëèéñêîãî ñëîâà
   const src = word.wordEn.trim();
   if (!src) return null;
-  if (src.length <= 2) return `ðŸ’¡ ÐŸÐ¾Ð´ÑÐºÐ°Ð·ÐºÐ°: Ð½Ð°Ñ‡Ð¸Ð½Ð°ÐµÑ‚ÑÑ Ð½Ð° â€œ${src[0] ?? ''}â€`;
+  if (src.length <= 2) return `?? Ïîäñêàçêà: íà÷èíàåòñÿ íà “${src[0] ?? ''}”`;
   const masked = `${src[0]}${'_'.repeat(Math.max(src.length - 2, 1))}${src[src.length - 1]}`;
-  return `ðŸ’¡ ÐŸÐ¾Ð´ÑÐºÐ°Ð·ÐºÐ°: ${masked}`;
+  return `?? Ïîäñêàçêà: ${masked}`;
 };
 
 export const handleReminders = async (user: any, session: SessionLike, canNotify: boolean) => {
@@ -136,7 +136,10 @@ export const processUser = async (user: any) => {
   if (session.state !== 'IDLE') return;
 
   const now = nowUtc();
-  const review = await findDueReview(normalizedUser.id, now);
+  // New words should be delivered immediately once due (stage=0),
+  // even if older cards are currently rate-limited by interval.
+  const newReview = await findDueReviewByStage(normalizedUser.id, 0, now);
+  const review = newReview ?? await findDueReview(normalizedUser.id, now);
   if (!review || !review.word) return;
 
   // New words (stage=0) always come through immediately (default 5 min after creation).
@@ -197,3 +200,4 @@ export const startWorker = () => {
 if (require.main === module) {
   startWorker();
 }
+

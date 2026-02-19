@@ -1,8 +1,8 @@
-ï»¿import 'dotenv/config';
+import 'dotenv/config';
 import express, { type RequestHandler } from 'express';
 import cors from 'cors';
 import { prisma } from '../db/client';
-import { Prisma } from '../generated/prisma';
+import { Prisma } from '../generated/prisma/client';
 import {
   countDueToday,
   countUserWords,
@@ -403,9 +403,9 @@ app.delete('/api/words/:id', async (req, res) => {
 
 app.get('/api/admin/overview', async (_req, res) => {
   const now = nowUtc();
-  // lastDoneDate ÑÐ¾Ñ…Ñ€Ð°Ð½ÑÐµÑ‚ÑÑ ÐºÐ°Ðº Ð½Ð°Ñ‡Ð°Ð»Ð¾ Ð´Ð½Ñ Ð² Ñ‚Ð°Ð¹Ð¼Ð·Ð¾Ð½Ðµ Ð¿Ð¾Ð»ÑŒÐ·Ð¾Ð²Ð°Ñ‚ÐµÐ»Ñ, Ð¿ÐµÑ€ÐµÐ²ÐµÐ´Ñ‘Ð½Ð½Ð¾Ðµ Ð² UTC.
-  // Ð§Ñ‚Ð¾Ð±Ñ‹ ÐºÐ¾Ñ€Ñ€ÐµÐºÑ‚Ð½Ð¾ Ð¿Ð¾ÑÑ‡Ð¸Ñ‚Ð°Ñ‚ÑŒ "Ð°ÐºÑ‚Ð¸Ð²Ð½Ñ‹Ñ… ÑÐµÐ³Ð¾Ð´Ð½Ñ" Ð´Ð»Ñ Ð¿Ð¾Ð»ÑŒÐ·Ð¾Ð²Ð°Ñ‚ÐµÐ»ÐµÐ¹ Ð¸Ð· Ñ€Ð°Ð·Ð½Ñ‹Ñ… Ñ‡Ð°ÑÐ¾Ð²Ñ‹Ñ… Ð¿Ð¾ÑÑÐ¾Ð²,
-  // Ð±ÐµÑ€Ñ‘Ð¼ Ð¾ÐºÐ½Ð¾ Ð¿Ð¾ÑÐ»ÐµÐ´Ð½Ð¸Ñ… 24 Ñ‡Ð°ÑÐ¾Ð², Ð° Ð½Ðµ Ð³Ñ€Ð°Ð½Ð¸Ñ†Ñƒ Ñ‚ÐµÐºÑƒÑ‰ÐµÐ³Ð¾ UTC-Ð´Ð½Ñ.
+  // lastDoneDate ñîõðàíÿåòñÿ êàê íà÷àëî äíÿ â òàéìçîíå ïîëüçîâàòåëÿ, ïåðåâåä¸ííîå â UTC.
+  // ×òîáû êîððåêòíî ïîñ÷èòàòü "àêòèâíûõ ñåãîäíÿ" äëÿ ïîëüçîâàòåëåé èç ðàçíûõ ÷àñîâûõ ïîÿñîâ,
+  // áåð¸ì îêíî ïîñëåäíèõ 24 ÷àñîâ, à íå ãðàíèöó òåêóùåãî UTC-äíÿ.
   const activeWindowStart = now.subtract(24, 'hour').toDate();
   const weekAgo = now.subtract(7, 'day').toDate();
 
@@ -562,4 +562,5 @@ export const startApiServer = () => {
 if (require.main === module) {
   startApiServer();
 }
+
 

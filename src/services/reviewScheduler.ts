@@ -1,5 +1,5 @@
 import dayjs, { Dayjs } from 'dayjs';
-import { Review } from '../generated/prisma';
+import { Review } from '../generated/prisma/client';
 import { addMinutes } from '../utils/time';
 
 export type Rating = 'HARD' | 'GOOD' | 'EASY';
@@ -62,3 +62,4 @@ export const scheduleSkipped = (now: Dayjs) => {
     lastReviewAt: now.toDate(),
   };
 };
+

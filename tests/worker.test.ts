@@ -260,6 +260,63 @@ describe('worker integration', () => {
     expect(telegram.sendMessage).not.toHaveBeenCalled();
   });
 
+  it('still sends due stage 0 cards when older due cards are interval-limited', async () => {
+    vi.spyOn(telegram, 'sendMessage').mockResolvedValue({} as any);
+
+    await prisma.user.create({
+      data: {
+        id: userId,
+        notificationsEnabled: true,
+        quietHoursStartMinutes: 0,
+        quietHoursEndMinutes: 0,
+        timezone: 'UTC',
+        notificationIntervalMinutes: 60,
+        maxNotificationsPerDay: 100,
+        lastNotificationAt: new Date(),
+      },
+    });
+
+    await prisma.word.create({
+      data: {
+        userId,
+        wordEn: 'old-card',
+        translationRu: 'СЃС‚Р°СЂР°СЏ РєР°СЂС‚РѕС‡РєР°',
+        review: {
+          create: {
+            userId,
+            stage: 1,
+            intervalMinutes: 25,
+            nextReviewAt: new Date(Date.now() - 10 * 60 * 1000),
+          },
+        },
+      },
+    });
+
+    const newWord = await prisma.word.create({
+      data: {
+        userId,
+        wordEn: 'new-card',
+        translationRu: 'РЅРѕРІР°СЏ РєР°СЂС‚РѕС‡РєР°',
+        review: {
+          create: {
+            userId,
+            stage: 0,
+            intervalMinutes: 5,
+            nextReviewAt: new Date(Date.now() - 1000),
+          },
+        },
+      },
+    });
+
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+    await processUser(user);
+
+    expect(telegram.sendMessage).toHaveBeenCalledTimes(1);
+    const session = await prisma.userSession.findUnique({ where: { userId } });
+    expect(session?.state).toBe('WAITING_ANSWER');
+    expect(session?.wordId).toBe(newWord.id);
+  });
+
   it('does not send when there are no due reviews', async () => {
     vi.spyOn(telegram, 'sendMessage').mockResolvedValue({} as any);
 

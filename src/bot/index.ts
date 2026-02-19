@@ -15,7 +15,7 @@ import { prisma } from '../db/client';
 import { ensureSession, getSession, resetState, setState } from '../services/sessionService';
 import { suggestTranslation, detectLanguage, translateAuto } from '../services/translation';
 import { addWordForUser, applyRating, loadReviewWithWord, DailyWordLimitError, DuplicateWordError } from '../services/reviewService';
-import { CardDirection, ReviewResult } from '../generated/prisma';
+import { CardDirection, ReviewResult } from '../generated/prisma/client';
 import { checkAnswer } from '../services/answerChecker';
 import { Rating } from '../services/reviewScheduler';
 import { minutesToTimeString } from '../utils/time';
@@ -670,3 +670,4 @@ if (require.main === module) {
 }
 
 export { bot };
+

@@ -1,4 +1,4 @@
-﻿import { CardDirection } from '../generated/prisma';
+import { CardDirection } from '../generated/prisma/client';
 import { answersEqual, answersEqualEnglish } from '../utils/text';
 
 export type AnswerCheckResult = {
@@ -20,3 +20,4 @@ export const checkAnswer = (
   const correct = answersEqual(expectedRu, userAnswer);
   return { correct, normalizedExpected: expectedRu };
 };
+

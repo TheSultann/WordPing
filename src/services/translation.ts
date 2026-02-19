@@ -76,18 +76,22 @@ const readGeminiModels = (): string[] => {
   return Array.from(new Set([primary, ...fallback]));
 };
 
-const detectLanguage = (text: string): Lang => {
+export const detectLanguage = (text: string): Lang => {
   const value = text.trim().toLowerCase();
   if (!value) return 'en';
 
   // Cyrillic text is treated as Russian.
   if (/[\u0400-\u04FF]/u.test(value)) return 'ru';
 
-  // Uzbek-specific latin markers.
-  if (/[\u02BB\u02BC\u2019`]/u.test(value)) return 'uz';
-  if (/(o['\u02BB\u02BC\u2019`]|g['\u02BB\u02BC\u2019`]|sh|ch|ng|yo|ya|yu)/iu.test(value)) return 'uz';
+  // Uzbek-specific latin markers: apostrophe-based letters (o', g').
+  if (/[\u02BB\u02BC]/u.test(value)) return 'uz';
+  if (/(o['\u02BB\u02BC\u2019`]|g['\u02BB\u02BC\u2019`])/iu.test(value)) return 'uz';
 
-  const uzWords = ['salom', 'rahmat', 'yaxshi', 'bugun', 'qanday', 'iltimos', 'dunyo'];
+  // Known Uzbek words (reliable, not found in English).
+  const uzWords = [
+    'salom', 'rahmat', 'yaxshi', 'bugun', 'qanday', 'iltimos', 'dunyo',
+    'tushun', 'bilaman', 'kerak', 'bormi', 'nima', 'qayerda', 'xayr',
+  ];
   if (uzWords.some((word) => value.includes(word))) return 'uz';
 
   return 'en';
@@ -326,9 +330,12 @@ export const translateAuto = async (input: string, target: Lang = 'ru'): Promise
 };
 
 /**
- * Auto-translate user input to RU.
+ * Auto-translate user input.
  * Used by bot add-flow to prefill suggested translation.
+ * @param word - the word/phrase to translate
+ * @param targetLang - target language ('ru' by default, 'uz' for Uzbek users)
  */
-export const suggestTranslation = async (word: string): Promise<string | null> => {
-  return translateAuto(word, 'ru');
+export const suggestTranslation = async (word: string, targetLang: 'ru' | 'uz' = 'ru'): Promise<string | null> => {
+  const target: Lang = targetLang === 'uz' ? 'uz' : 'ru';
+  return translateAuto(word, target);
 };

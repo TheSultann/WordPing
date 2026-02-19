@@ -13,7 +13,7 @@ import {
 } from '../services/userService';
 import { prisma } from '../db/client';
 import { ensureSession, getSession, resetState, setState } from '../services/sessionService';
-import { suggestTranslation } from '../services/translation';
+import { suggestTranslation, detectLanguage, translateAuto } from '../services/translation';
 import { addWordForUser, applyRating, loadReviewWithWord, DailyWordLimitError, DuplicateWordError } from '../services/reviewService';
 import { CardDirection, ReviewResult } from '../generated/prisma';
 import { checkAnswer } from '../services/answerChecker';
@@ -269,12 +269,37 @@ bot.on('text', async (ctx) => {
   const session = await getSession(BigInt(userId));
   const text = normalizeWhitespace(ctx.message.text);
 
-  const handleAddFlow = async (wordEn: string) => {
-    const suggestion = await suggestTranslation(wordEn);
+  const handleAddFlow = async (input: string) => {
+    const inputLang = detectLanguage(input);
+
+    let finalEn: string;
+    let finalTranslation: string | null = null;
+
+    if (inputLang === 'ru' || inputLang === 'uz') {
+      // User typed in RU/UZ — translate to English and swap
+      const englishTranslation = await translateAuto(input, 'en');
+      if (!englishTranslation) {
+        // Could not translate to English — ask user for the English word
+        await setState(BigInt(userId), 'ADDING_WORD_WAIT_RU_MANUAL', {
+          payload: { wordEn: input },
+        });
+        await ctx.reply(t(lang, 'add.noSuggest', { en: input }), { parse_mode: 'HTML' });
+        return;
+      }
+      finalEn = englishTranslation;
+      finalTranslation = input; // original RU/UZ text becomes the translation
+    } else {
+      // User typed in English — translate to user's native language
+      finalEn = input;
+      const targetLang = lang === 'uz' ? 'uz' : 'ru' as const;
+      finalTranslation = await suggestTranslation(input, targetLang);
+    }
+
+    // Check for duplicate
     const existing = await prisma.word.findFirst({
       where: {
         userId: BigInt(userId),
-        wordEn: { equals: wordEn.trim(), mode: 'insensitive' },
+        wordEn: { equals: finalEn.trim(), mode: 'insensitive' },
       },
     });
     if (existing) {
@@ -282,16 +307,17 @@ bot.on('text', async (ctx) => {
       await resetState(BigInt(userId));
       return;
     }
-    if (suggestion) {
+
+    if (finalTranslation) {
       await setState(BigInt(userId), 'ADDING_WORD_CONFIRM_TRANSLATION', {
-        payload: { wordEn, translationRu: suggestion },
+        payload: { wordEn: finalEn, translationRu: finalTranslation },
       });
-      await ctx.reply(t(lang, 'add.suggest', { tr: suggestion }), { parse_mode: 'HTML', ...confirmKeyboard(lang) });
+      await ctx.reply(t(lang, 'add.suggest', { en: finalEn, tr: finalTranslation }), { parse_mode: 'HTML', ...confirmKeyboard(lang) });
     } else {
       await setState(BigInt(userId), 'ADDING_WORD_WAIT_RU_MANUAL', {
-        payload: { wordEn },
+        payload: { wordEn: finalEn },
       });
-      await ctx.reply(t(lang, 'add.noSuggest', { en: wordEn }), { parse_mode: 'HTML' });
+      await ctx.reply(t(lang, 'add.noSuggest', { en: finalEn }), { parse_mode: 'HTML' });
     }
   };
 
@@ -396,11 +422,11 @@ bot.on('text', async (ctx) => {
         if (error instanceof DailyWordLimitError) {
           await ctx.reply(t(lang, 'add.dailyLimit', { limit: error.limit }), { parse_mode: 'HTML' });
         } else
-        if (error instanceof DuplicateWordError) {
-          await ctx.reply(t(lang, 'add.duplicate', { en: payload.wordEn }), { parse_mode: 'HTML' });
-        } else {
-          await ctx.reply(error instanceof Error ? error.message : t(lang, 'add.error'), { parse_mode: 'HTML' });
-        }
+          if (error instanceof DuplicateWordError) {
+            await ctx.reply(t(lang, 'add.duplicate', { en: payload.wordEn }), { parse_mode: 'HTML' });
+          } else {
+            await ctx.reply(error instanceof Error ? error.message : t(lang, 'add.error'), { parse_mode: 'HTML' });
+          }
         await resetState(BigInt(userId));
       }
       break;
@@ -581,11 +607,11 @@ bot.on('callback_query', async (ctx) => {
       if (error instanceof DailyWordLimitError) {
         await ctx.reply(t(lang, 'add.dailyLimit', { limit: error.limit }), { parse_mode: 'HTML' });
       } else
-      if (error instanceof DuplicateWordError) {
-        await ctx.reply(t(lang, 'add.duplicate', { en: payload.wordEn }), { parse_mode: 'HTML' });
-      } else {
-        await ctx.reply(error instanceof Error ? error.message : t(lang, 'add.error'), { parse_mode: 'HTML' });
-      }
+        if (error instanceof DuplicateWordError) {
+          await ctx.reply(t(lang, 'add.duplicate', { en: payload.wordEn }), { parse_mode: 'HTML' });
+        } else {
+          await ctx.reply(error instanceof Error ? error.message : t(lang, 'add.error'), { parse_mode: 'HTML' });
+        }
       await resetState(BigInt(userId));
     }
     await ctx.answerCbQuery();

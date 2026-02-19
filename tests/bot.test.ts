@@ -9,9 +9,13 @@ let prisma: PrismaClient;
 
 const userId = 900000003;
 
-vi.mock('../src/services/translation', () => ({
-  suggestTranslation: vi.fn().mockResolvedValue(null),
-}));
+vi.mock('../src/services/translation', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/services/translation')>();
+  return {
+    ...actual,
+    suggestTranslation: vi.fn().mockResolvedValue(null),
+  };
+});
 
 beforeAll(async () => {
   process.env.BOT_TOKEN = process.env.BOT_TOKEN ?? 'test_bot_token';

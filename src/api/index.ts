@@ -403,7 +403,10 @@ app.delete('/api/words/:id', async (req, res) => {
 
 app.get('/api/admin/overview', async (_req, res) => {
   const now = nowUtc();
-  const startUtcDay = now.startOf('day').toDate();
+  // lastDoneDate сохраняется как начало дня в таймзоне пользователя, переведённое в UTC.
+  // Чтобы корректно посчитать "активных сегодня" для пользователей из разных часовых поясов,
+  // берём окно последних 24 часов, а не границу текущего UTC-дня.
+  const activeWindowStart = now.subtract(24, 'hour').toDate();
   const weekAgo = now.subtract(7, 'day').toDate();
 
   const [
@@ -421,7 +424,7 @@ app.get('/api/admin/overview', async (_req, res) => {
     }),
     prisma.user.count({
       where: {
-        lastDoneDate: { gte: startUtcDay },
+        lastDoneDate: { gte: activeWindowStart },
         doneTodayCount: { gt: 0 },
       },
     }),

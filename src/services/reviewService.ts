@@ -144,6 +144,11 @@ export const applyRating = async (
 ) => {
   const now = nowUtc();
   const schedule = scheduleNextReview(review, rating, now);
+  const prevHardStreak = (review as any).hardStreak ?? 0;
+  const hardStreak =
+    rating === 'HARD'
+      ? prevHardStreak + 1
+      : 0;
   return prisma.review.update({
     where: { id: review.id },
     data: {
@@ -154,6 +159,7 @@ export const applyRating = async (
       lastDirection: direction,
       lastResult: result,
       lastAnswerText: answerText ?? null,
+      hardStreak,
     },
   });
 };
@@ -169,6 +175,7 @@ export const markSkipped = async (review: Review) => {
       nextReviewAt: schedule.nextReviewAt,
       lastReviewAt: schedule.lastReviewAt,
       lastResult: 'SKIPPED',
+      hardStreak: 0,
     },
   });
 };

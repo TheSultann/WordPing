@@ -318,7 +318,15 @@ const App = () => {
   }, [me?.id, telegramUser?.id, devUserId]);
   const isAdmin = adminCandidateId === ADMIN_ID;
 
-  const t = (key: CopyKey) => COPY[lang]?.[key] ?? COPY.ru[key];
+  const t = (key: CopyKey, params?: Record<string, string | number>) => {
+    let result: string = COPY[lang]?.[key] ?? COPY.ru[key];
+    if (params) {
+      Object.entries(params).forEach(([k, v]) => {
+        result = result.replaceAll(`{${k}}`, String(v));
+      });
+    }
+    return result;
+  };
   const getWordStatusLabel = (status: WordStatus) => {
     if (status === 'learned') return t('learned');
     if (status === 'due') return t('dueToday');

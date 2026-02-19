@@ -60,6 +60,24 @@ const sendCard = async (userId: number, direction: CardDirection, phrase: string
   await telegram.sendMessage(userId, prompt);
 };
 
+const buildHint = (direction: CardDirection, word: { wordEn: string; translationRu: string }, hardStreak?: number) => {
+  if ((hardStreak ?? 0) < 2) return null;
+  if (direction === 'EN_TO_RU') {
+    // Подсказка: первая буква перевода + длина, без полного слова
+    const tr = word.translationRu.trim();
+    if (!tr) return null;
+    if (tr.length <= 2) return `💡 Подсказка: перевод начинается на “${tr[0] ?? ''}”`;
+    const mask = `${tr[0]}${'_'.repeat(Math.max(tr.length - 1, 1))}`;
+    return `💡 Подсказка: перевод ${tr.length} букв, начинаетcя как “${mask}”`;
+  }
+  // RU_TO_EN: даём маску английского слова
+  const src = word.wordEn.trim();
+  if (!src) return null;
+  if (src.length <= 2) return `💡 Подсказка: начинается на “${src[0] ?? ''}”`;
+  const masked = `${src[0]}${'_'.repeat(Math.max(src.length - 2, 1))}${src[src.length - 1]}`;
+  return `💡 Подсказка: ${masked}`;
+};
+
 export const handleReminders = async (user: any, session: SessionLike, canNotify: boolean) => {
   if (!session.sentAt || !session.reviewId) return;
   const sentAt = dayjs(session.sentAt);
@@ -128,6 +146,7 @@ export const processUser = async (user: any) => {
 
   const direction = pickDirection(normalizedUser.directionMode);
   const phrase = direction === 'RU_TO_EN' ? review.word.translationRu : review.word.wordEn;
+  const hint = buildHint(direction, review.word, (review as any).hardStreak);
 
   // OPTIMISTIC LOCK: Only proceed if we can transition from IDLE atomically
   const locked = await setSessionActiveIfIdle(normalizedUser.id, 'WAITING_ANSWER', {
@@ -147,7 +166,8 @@ export const processUser = async (user: any) => {
   // If locked successfully, send the message
   try {
     const lang = (normalizedUser.language as Lang) || 'ru';
-    const prompt = `${t(lang, 'worker.verifyPrompt', { phrase })}\n${t(lang, 'worker.answerPrompt')}`;
+    const base = `${t(lang, 'worker.verifyPrompt', { phrase })}\n${t(lang, 'worker.answerPrompt')}`;
+    const prompt = hint ? `${base}\n\n${hint}` : base;
     await telegram.sendMessage(Number(normalizedUser.id), prompt, { parse_mode: 'HTML' });
     // await sendCard(Number(normalizedUser.id), direction, phrase); // Replaced inline for localization
     await registerNotification(normalizedUser);

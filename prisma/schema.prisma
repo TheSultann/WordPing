@@ -99,6 +99,7 @@ model Review {
   id             Int           @id @default(autoincrement())
   userId         BigInt
   wordId         Int           @unique
+  hardStreak     Int           @default(0)
   lastReviewAt   DateTime?
   nextReviewAt   DateTime?
   stage          Int           @default(0)

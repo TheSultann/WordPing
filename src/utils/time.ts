@@ -5,7 +5,8 @@ import timezone from 'dayjs/plugin/timezone';
 dayjs.extend(utc);
 dayjs.extend(timezone);
 
-export const DEFAULT_TIMEZONE = 'Asia/Tashkent';
+// Use UTC by default so new users without tz не сдвигают окна уведомлений.
+export const DEFAULT_TIMEZONE = 'UTC';
 
 const UTC_LIKE = new Set([
   'utc',

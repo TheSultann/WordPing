@@ -48,6 +48,73 @@
 
 Логи пишутся в stdout/stderr (Telegraf и воркер).
 
+## Обновление сервера (prod)
+Порядок обновления:
+1. Перейти в проект:
+   - `cd ~/apps/WordPing`
+2. Проверить, что нет локальных правок:
+   - `git status --short`
+3. Подтянуть код:
+   - `git pull --rebase`
+4. Обновить зависимости:
+   - `npm ci`
+5. Применить миграции:
+   - `npx prisma migrate deploy`
+6. Пересобрать Prisma Client:
+   - `npx prisma generate`
+7. Собрать проект:
+   - `npm run build`
+8. Перезапустить процессы:
+   - `pm2 restart wordping-api wordping-bot wordping-worker --update-env`
+9. Очистить и проверить логи:
+   - `pm2 flush`
+   - `pm2 logs wordping-worker --lines 60`
+   - `pm2 logs wordping-bot --lines 40`
+   - `pm2 logs wordping-api --lines 40`
+
+Короткий блок копипастой:
+```bash
+cd ~/apps/WordPing
+git status --short
+git pull --rebase
+npm ci
+npx prisma migrate deploy
+npx prisma generate
+npm run build
+pm2 restart wordping-api wordping-bot wordping-worker --update-env
+pm2 flush
+pm2 logs wordping-worker --lines 60
+```
+
+## Если `git pull` задаёт вопросы
+Частые случаи и что делать:
+
+1. `Please commit your changes or stash them before you merge`
+   - На сервере есть локальные правки. Сохрани их:
+   - `git stash push -u -m "server-temp-before-sync"`
+   - Потом снова:
+   - `git pull --rebase`
+
+2. Конфликты при `pull --rebase` (`CONFLICT`)
+   - Посмотреть файлы:
+   - `git status`
+   - После исправления:
+   - `git add <файл>`
+   - `git rebase --continue`
+   - Если нужно отменить:
+   - `git rebase --abort`
+
+3. Открылся редактор (vim/nano) и ждёт сообщение
+   - Обычно это merge/rebase commit message.
+   - Для `vim`: `Esc`, потом `:wq`, Enter.
+   - Для `nano`: `Ctrl+O`, Enter, `Ctrl+X`.
+
+4. Хочешь избегать лишних вопросов от `git pull`
+   - Один раз на сервере:
+   - `git config pull.rebase true`
+   - `git config rebase.autoStash true`
+   - Тогда обычный `git pull` будет вести себя предсказуемо.
+
 ## Mini App (Web) и API
 Локальный запуск:
 1. Установи зависимости веб-приложения:

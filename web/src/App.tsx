@@ -249,7 +249,8 @@ type WordStatus = 'learned' | 'due' | 'new';
 const LANG_STORAGE_KEY = 'wordping.lang';
 const DATA_CACHE_TTL_MS = 30_000;
 const LEARNED_STAGE_MIN = 4;
-const ADMIN_USERS_PAGE_SIZE = 20;
+const ADMIN_USERS_FIRST_PAGE_SIZE = 3;
+const ADMIN_USERS_NEXT_PAGE_SIZE = 15;
 
 const resolveWordStatus = (word: WordItem): WordStatus => {
   if (word.nextReviewAt) {
@@ -360,7 +361,7 @@ const App = () => {
     const firstLast = `${user.tgFirstName ?? ''} ${user.tgLastName ?? ''}`.trim();
     if (firstLast) return firstLast;
     if (user.tgUsername) return `@${user.tgUsername}`;
-    return `#${user.id}`;
+    return lang === 'uz' ? 'Nomsiz' : 'Без имени';
   };
 
   const formatAdminCardPrimaryName = (user: AdminUserSummary) => {
@@ -629,10 +630,11 @@ const App = () => {
     const raw = (overrideQuery ?? adminQuery).trim();
     const append = options?.append ?? false;
     const offset = append ? adminUsersOffset : 0;
+    const limit = append ? ADMIN_USERS_NEXT_PAGE_SIZE : ADMIN_USERS_FIRST_PAGE_SIZE;
     try {
       setAdminUsersLoading(true);
       setAdminUsersError('');
-      const response = await api.getAdminUsers(raw || undefined, ADMIN_USERS_PAGE_SIZE, offset);
+      const response = await api.getAdminUsers(raw || undefined, limit, offset);
       const list = response.items ?? [];
       setAdminUsers((prev) => (append ? [...prev, ...list] : list));
       setAdminUsersOffset(offset + list.length);
@@ -1164,7 +1166,7 @@ const App = () => {
               </div>
 
               <div className="admin-main-grid">
-                <div className="panel admin-block">
+                <div className="panel admin-block admin-block--lookup">
                   <h2><Search size={18} /> {t('adminLookupTitle')}</h2>
                   <div className="admin-search">
                     <input
@@ -1312,7 +1314,7 @@ const App = () => {
                   </div>
                 </div>
 
-                <div className="panel admin-block">
+                <div className="panel admin-block admin-block--broadcast">
                   <h2><Bell size={18} /> {t('adminBroadcastTitle')}</h2>
                   <div className="admin-message">
                     <textarea

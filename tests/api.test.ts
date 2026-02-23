@@ -310,18 +310,19 @@ describe('API integration', () => {
     expect(byId.body.items.some((item: any) => item.id === userId.toString())).toBe(true);
   });
 
-  it('GET /api/admin/users places users with lastSeenAt before null lastSeenAt', async () => {
+  it('GET /api/admin/users sorts users by registration date (newest first)', async () => {
     await prisma.user.create({
       data: {
         id: seenUserId,
         tgUsername: 'p2sort_seen',
-        lastSeenAt: new Date('2026-01-10T00:00:00.000Z'),
+        createdAt: new Date('2026-01-10T00:00:00.000Z'),
       },
     });
     await prisma.user.create({
       data: {
         id: unseenUserId,
         tgUsername: 'p2sort_unseen',
+        createdAt: new Date('2026-01-11T00:00:00.000Z'),
       },
     });
 
@@ -335,7 +336,7 @@ describe('API integration', () => {
     const unseenIndex = ids.indexOf(unseenUserId.toString());
     expect(seenIndex).toBeGreaterThanOrEqual(0);
     expect(unseenIndex).toBeGreaterThanOrEqual(0);
-    expect(seenIndex).toBeLessThan(unseenIndex);
+    expect(unseenIndex).toBeLessThan(seenIndex);
   });
 
   it('GET /api/admin/users/:id validates id and 404', async () => {

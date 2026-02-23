@@ -542,7 +542,7 @@ app.get('/api/admin/users', async (req, res) => {
 
   const users = await prisma.user.findMany({
     where,
-    orderBy: [{ lastSeenAt: { sort: 'desc', nulls: 'last' } }, { createdAt: 'desc' }, { id: 'desc' }],
+    orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
     skip,
     take: take + 1,
     select: {

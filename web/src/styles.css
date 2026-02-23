@@ -1380,6 +1380,14 @@ input:checked+.toggle-slider:before {
   padding: 18px;
 }
 
+.admin-block--broadcast {
+  order: 1;
+}
+
+.admin-block--lookup {
+  order: 2;
+}
+
 .admin-block h2 {
   margin-bottom: 12px;
 }

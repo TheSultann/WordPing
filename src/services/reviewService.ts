@@ -89,22 +89,44 @@ export const addWordForUser = async (
     }
   }
 
+  const existingWordsCount = await prisma.word.count({
+    where: { userId },
+  });
+
   try {
-    const created = await prisma.word.create({
-      data: {
-        userId,
-        wordEn: wordEn.trim(),
-        translationRu: translationRu.trim(),
-        review: {
-          create: {
-            userId,
-            stage: schedule.stage,
-            intervalMinutes: schedule.intervalMinutes,
-            nextReviewAt: schedule.nextReviewAt,
+    const created = await prisma.$transaction(async (tx) => {
+      const word = await tx.word.create({
+        data: {
+          userId,
+          wordEn: wordEn.trim(),
+          translationRu: translationRu.trim(),
+          review: {
+            create: {
+              userId,
+              stage: schedule.stage,
+              intervalMinutes: schedule.intervalMinutes,
+              nextReviewAt: schedule.nextReviewAt,
+            },
           },
         },
-      },
-      select: { id: true, review: { select: { id: true } } },
+        select: { id: true, review: { select: { id: true } } },
+      });
+
+      // Referral counts only after the invited user's first successfully added word.
+      if (existingWordsCount === 0) {
+        await tx.user.updateMany({
+          where: {
+            id: userId,
+            referredById: { not: null },
+            referralQualifiedAt: null,
+          },
+          data: {
+            referralQualifiedAt: now.toDate(),
+          },
+        });
+      }
+
+      return word;
     });
     return { wordId: created.id, reviewId: created.review?.id || 0 };
   } catch (error) {
@@ -138,7 +160,7 @@ export const findDueReviewByStage = async (userId: bigint, stage: number, now = 
       stage,
       nextReviewAt: { lte: now.toDate() },
     },
-    orderBy: { nextReviewAt: 'asc' },
+    orderBy: [{ nextReviewAt: 'asc' }, { id: 'asc' }],
     include: { word: true },
   });
 };

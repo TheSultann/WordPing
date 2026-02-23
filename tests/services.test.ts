@@ -15,9 +15,12 @@ let resetProgressIfNeeded: (user: any) => Promise<any>;
 let setQuietHours: (telegramId: number, startMinutes: number, endMinutes: number) => Promise<any>;
 let setNotificationInterval: (telegramId: number, minutes: number) => Promise<any>;
 let setNotificationLimit: (telegramId: number, maxPerDay: number) => Promise<any>;
+let countReferrals: (telegramId: bigint | number) => Promise<number>;
 let DailyWordLimitErrorCtor: any;
 
 const userId = BigInt(900000002);
+const referrerId = BigInt(900000003);
+const invitedId = BigInt(900000004);
 
 beforeAll(async () => {
   const testUrl = await prepareTestDatabase();
@@ -34,6 +37,7 @@ beforeAll(async () => {
   setQuietHours = userService.setQuietHours;
   setNotificationInterval = userService.setNotificationInterval;
   setNotificationLimit = userService.setNotificationLimit;
+  countReferrals = userService.countReferrals;
 
   addWordForUser = reviewService.addWordForUser;
   findDueReview = reviewService.findDueReview;
@@ -46,10 +50,14 @@ beforeAll(async () => {
 
 beforeEach(async () => {
   await cleanupUserData(prisma, userId);
+  await cleanupUserData(prisma, invitedId);
+  await cleanupUserData(prisma, referrerId);
 });
 
 afterAll(async () => {
   await cleanupUserData(prisma, userId);
+  await cleanupUserData(prisma, invitedId);
+  await cleanupUserData(prisma, referrerId);
   await prisma?.$disconnect();
 });
 
@@ -181,5 +189,26 @@ describe('service integration', () => {
 
     const limitUpdated = await setNotificationLimit(Number(userId), -5);
     expect(limitUpdated.maxNotificationsPerDay).toBe(5);
+  });
+
+  it('counts referral only after invited user adds first word', async () => {
+    await prisma.user.create({ data: { id: referrerId } });
+    await prisma.user.create({
+      data: {
+        id: invitedId,
+        referredById: referrerId,
+      },
+    });
+
+    expect(await countReferrals(referrerId)).toBe(0);
+
+    await addWordForUser(invitedId, 'qualified', 'qualified-ru');
+
+    expect(await countReferrals(referrerId)).toBe(1);
+    const invited = await prisma.user.findUnique({
+      where: { id: invitedId },
+      select: { referralQualifiedAt: true },
+    });
+    expect(invited?.referralQualifiedAt).toBeTruthy();
   });
 });

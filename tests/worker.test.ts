@@ -38,6 +38,40 @@ afterAll(async () => {
 });
 
 describe('worker integration', () => {
+  const seedHintUser = async () => {
+    await prisma.user.create({
+      data: {
+        id: userId,
+        notificationsEnabled: true,
+        quietHoursStartMinutes: 0,
+        quietHoursEndMinutes: 0,
+        timezone: 'UTC',
+        notificationIntervalMinutes: 5,
+        maxNotificationsPerDay: 100,
+      },
+    });
+  };
+
+  const seedHintReview = async (hardStreak: number, wordEn = 'permanent', translationRu = 'постоянный') => {
+    await prisma.word.create({
+      data: {
+        userId,
+        wordEn,
+        translationRu,
+        review: {
+          create: {
+            userId,
+            stage: 1,
+            hardStreak,
+            intervalMinutes: 25,
+            nextReviewAt: new Date(Date.now() - 1000),
+            lastReviewAt: new Date(Date.now() - 2 * 60 * 1000),
+          },
+        },
+      },
+    });
+  };
+
   it('sends a due card and updates session + counters', async () => {
     vi.spyOn(telegram, 'sendMessage').mockResolvedValue({} as any);
 
@@ -260,6 +294,66 @@ describe('worker integration', () => {
     expect(telegram.sendMessage).not.toHaveBeenCalled();
   });
 
+  it('shows first-letter hint after first hard for RU_TO_EN', async () => {
+    const sendSpy = vi.spyOn(telegram, 'sendMessage').mockResolvedValue({} as any);
+    vi.spyOn(Math, 'random').mockReturnValue(0.1); // RU_TO_EN
+
+    await seedHintUser();
+    await seedHintReview(1);
+
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+    await processUser(user);
+
+    expect(sendSpy).toHaveBeenCalledTimes(1);
+    const [, prompt] = sendSpy.mock.calls[0] as [number, string, any];
+    expect(prompt).toContain('Подсказка💡: p________');
+  });
+
+  it('shows first-and-last-letter hint after second hard for RU_TO_EN', async () => {
+    const sendSpy = vi.spyOn(telegram, 'sendMessage').mockResolvedValue({} as any);
+    vi.spyOn(Math, 'random').mockReturnValue(0.1); // RU_TO_EN
+
+    await seedHintUser();
+    await seedHintReview(2);
+
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+    await processUser(user);
+
+    expect(sendSpy).toHaveBeenCalledTimes(1);
+    const [, prompt] = sendSpy.mock.calls[0] as [number, string, any];
+    expect(prompt).toContain('Подсказка💡: p_______t');
+  });
+
+  it('shows first-second-and-last-letter hint after third hard for RU_TO_EN', async () => {
+    const sendSpy = vi.spyOn(telegram, 'sendMessage').mockResolvedValue({} as any);
+    vi.spyOn(Math, 'random').mockReturnValue(0.1); // RU_TO_EN
+
+    await seedHintUser();
+    await seedHintReview(3);
+
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+    await processUser(user);
+
+    expect(sendSpy).toHaveBeenCalledTimes(1);
+    const [, prompt] = sendSpy.mock.calls[0] as [number, string, any];
+    expect(prompt).toContain('Подсказка💡: pe______t');
+  });
+
+  it('builds unicode hint correctly for EN_TO_RU', async () => {
+    const sendSpy = vi.spyOn(telegram, 'sendMessage').mockResolvedValue({} as any);
+    vi.spyOn(Math, 'random').mockReturnValue(0.9); // EN_TO_RU
+
+    await seedHintUser();
+    await seedHintReview(3);
+
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+    await processUser(user);
+
+    expect(sendSpy).toHaveBeenCalledTimes(1);
+    const [, prompt] = sendSpy.mock.calls[0] as [number, string, any];
+    expect(prompt).toContain('Подсказка💡: по_______й');
+  });
+
   it('still sends due stage 0 cards when older due cards are interval-limited', async () => {
     vi.spyOn(telegram, 'sendMessage').mockResolvedValue({} as any);
 
@@ -315,6 +409,144 @@ describe('worker integration', () => {
     const session = await prisma.userSession.findUnique({ where: { userId } });
     expect(session?.state).toBe('WAITING_ANSWER');
     expect(session?.wordId).toBe(newWord.id);
+  });
+
+  it('does not bypass daily limit for first stage 0 cards', async () => {
+    vi.spyOn(telegram, 'sendMessage').mockResolvedValue({} as any);
+
+    await prisma.user.create({
+      data: {
+        id: userId,
+        notificationsEnabled: true,
+        quietHoursStartMinutes: 0,
+        quietHoursEndMinutes: 0,
+        timezone: 'UTC',
+        notificationIntervalMinutes: 60,
+        maxNotificationsPerDay: 1,
+        notificationsSentToday: 1,
+        notificationsDate: new Date(),
+        lastNotificationAt: new Date(),
+      },
+    });
+
+    await prisma.word.create({
+      data: {
+        userId,
+        wordEn: 'limit-stage0',
+        translationRu: 'лимитная карточка',
+        review: {
+          create: {
+            userId,
+            stage: 0,
+            intervalMinutes: 5,
+            nextReviewAt: new Date(Date.now() - 1000),
+          },
+        },
+      },
+    });
+
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+    await processUser(user);
+
+    expect(telegram.sendMessage).not.toHaveBeenCalled();
+    const session = await prisma.userSession.findUnique({ where: { userId } });
+    expect(session?.state).toBe('IDLE');
+  });
+
+  it('prioritizes oldest due stage 0 card to keep FIFO queue order', async () => {
+    const sendSpy = vi.spyOn(telegram, 'sendMessage').mockResolvedValue({} as any);
+
+    await prisma.user.create({
+      data: {
+        id: userId,
+        notificationsEnabled: true,
+        quietHoursStartMinutes: 0,
+        quietHoursEndMinutes: 0,
+        timezone: 'UTC',
+        notificationIntervalMinutes: 60,
+        maxNotificationsPerDay: 100,
+        lastNotificationAt: new Date(),
+      },
+    });
+
+    const olderWord = await prisma.word.create({
+      data: {
+        userId,
+        wordEn: 'older-stage0',
+        translationRu: 'старая карточка',
+        review: {
+          create: {
+            userId,
+            stage: 0,
+            intervalMinutes: 5,
+            nextReviewAt: new Date(Date.now() - 10 * 60 * 1000),
+          },
+        },
+      },
+    });
+
+    await prisma.word.create({
+      data: {
+        userId,
+        wordEn: 'newer-stage0',
+        translationRu: 'новая карточка',
+        review: {
+          create: {
+            userId,
+            stage: 0,
+            intervalMinutes: 5,
+            nextReviewAt: new Date(Date.now() - 1000),
+          },
+        },
+      },
+    });
+
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+    await processUser(user);
+
+    expect(sendSpy).toHaveBeenCalledTimes(1);
+    const session = await prisma.userSession.findUnique({ where: { userId } });
+    expect(session?.state).toBe('WAITING_ANSWER');
+    expect(session?.wordId).toBe(olderWord.id);
+  });
+
+  it('does not bypass interval for stage 0 cards after first review', async () => {
+    vi.spyOn(telegram, 'sendMessage').mockResolvedValue({} as any);
+
+    await prisma.user.create({
+      data: {
+        id: userId,
+        notificationsEnabled: true,
+        quietHoursStartMinutes: 0,
+        quietHoursEndMinutes: 0,
+        timezone: 'UTC',
+        notificationIntervalMinutes: 60,
+        maxNotificationsPerDay: 100,
+        lastNotificationAt: new Date(),
+      },
+    });
+
+    await prisma.word.create({
+      data: {
+        userId,
+        wordEn: 'stage0-reviewed',
+        translationRu: 'первая проверка уже была',
+        review: {
+          create: {
+            userId,
+            stage: 0,
+            intervalMinutes: 5,
+            nextReviewAt: new Date(Date.now() - 1000),
+            lastReviewAt: new Date(Date.now() - 2 * 60 * 1000),
+          },
+        },
+      },
+    });
+
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+    await processUser(user);
+
+    expect(telegram.sendMessage).not.toHaveBeenCalled();
   });
 
   it('does not send when there are no due reviews', async () => {

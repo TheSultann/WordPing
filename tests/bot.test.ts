@@ -14,6 +14,7 @@ vi.mock('../src/services/translation', async (importOriginal) => {
   return {
     ...actual,
     suggestTranslation: vi.fn().mockResolvedValue(null),
+    detectAndTranslateWithGemini: vi.fn().mockResolvedValue(null),
   };
 });
 

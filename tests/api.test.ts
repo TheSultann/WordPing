@@ -8,6 +8,8 @@ let app: any;
 let prisma: PrismaClient;
 const userId = BigInt(900000001);
 const otherUserId = BigInt(900000010);
+const seenUserId = BigInt(900000011);
+const unseenUserId = BigInt(900000012);
 
 beforeAll(async () => {
   const testUrl = await prepareTestDatabase();
@@ -26,11 +28,15 @@ beforeAll(async () => {
 beforeEach(async () => {
   await cleanupUserData(prisma, userId);
   await cleanupUserData(prisma, otherUserId);
+  await cleanupUserData(prisma, seenUserId);
+  await cleanupUserData(prisma, unseenUserId);
 });
 
 afterAll(async () => {
   await cleanupUserData(prisma, userId);
   await cleanupUserData(prisma, otherUserId);
+  await cleanupUserData(prisma, seenUserId);
+  await cleanupUserData(prisma, unseenUserId);
   await prisma?.$disconnect();
 });
 
@@ -272,6 +278,64 @@ describe('API integration', () => {
     expect(res.status).toBe(200);
     expect(res.body.wordsCount).toBe(1);
     expect(res.body.learnedCount).toBe(1);
+  });
+
+  it('GET /api/admin/users supports search by id, username and name', async () => {
+    await prisma.user.create({
+      data: {
+        id: userId,
+        tgFirstName: 'Sultan',
+        tgLastName: 'Admin',
+        tgUsername: 'sultan_admin',
+      },
+    });
+
+    const byName = await request(app)
+      .get('/api/admin/users?q=sultan')
+      .set('x-dev-user-id', userId.toString());
+    expect(byName.status).toBe(200);
+    expect(Array.isArray(byName.body.items)).toBe(true);
+    expect(byName.body.items.some((item: any) => item.id === userId.toString())).toBe(true);
+
+    const byUsername = await request(app)
+      .get('/api/admin/users?q=@sultan_admin')
+      .set('x-dev-user-id', userId.toString());
+    expect(byUsername.status).toBe(200);
+    expect(byUsername.body.items.some((item: any) => item.id === userId.toString())).toBe(true);
+
+    const byId = await request(app)
+      .get(`/api/admin/users?q=${userId.toString()}`)
+      .set('x-dev-user-id', userId.toString());
+    expect(byId.status).toBe(200);
+    expect(byId.body.items.some((item: any) => item.id === userId.toString())).toBe(true);
+  });
+
+  it('GET /api/admin/users places users with lastSeenAt before null lastSeenAt', async () => {
+    await prisma.user.create({
+      data: {
+        id: seenUserId,
+        tgUsername: 'p2sort_seen',
+        lastSeenAt: new Date('2026-01-10T00:00:00.000Z'),
+      },
+    });
+    await prisma.user.create({
+      data: {
+        id: unseenUserId,
+        tgUsername: 'p2sort_unseen',
+      },
+    });
+
+    const res = await request(app)
+      .get('/api/admin/users?q=p2sort')
+      .set('x-dev-user-id', userId.toString());
+
+    expect(res.status).toBe(200);
+    const ids = (res.body.items as Array<{ id: string }>).map((item) => item.id);
+    const seenIndex = ids.indexOf(seenUserId.toString());
+    const unseenIndex = ids.indexOf(unseenUserId.toString());
+    expect(seenIndex).toBeGreaterThanOrEqual(0);
+    expect(unseenIndex).toBeGreaterThanOrEqual(0);
+    expect(seenIndex).toBeLessThan(unseenIndex);
   });
 
   it('GET /api/admin/users/:id validates id and 404', async () => {

@@ -1441,7 +1441,7 @@ input:checked+.toggle-slider:before {
   border-radius: 12px;
   padding: 12px 14px;
   display: grid;
-  grid-template-columns: 1.3fr repeat(3, minmax(0, 0.8fr)) 1.5fr;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
   gap: 10px;
   text-align: left;
   cursor: pointer;
@@ -1473,6 +1473,10 @@ input:checked+.toggle-slider:before {
   font-size: 13px;
   font-weight: 600;
   color: var(--text-main);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .admin-recent-col--id strong {
@@ -1536,18 +1540,11 @@ input:checked+.toggle-slider:before {
     grid-column: 1 / -1;
   }
 
-  .admin-recent-row-clean {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
 }
 
 @media (max-width: 520px) {
   .admin-metrics {
     grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .admin-recent-row-clean {
-    grid-template-columns: 1fr;
   }
 
   .admin-user-grid {

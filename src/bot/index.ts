@@ -2,6 +2,7 @@ import 'dotenv/config';
 import { Context, Markup, Telegraf } from 'telegraf';
 import {
   ensureUser,
+  type TelegramProfile,
   recordCompletion,
   setNotifications,
   setQuietHours,
@@ -13,8 +14,9 @@ import {
 } from '../services/userService';
 import { prisma } from '../db/client';
 import { ensureSession, getSession, resetState, setState } from '../services/sessionService';
-import { suggestTranslation, detectLanguage, translateAuto } from '../services/translation';
+import { suggestTranslation, detectLanguage, translateAuto, detectAndTranslateWithGemini } from '../services/translation';
 import { addWordForUser, applyRating, loadReviewWithWord, DailyWordLimitError, DuplicateWordError } from '../services/reviewService';
+import { consumeAutoTranslateQuota } from '../services/translationQuota';
 import { CardDirection, ReviewResult } from '../generated/prisma/client';
 import { checkAnswer } from '../services/answerChecker';
 import { Rating } from '../services/reviewScheduler';
@@ -65,6 +67,61 @@ const openWebAppKeyboard = (lang: Lang) =>
   webAppUrl
     ? Markup.inlineKeyboard([[Markup.button.webApp(webAppLabel(lang), webAppUrl)]])
     : undefined;
+
+const toTelegramProfile = (from?: Context['from']): TelegramProfile | undefined => {
+  if (!from) return undefined;
+  return {
+    username: from.username ?? null,
+    firstName: from.first_name ?? null,
+    lastName: from.last_name ?? null,
+  };
+};
+
+const escapeHtml = (value: string) =>
+  value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+
+const flagForDetectedLang = (detected: 'ru' | 'uz' | 'en') => {
+  if (detected === 'ru') return '🇷🇺';
+  if (detected === 'uz') return '🇺🇿';
+  return '🇺🇸';
+};
+
+const formatPairLine = (
+  leftText: string,
+  rightText: string,
+  uiLang: Lang,
+  leftLang?: 'ru' | 'uz' | 'en',
+  rightLang?: 'ru' | 'uz' | 'en'
+) => {
+  const preferredNative = uiLang === 'uz' ? 'uz' : 'ru';
+  const leftDetected = leftLang ?? detectLanguage(leftText, { preferredNative });
+  const rightDetected = rightLang ?? detectLanguage(rightText, { preferredNative });
+
+  return `${flagForDetectedLang(leftDetected)} <b>${escapeHtml(leftText)}</b> — ${flagForDetectedLang(rightDetected)} ${escapeHtml(rightText)}`;
+};
+
+const hasCyrillic = (value: string) => /[\u0400-\u04FF]/u.test(value);
+
+const hasUzSpecificLatinMarkers = (value: string) =>
+  /[\u02BB\u02BC]/u.test(value) ||
+  /(o['\u02BB\u02BC\u2019`]|g['\u02BB\u02BC\u2019`])/iu.test(value);
+
+const shouldTryGeminiDisambiguation = (input: string, detectedLang: 'ru' | 'uz' | 'en') => {
+  const normalized = input.trim();
+  if (!normalized || hasCyrillic(normalized)) return false;
+  if (detectedLang === 'en') return true;
+  if (detectedLang !== 'uz') return false;
+
+  // Ambiguous short latin inputs like "ham" are common false positives for local UZ heuristic.
+  const tokens = normalized.split(/\s+/).filter(Boolean);
+  if (tokens.length > 2) return false;
+  if (normalized.length > 10) return false;
+  if (hasUzSpecificLatinMarkers(normalized)) return false;
+  return true;
+};
 
 const QUIET_WINDOWS = [
   { label: '24/7', start: 0, end: 0 },
@@ -149,7 +206,7 @@ const safeReply = async (ctx: Context, text: string, extra?: any) => {
 };
 
 const sendSettings = async (ctx: Context, userId: number, view: SettingsView = "main", edit = false) => {
-  const fresh = await resetProgressIfNeeded(await ensureUser(userId));
+  const fresh = await resetProgressIfNeeded(await ensureUser(userId, toTelegramProfile(ctx.from)));
   const lang = (fresh.language as Lang) || 'ru';
   const text = renderSectionText(view, fresh, lang);
   const keyboard =
@@ -169,7 +226,7 @@ const sendSettings = async (ctx: Context, userId: number, view: SettingsView = "
 };
 bot.start(async (ctx) => {
   if (!ctx.from) return;
-  const user = await ensureUser(ctx.from.id);
+  const user = await ensureUser(ctx.from.id, toTelegramProfile(ctx.from));
   const rawPayload = (ctx as any).startPayload ?? ctx.message?.text?.split(' ').slice(1).join(' ') ?? '';
   const match = typeof rawPayload === 'string' ? rawPayload.match(/^ref_(\d+)$/i) : null;
   if (match) {
@@ -185,7 +242,7 @@ bot.start(async (ctx) => {
 
 bot.command('app', async (ctx) => {
   if (!ctx.from) return;
-  const user = await ensureUser(ctx.from.id);
+  const user = await ensureUser(ctx.from.id, toTelegramProfile(ctx.from));
   const lang = (user.language as Lang) || 'ru';
   if (!webAppUrl) {
     await ctx.reply('WEBAPP_URL is not set', { parse_mode: 'HTML' });
@@ -200,14 +257,14 @@ bot.command('app', async (ctx) => {
 bot.command('add', async (ctx) => {
   if (!ctx.from) return;
   const userId = ctx.from.id;
-  const user = await ensureUser(userId);
+  const user = await ensureUser(userId, toTelegramProfile(ctx.from));
   await setState(BigInt(userId), 'ADDING_WORD_WAIT_EN');
   await ctx.reply(t(user.language as Lang, 'add.enter'), { parse_mode: 'HTML' });
 });
 
 bot.command('settings', async (ctx) => {
   if (!ctx.from) return;
-  const user = await ensureUser(ctx.from.id);
+  const user = await ensureUser(ctx.from.id, toTelegramProfile(ctx.from));
   const lang = (user.language as Lang) || 'ru';
   if (!webAppUrl) {
     await ctx.reply('WEBAPP_URL is not set', { parse_mode: 'HTML' });
@@ -221,7 +278,7 @@ bot.command('settings', async (ctx) => {
 
 bot.hears([t('ru', 'btn.settings'), t('uz', 'btn.settings')], async (ctx) => {
   if (!ctx.from) return;
-  const user = await ensureUser(ctx.from.id);
+  const user = await ensureUser(ctx.from.id, toTelegramProfile(ctx.from));
   const lang = (user.language as Lang) || 'ru';
   if (!webAppUrl) {
     await ctx.reply('WEBAPP_URL is not set', { parse_mode: 'HTML' });
@@ -235,7 +292,7 @@ bot.hears([t('ru', 'btn.settings'), t('uz', 'btn.settings')], async (ctx) => {
 
 bot.command('stats', async (ctx) => {
   if (!ctx.from) return;
-  const user = await ensureUser(ctx.from.id);
+  const user = await ensureUser(ctx.from.id, toTelegramProfile(ctx.from));
   const lang = (user.language as Lang) || 'ru';
   if (!webAppUrl) {
     await ctx.reply('WEBAPP_URL is not set', { parse_mode: 'HTML' });
@@ -249,7 +306,7 @@ bot.command('stats', async (ctx) => {
 
 bot.hears([t('ru', 'btn.stats'), t('uz', 'btn.stats')], async (ctx) => {
   if (!ctx.from) return;
-  const user = await ensureUser(ctx.from.id);
+  const user = await ensureUser(ctx.from.id, toTelegramProfile(ctx.from));
   const lang = (user.language as Lang) || 'ru';
   if (!webAppUrl) {
     await ctx.reply('WEBAPP_URL is not set', { parse_mode: 'HTML' });
@@ -264,55 +321,120 @@ bot.hears([t('ru', 'btn.stats'), t('uz', 'btn.stats')], async (ctx) => {
 bot.on('text', async (ctx) => {
   if (!ctx.from || !ctx.message?.text) return;
   const userId = ctx.from.id;
-  const user = await ensureUser(userId);
+  const user = await ensureUser(userId, toTelegramProfile(ctx.from));
   const lang = (user.language as Lang) || 'ru';
   const session = await getSession(BigInt(userId));
   const text = normalizeWhitespace(ctx.message.text);
 
+  const findExistingWord = async (wordEn: string) => {
+    return prisma.word.findFirst({
+      where: {
+        userId: BigInt(userId),
+        wordEn: { equals: wordEn.trim(), mode: 'insensitive' },
+      },
+    });
+  };
+
   const handleAddFlow = async (input: string) => {
-    const inputLang = detectLanguage(input);
+    const normalizedInput = input.trim();
+    if (!normalizedInput) return;
 
-    let finalEn: string;
+    const inputLang = detectLanguage(normalizedInput, {
+      preferredNative: lang === 'uz' ? 'uz' : 'ru',
+    });
+    let resolvedInputLang = inputLang;
+    const targetLang: 'ru' | 'uz' = lang === 'uz' ? 'uz' : 'ru';
+
+    let finalEn = normalizedInput;
     let finalTranslation: string | null = null;
+    const tryGeminiSmart = async () => {
+      const geminiSmart = await detectAndTranslateWithGemini(normalizedInput, targetLang);
+      if (!geminiSmart?.translatedText) return false;
+      if (geminiSmart.confidence < 0.55) return false;
 
-    if (inputLang === 'ru' || inputLang === 'uz') {
-      // User typed in RU/UZ — translate to English and swap
-      const englishTranslation = await translateAuto(input, 'en');
-      if (!englishTranslation) {
-        // Could not translate to English — ask user for the English word
-        await setState(BigInt(userId), 'ADDING_WORD_WAIT_RU_MANUAL', {
-          payload: { wordEn: input },
-        });
-        await ctx.reply(t(lang, 'add.noSuggest', { en: input }), { parse_mode: 'HTML' });
+      if (geminiSmart.sourceLang === 'en') {
+        resolvedInputLang = 'en';
+        finalEn = normalizedInput;
+        finalTranslation = geminiSmart.translatedText;
+        return true;
+      }
+
+      if (geminiSmart.sourceLang === 'ru' || geminiSmart.sourceLang === 'uz') {
+        resolvedInputLang = geminiSmart.sourceLang;
+        finalEn = geminiSmart.translatedText;
+        finalTranslation = normalizedInput;
+        return true;
+      }
+
+      return false;
+    };
+
+    if (resolvedInputLang === 'ru' || resolvedInputLang === 'uz') {
+      const quota = await consumeAutoTranslateQuota(BigInt(userId), user.timezone);
+      if (!quota.allowed) {
+        await ctx.reply(t(lang, 'add.apiLimitNeedEnglish', { limit: quota.limit }), { parse_mode: 'HTML' });
         return;
       }
-      finalEn = englishTranslation;
-      finalTranslation = input; // original RU/UZ text becomes the translation
+
+      // User typed in RU/UZ — translate to English and swap
+      if (shouldTryGeminiDisambiguation(normalizedInput, resolvedInputLang)) {
+        await tryGeminiSmart();
+      }
+
+      if (!finalTranslation) {
+        const englishTranslation = await translateAuto(normalizedInput, 'en');
+        if (!englishTranslation) {
+          await setState(BigInt(userId), 'ADDING_WORD_WAIT_EN');
+          await ctx.reply(t(lang, 'add.needEnglishWord'), { parse_mode: 'HTML' });
+          return;
+        }
+        finalEn = englishTranslation;
+        finalTranslation = normalizedInput;
+      }
     } else {
+      const existing = await findExistingWord(finalEn);
+      if (existing) {
+        const pair = formatPairLine(existing.wordEn, existing.translationRu, lang, 'en');
+        await ctx.reply(t(lang, 'add.exists', { pair }), { parse_mode: 'HTML' });
+        await resetState(BigInt(userId));
+        return;
+      }
+
+      const quota = await consumeAutoTranslateQuota(BigInt(userId), user.timezone);
+      if (!quota.allowed) {
+        await setState(BigInt(userId), 'ADDING_WORD_WAIT_RU_MANUAL', {
+          payload: { wordEn: finalEn },
+        });
+        await ctx.reply(t(lang, 'add.apiLimitManualTranslation', { limit: quota.limit }), { parse_mode: 'HTML' });
+        return;
+      }
+
       // User typed in English — translate to user's native language
-      finalEn = input;
-      const targetLang = lang === 'uz' ? 'uz' : 'ru' as const;
-      finalTranslation = await suggestTranslation(input, targetLang);
+      await tryGeminiSmart();
+
+      if (!finalTranslation) {
+        finalTranslation = await suggestTranslation(finalEn, targetLang);
+      }
     }
 
     // Check for duplicate
-    const existing = await prisma.word.findFirst({
-      where: {
-        userId: BigInt(userId),
-        wordEn: { equals: finalEn.trim(), mode: 'insensitive' },
-      },
-    });
+    const existing = await findExistingWord(finalEn);
     if (existing) {
-      await ctx.reply(t(lang, 'add.exists', { en: existing.wordEn, ru: existing.translationRu }), { parse_mode: 'HTML' });
+      const pair = formatPairLine(existing.wordEn, existing.translationRu, lang, 'en');
+      await ctx.reply(t(lang, 'add.exists', { pair }), { parse_mode: 'HTML' });
       await resetState(BigInt(userId));
       return;
     }
 
     if (finalTranslation) {
+      const pair =
+        resolvedInputLang === 'ru' || resolvedInputLang === 'uz'
+          ? formatPairLine(finalTranslation, finalEn, lang, resolvedInputLang, 'en')
+          : formatPairLine(finalEn, finalTranslation, lang, 'en');
       await setState(BigInt(userId), 'ADDING_WORD_CONFIRM_TRANSLATION', {
         payload: { wordEn: finalEn, translationRu: finalTranslation },
       });
-      await ctx.reply(t(lang, 'add.suggest', { en: finalEn, tr: finalTranslation }), { parse_mode: 'HTML', ...confirmKeyboard(lang) });
+      await ctx.reply(t(lang, 'add.suggest', { pair }), { parse_mode: 'HTML', ...confirmKeyboard(lang) });
     } else {
       await setState(BigInt(userId), 'ADDING_WORD_WAIT_RU_MANUAL', {
         payload: { wordEn: finalEn },
@@ -414,8 +536,9 @@ bot.on('text', async (ctx) => {
       try {
         await addWordForUser(BigInt(userId), payload.wordEn, text);
         await resetState(BigInt(userId));
+        const pair = formatPairLine(payload.wordEn, text, lang, 'en');
         await ctx.reply(
-          t(lang, 'add.saved', { en: payload.wordEn, ru: text }),
+          t(lang, 'add.saved', { pair }),
           { parse_mode: 'HTML' }
         );
       } catch (error) {
@@ -496,7 +619,7 @@ bot.on('callback_query', async (ctx) => {
   if (data.startsWith('lang:')) {
     const lang = data.split(':')[1] === 'uz' ? 'uz' : 'ru';
     await setLanguage(userId, lang); // PERSIST LANGUAGE
-    const user = await ensureUser(userId);
+    const user = await ensureUser(userId, toTelegramProfile(ctx.from));
     await ctx.answerCbQuery();
     await ctx.reply(t(lang as Lang, 'hint'), {
       parse_mode: 'HTML',
@@ -506,7 +629,7 @@ bot.on('callback_query', async (ctx) => {
   }
 
   if (data === 'onboarding:next') {
-    const user = await ensureUser(userId);
+    const user = await ensureUser(userId, toTelegramProfile(ctx.from));
     const lang = (user.language as Lang) || 'ru';
     await ctx.answerCbQuery();
     await ctx.editMessageReplyMarkup({ inline_keyboard: [] }); // remove button
@@ -524,7 +647,7 @@ bot.on('callback_query', async (ctx) => {
 
   if (data.startsWith('settings:')) {
     const view = data.split(':')[1] as SettingsView;
-    const user = await ensureUser(userId);
+    const user = await ensureUser(userId, toTelegramProfile(ctx.from));
     const lang = (user.language as Lang) || 'ru';
 
     if (view === 'interval') {
@@ -548,7 +671,7 @@ bot.on('callback_query', async (ctx) => {
   }
 
   if (data.startsWith('grade:')) {
-    const user = await ensureUser(userId);
+    const user = await ensureUser(userId, toTelegramProfile(ctx.from));
     const lang = (user.language as Lang) || 'ru';
     if (session.state !== 'WAITING_GRADE' || !session.reviewId || !session.direction) {
       await ctx.answerCbQuery(t(lang, 'grade.noActive'));
@@ -585,7 +708,7 @@ bot.on('callback_query', async (ctx) => {
   }
 
   if (data === 'add_confirm') {
-    const user = await ensureUser(userId);
+    const user = await ensureUser(userId, toTelegramProfile(ctx.from));
     const lang = (user.language as Lang) || 'ru';
     if (session.state !== 'ADDING_WORD_CONFIRM_TRANSLATION') {
       await ctx.answerCbQuery(t(lang, 'session.lost'));
@@ -599,8 +722,9 @@ bot.on('callback_query', async (ctx) => {
     try {
       await addWordForUser(BigInt(userId), payload.wordEn, payload.translationRu);
       await resetState(BigInt(userId));
+      const pair = formatPairLine(payload.wordEn, payload.translationRu, lang, 'en');
       await ctx.editMessageText(
-        t(lang, 'add.saved', { en: payload.wordEn, ru: payload.translationRu }),
+        t(lang, 'add.saved', { pair }),
         { parse_mode: 'HTML' }
       );
     } catch (error) {
@@ -626,13 +750,13 @@ bot.on('callback_query', async (ctx) => {
     const payload = (session.payload as any) || {};
     await setState(BigInt(userId), 'ADDING_WORD_WAIT_RU_MANUAL', { payload: { wordEn: payload.wordEn } });
     await ctx.answerCbQuery();
-    const user = await ensureUser(userId);
+    const user = await ensureUser(userId, toTelegramProfile(ctx.from));
     await ctx.editMessageText(t(user.language as Lang, 'add.manual'), { parse_mode: 'HTML' });
     return;
   }
 
   if (data === 'add_cancel') {
-    const user = await ensureUser(userId);
+    const user = await ensureUser(userId, toTelegramProfile(ctx.from));
     const lang = (user.language as Lang) || 'ru';
     await resetState(BigInt(userId));
     await ctx.answerCbQuery();
@@ -641,7 +765,7 @@ bot.on('callback_query', async (ctx) => {
   }
 
   if (data === 'notify:toggle') {
-    const user = await ensureUser(userId);
+    const user = await ensureUser(userId, toTelegramProfile(ctx.from));
     const lang = (user.language as Lang) || 'ru';
     await setNotifications(userId, !user.notificationsEnabled);
     await resetState(BigInt(userId));

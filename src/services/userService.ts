@@ -20,12 +20,47 @@ const toId = (telegramId: number | string | bigint): bigint => BigInt(telegramId
 const startOfDay = (tz: string | null | undefined, date?: Date | dayjs.Dayjs) =>
   startOfUserDay(tz, date ? dayjs(date) : undefined);
 
-export const ensureUser = async (telegramId: number): Promise<User> => {
+export type TelegramProfile = {
+  username?: string | null;
+  firstName?: string | null;
+  lastName?: string | null;
+};
+
+const normalizeProfileValue = (value?: string | null, maxLen = 128): string | null => {
+  const trimmed = (value ?? '').trim();
+  if (!trimmed) return null;
+  return trimmed.slice(0, maxLen);
+};
+
+const buildDisplayName = (firstName?: string | null, lastName?: string | null): string | null => {
+  const combined = `${firstName ?? ''} ${lastName ?? ''}`.trim();
+  if (!combined) return null;
+  return combined.slice(0, 191);
+};
+
+const buildProfileData = (profile?: TelegramProfile) => {
+  if (!profile) return {};
+  const firstName = normalizeProfileValue(profile.firstName, 128);
+  const lastName = normalizeProfileValue(profile.lastName, 128);
+  const usernameRaw = normalizeProfileValue(profile.username, 64);
+  const username = usernameRaw?.replace(/^@+/, '') ?? null;
+
+  return {
+    tgFirstName: firstName,
+    tgLastName: lastName,
+    tgUsername: username,
+    tgDisplayName: buildDisplayName(firstName, lastName),
+    lastSeenAt: new Date(),
+  };
+};
+
+export const ensureUser = async (telegramId: number, profile?: TelegramProfile): Promise<User> => {
   const id = toId(telegramId);
+  const profileData = buildProfileData(profile) as Record<string, unknown>;
   const user = await prisma.user.upsert({
     where: { id },
-    update: {},
-    create: { id, timezone: DEFAULT_TIMEZONE },
+    update: profileData as any,
+    create: { id, timezone: DEFAULT_TIMEZONE, ...profileData } as any,
   });
   await ensureSession(id);
   return user;
@@ -104,7 +139,12 @@ export const setReferredByIfEmpty = async (telegramId: number, referrerId: numbe
 };
 
 export const countReferrals = async (telegramId: number | bigint) => {
-  return prisma.user.count({ where: { referredById: toId(telegramId) } });
+  return prisma.user.count({
+    where: {
+      referredById: toId(telegramId),
+      referralQualifiedAt: { not: null },
+    },
+  });
 };
 
 export type DailyProgressResult = {

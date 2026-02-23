@@ -43,6 +43,10 @@ export type WordItem = {
 export type AdminUserSummary = {
   id: string;
   createdAt: string;
+  displayName?: string | null;
+  tgUsername?: string | null;
+  tgFirstName?: string | null;
+  tgLastName?: string | null;
   wordsCount: number;
   learnedCount: number;
   postponedCount: number;
@@ -57,6 +61,11 @@ export type AdminOverview = {
   activeToday: number;
   newLast7Days: number;
   recentUsers: AdminUserSummary[];
+};
+
+export type AdminUsersResponse = {
+  items: AdminUserSummary[];
+  hasMore: boolean;
 };
 
 type ApiError = {
@@ -139,6 +148,14 @@ export const api = {
   deleteWord: (id: number) =>
     apiFetch<{ ok: boolean }>(`/words/${id}`, { method: 'DELETE' }),
   getAdminOverview: () => apiFetch<AdminOverview>('/admin/overview'),
+  getAdminUsers: (q?: string, limit = 20, offset = 0) => {
+    const params = new URLSearchParams();
+    if (q?.trim()) params.set('q', q.trim());
+    if (Number.isFinite(limit) && limit > 0) params.set('limit', String(Math.min(Math.max(limit, 1), 100)));
+    if (Number.isFinite(offset) && offset > 0) params.set('offset', String(Math.max(offset, 0)));
+    const query = params.toString();
+    return apiFetch<AdminUsersResponse>(`/admin/users${query ? `?${query}` : ''}`);
+  },
   getAdminUser: (id: string | number) => apiFetch<AdminUserSummary>(`/admin/users/${id}`),
   sendAdminBroadcast: (payload: { message: string; photoUrl?: string }) =>
     apiFetch<{ ok: boolean; total: number; sent: number; failed: number }>('/admin/broadcast', {

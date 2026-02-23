@@ -6,13 +6,23 @@ const HF_DEFAULT_MODEL_EN_UZ = 'Helsinki-NLP/opus-mt-en-uz';
 
 const GEMINI_DEFAULT_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta/models';
 const GEMINI_DEFAULT_MODEL = 'gemini-2.5-flash-lite';
-const GEMINI_DEFAULT_FALLBACK_MODELS = ['gemini-2.5-flash', 'gemini-2.0-flash-lite'];
+const GEMINI_DEFAULT_FALLBACK_MODELS = [
+  'gemini-2.5-flash',
+  'gemini-2.0-flash-lite',
+  'gemini-2.0-flash',
+  'gemini-1.5-flash',
+  'gemini-1.5-flash-8b',
+  'gemini-1.5-pro',
+];
 const MYMEMORY_DEFAULT_URL = 'https://api.mymemory.translated.net/get';
 
 const DEFAULT_TIMEOUT_MS = 8000;
 const DEFAULT_CACHE_MAX = 2000;
 
 type Lang = 'ru' | 'en' | 'uz';
+type DetectHint = {
+  preferredNative?: 'ru' | 'uz';
+};
 
 type HfTranslationItem = {
   translation_text?: string;
@@ -37,6 +47,13 @@ type MyMemoryResponse = {
   responseData?: {
     translatedText?: string;
   };
+};
+
+type GeminiDetectTranslatePayload = {
+  source_lang?: string;
+  target_lang?: string;
+  translated_text?: string;
+  confidence?: number | string;
 };
 
 const translationCache = new Map<string, string>();
@@ -76,7 +93,51 @@ const readGeminiModels = (): string[] => {
   return Array.from(new Set([primary, ...fallback]));
 };
 
-export const detectLanguage = (text: string): Lang => {
+const UZ_WORDS = new Set([
+  'salom', 'rahmat', 'yaxshi', 'bugun', 'qanday', 'iltimos', 'dunyo',
+  'tushun', 'bilaman', 'kerak', 'bormi', 'nima', 'qayerda', 'xayr',
+  'juda', 'ham', 'emas', 'bor', 'yoq', 'yoqmi', 'boladi', 'yoz', 'kel',
+  'ket', 'qil', 'qilyapman', 'qildim', 'qilgan', 'uchun', 'bilan', 'siz',
+  'biz', 'men', 'sen', 'ular', 'endi', 'hech', 'narsa', 'vaqt', 'ertalab',
+  'kechqurun', 'kunduzi', 'kecha', 'ertaga', 'hozir', 'soat', 'oy', 'yil',
+  'hafta', 'kun', 'dars', 'maktab', 'ish', 'uy', 'kitob', 'qalam', 'telefon',
+  'doim', 'jamoa', 'odam', 'bola', 'ota', 'ona', 'aka', 'uka', 'opa', 'singil',
+]);
+
+const likelyUzSuffix = /(lar|lik|chi|dan|ning|siz|uvchi|amiz|man|san|miz|lari)$/i;
+
+const scoreUzToken = (token: string): number => {
+  let score = 0;
+  const t = token.toLowerCase();
+  if (!t) return 0;
+
+  if (UZ_WORDS.has(t)) score += 2;
+  if (/(?:o|g)['\u02BB\u02BC\u2019`]/iu.test(t)) score += 2;
+  if (/q(?!u)/iu.test(t)) score += 2; // Uzbek "q" is often not followed by "u"
+  if (/\bx[a-z]/iu.test(t)) score += 1;
+  if (/(sh|ch|ng|ya|yo|yu)/iu.test(t)) score += 1;
+  if (likelyUzSuffix.test(t)) score += 1;
+
+  return score;
+};
+
+const isLikelyUzbekLatin = (text: string): boolean => {
+  const tokens = text
+    .toLowerCase()
+    .split(/[^a-z\u02BB\u02BC\u2019`']+/i)
+    .map((token) => token.trim())
+    .filter(Boolean);
+
+  if (tokens.length === 0) return false;
+
+  const scores = tokens.map(scoreUzToken);
+  const maxScore = Math.max(...scores);
+  const totalScore = scores.reduce((acc, value) => acc + value, 0);
+
+  return maxScore >= 2 || totalScore >= 3;
+};
+
+export const detectLanguage = (text: string, _hint: DetectHint = {}): Lang => {
   const value = text.trim().toLowerCase();
   if (!value) return 'en';
 
@@ -87,12 +148,7 @@ export const detectLanguage = (text: string): Lang => {
   if (/[\u02BB\u02BC]/u.test(value)) return 'uz';
   if (/(o['\u02BB\u02BC\u2019`]|g['\u02BB\u02BC\u2019`])/iu.test(value)) return 'uz';
 
-  // Known Uzbek words (reliable, not found in English).
-  const uzWords = [
-    'salom', 'rahmat', 'yaxshi', 'bugun', 'qanday', 'iltimos', 'dunyo',
-    'tushun', 'bilaman', 'kerak', 'bormi', 'nima', 'qayerda', 'xayr',
-  ];
-  if (uzWords.some((word) => value.includes(word))) return 'uz';
+  if (isLikelyUzbekLatin(value)) return 'uz';
 
   return 'en';
 };
@@ -227,6 +283,112 @@ const parseGeminiTranslation = (data: GeminiResponse | null): string | null => {
   return normalizeText(merged);
 };
 
+const parseGeminiDetectTranslateJson = (rawText: string): GeminiDetectTranslatePayload | null => {
+  const text = rawText.trim();
+  if (!text) return null;
+
+  const candidates = [
+    text,
+    text.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/\s*```$/i, '').trim(),
+  ];
+
+  const objectLike = text.match(/\{[\s\S]*\}/);
+  if (objectLike) candidates.push(objectLike[0]);
+
+  for (const candidate of candidates) {
+    try {
+      const parsed = JSON.parse(candidate) as GeminiDetectTranslatePayload;
+      if (parsed && typeof parsed === 'object') return parsed;
+    } catch {
+      // try next candidate
+    }
+  }
+
+  return null;
+};
+
+const normalizeSourceLang = (value: unknown): Lang | null => {
+  if (typeof value !== 'string') return null;
+  const normalized = value.trim().toLowerCase();
+  if (normalized === 'ru' || normalized === 'en' || normalized === 'uz') return normalized;
+  return null;
+};
+
+const normalizeConfidence = (value: unknown): number => {
+  const num = typeof value === 'string' ? Number.parseFloat(value) : typeof value === 'number' ? value : Number.NaN;
+  if (!Number.isFinite(num)) return 0;
+  return Math.max(0, Math.min(1, num));
+};
+
+export type GeminiDetectTranslateResult = {
+  sourceLang: Lang;
+  targetLang: Lang;
+  translatedText: string | null;
+  confidence: number;
+};
+
+export const detectAndTranslateWithGemini = async (
+  input: string,
+  nativeLang: 'ru' | 'uz'
+): Promise<GeminiDetectTranslateResult | null> => {
+  const text = input.trim();
+  if (!text) return null;
+
+  const key = trimEnv(process.env.GEMINI_API_KEY);
+  if (!key) return null;
+
+  const base = trimEnv(process.env.GEMINI_API_BASE_URL) || GEMINI_DEFAULT_BASE_URL;
+  const models = readGeminiModels();
+  const timeoutMs = readTimeoutMs();
+
+  const prompt = [
+    'Detect source language and translate in one step.',
+    'Allowed source_lang values: en, ru, uz only.',
+    `If source_lang is "en", translate to "${nativeLang}".`,
+    'If source_lang is "ru" or "uz", translate to "en".',
+    'Return ONLY strict JSON with keys: source_lang, target_lang, translated_text, confidence.',
+    'confidence must be a number from 0 to 1.',
+    `Text: ${text}`,
+  ].join('\n');
+
+  for (const model of models) {
+    const res = await fetchJson<GeminiResponse>(
+      `${base}/${model}:generateContent?key=${encodeURIComponent(key)}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ role: 'user', parts: [{ text: prompt }] }],
+          generationConfig: { temperature: 0, topP: 1, topK: 1 },
+        }),
+      },
+      timeoutMs,
+    );
+
+    if (!res.ok) continue;
+
+    const raw = parseGeminiTranslation(res.data);
+    if (!raw) continue;
+
+    const parsed = parseGeminiDetectTranslateJson(raw);
+    if (!parsed) continue;
+
+    const sourceLang = normalizeSourceLang(parsed.source_lang);
+    const targetLang = normalizeSourceLang(parsed.target_lang);
+    const translatedText = normalizeText(parsed.translated_text);
+    if (!sourceLang || !targetLang || !translatedText) continue;
+
+    return {
+      sourceLang,
+      targetLang,
+      translatedText,
+      confidence: normalizeConfidence(parsed.confidence),
+    };
+  }
+
+  return null;
+};
+
 const translateWithGeminiStep = async (text: string, source: Lang, target: Lang, timeoutMs: number): Promise<string | null> => {
   const key = trimEnv(process.env.GEMINI_API_KEY);
   if (!key) return null;
@@ -276,11 +438,11 @@ const translateWithMyMemoryStep = async (text: string, source: Lang, target: Lan
 const translateOneStep = async (text: string, source: Lang, target: Lang, timeoutMs: number): Promise<string | null> => {
   if (source === target) return text;
 
-  const hf = await translateWithHfStep(text, source, target, timeoutMs);
-  if (hf) return hf;
-
   const gemini = await translateWithGeminiStep(text, source, target, timeoutMs);
   if (gemini) return gemini;
+
+  const hf = await translateWithHfStep(text, source, target, timeoutMs);
+  if (hf) return hf;
 
   return translateWithMyMemoryStep(text, source, target, timeoutMs);
 };

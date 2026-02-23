@@ -32,14 +32,18 @@ type SessionLike = {
   wordId?: number | null;
 };
 
-const canSendNotification = (user: any, now: dayjs.Dayjs) => {
+const hasDailyNotificationCapacity = (user: any) => {
+  const limit = user.maxNotificationsPerDay ?? DEFAULT_MAX_NOTIFICATIONS;
+  return (user.notificationsSentToday ?? 0) < limit;
+};
+
+const hasNotificationIntervalElapsed = (user: any, now: dayjs.Dayjs) => {
   const interval = Math.max(user.notificationIntervalMinutes ?? DEFAULT_NOTIFICATION_INTERVAL, MIN_NOTIFICATION_INTERVAL);
   if (user.lastNotificationAt) {
     const last = dayjs(user.lastNotificationAt);
     if (now.diff(last, 'minute') < interval) return false;
   }
-  const limit = user.maxNotificationsPerDay ?? DEFAULT_MAX_NOTIFICATIONS;
-  return (user.notificationsSentToday ?? 0) < limit;
+  return true;
 };
 
 const registerNotification = async (user: any) => {
@@ -60,22 +64,47 @@ const sendCard = async (userId: number, direction: CardDirection, phrase: string
   await telegram.sendMessage(userId, prompt);
 };
 
-const buildHint = (direction: CardDirection, word: { wordEn: string; translationRu: string }, hardStreak?: number) => {
-  if ((hardStreak ?? 0) < 2) return null;
+const hintPrefix = (lang: Lang) => (lang === 'uz' ? 'Ishora 💡' : 'Подсказка💡');
 
-  if (direction === 'EN_TO_RU') {
-    const tr = word.translationRu.trim();
-    if (!tr) return null;
-    if (tr.length <= 2) return `Hint: translation starts with "${tr[0] ?? ''}"`;
-    const mask = `${tr[0]}${'_'.repeat(Math.max(tr.length - 1, 1))}`;
-    return `Hint: translation has ${tr.length} letters, starts as "${mask}"`;
+const buildMaskedHint = (value: string, revealIndexes: number[]) => {
+  const chars = Array.from(value);
+  if (!chars.length) return null;
+
+  const reveal = new Set<number>();
+  for (const index of revealIndexes) {
+    if (index >= 0 && index < chars.length) reveal.add(index);
   }
 
-  const src = word.wordEn.trim();
-  if (!src) return null;
-  if (src.length <= 2) return `Hint: starts with "${src[0] ?? ''}"`;
-  const masked = `${src[0]}${'_'.repeat(Math.max(src.length - 2, 1))}${src[src.length - 1]}`;
-  return `Hint: ${masked}`;
+  return chars
+    .map((char, index) => {
+      if (reveal.has(index)) return char;
+      if (/\s|['’`-]/.test(char)) return char;
+      return '_';
+    })
+    .join('');
+};
+
+const buildHint = (
+  direction: CardDirection,
+  word: { wordEn: string; translationRu: string },
+  hardStreak: number | undefined,
+  lang: Lang
+) => {
+  const streak = Math.max(hardStreak ?? 0, 0);
+  if (streak < 1) return null;
+
+  const target = (direction === 'EN_TO_RU' ? word.translationRu : word.wordEn).trim();
+  const chars = Array.from(target);
+  if (!chars.length) return null;
+
+  const revealIndexes = [0];
+  if (streak >= 2 && chars.length > 1) revealIndexes.push(chars.length - 1);
+  if (streak >= 3 && chars.length > 2) revealIndexes.push(1);
+
+  const masked = buildMaskedHint(target, revealIndexes);
+  if (!masked) return null;
+
+  return `${hintPrefix(lang)}: ${masked}`;
 };
 
 export const handleReminders = async (user: any, session: SessionLike, canNotify: boolean) => {
@@ -138,11 +167,16 @@ export const processUser = async (user: any) => {
   const review = newReview ?? await findDueReview(normalizedUser.id, now);
   if (!review || !review.word) return;
 
-  if (review.stage > 0 && !canSendNotification(normalizedUser, now)) return;
+  // First exposure of a brand-new card (stage 0, never reviewed) should arrive ASAP once due.
+  // After the first answer, user rhythm applies to all following sends.
+  const isFirstStageZeroExposure = review.stage === 0 && !review.lastReviewAt;
+  if (!hasDailyNotificationCapacity(normalizedUser)) return;
+  if (!isFirstStageZeroExposure && !hasNotificationIntervalElapsed(normalizedUser, now)) return;
 
   const direction = pickDirection(normalizedUser.directionMode);
   const phrase = direction === 'RU_TO_EN' ? review.word.translationRu : review.word.wordEn;
-  const hint = buildHint(direction, review.word, (review as any).hardStreak);
+  const lang = (normalizedUser.language as Lang) || 'ru';
+  const hint = buildHint(direction, review.word, (review as any).hardStreak, lang);
 
   const locked = await setSessionActiveIfIdle(normalizedUser.id, 'WAITING_ANSWER', {
     reviewId: review.id,
@@ -157,7 +191,6 @@ export const processUser = async (user: any) => {
   }
 
   try {
-    const lang = (normalizedUser.language as Lang) || 'ru';
     const base = `${t(lang, 'worker.verifyPrompt', { phrase })}\n${t(lang, 'worker.answerPrompt')}`;
     const prompt = hint ? `${base}\n\n${hint}` : base;
     await telegram.sendMessage(Number(normalizedUser.id), prompt, { parse_mode: 'HTML' });

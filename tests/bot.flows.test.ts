@@ -5,10 +5,18 @@ import { cleanupUserData } from './helpers/cleanup';
 import { t } from '../src/i18n';
 
 const suggestTranslationMock = vi.fn().mockResolvedValue(null as string | null);
+const translateAutoMock = vi.fn().mockResolvedValue('hello' as string | null);
+const detectAndTranslateWithGeminiMock = vi.fn().mockResolvedValue(null as any);
 
-vi.mock('../src/services/translation', () => ({
-  suggestTranslation: suggestTranslationMock,
-}));
+vi.mock('../src/services/translation', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/services/translation')>();
+  return {
+    ...actual,
+    suggestTranslation: suggestTranslationMock,
+    translateAuto: translateAutoMock,
+    detectAndTranslateWithGemini: detectAndTranslateWithGeminiMock,
+  };
+});
 
 let bot: any;
 let prisma: PrismaClient;
@@ -80,6 +88,10 @@ beforeEach(async () => {
   vi.restoreAllMocks();
   suggestTranslationMock.mockReset();
   suggestTranslationMock.mockResolvedValue(null);
+  translateAutoMock.mockReset();
+  translateAutoMock.mockResolvedValue('hello');
+  detectAndTranslateWithGeminiMock.mockReset();
+  detectAndTranslateWithGeminiMock.mockResolvedValue(null);
 });
 
 afterAll(async () => {
@@ -242,7 +254,106 @@ describe('bot extended flows', () => {
     const session = await prisma.userSession.findUnique({ where: { userId: BigInt(userId) } });
     expect(word?.translationRu).toBe('кот');
     expect(session?.state).toBe('IDLE');
-    expect(editedTexts(callApiSpy)).toContain(t('ru', 'add.saved', { en: 'cat', ru: 'кот' }));
+    const edited = editedTexts(callApiSpy).join('\n');
+    expect(edited).toContain('cat');
+    expect(edited).toContain('кот');
+  });
+
+  it('checks duplicate before calling auto-translation API', async () => {
+    await prisma.user.create({ data: { id: BigInt(userId), language: 'ru' } });
+    await prisma.word.create({
+      data: {
+        userId: BigInt(userId),
+        wordEn: 'apple',
+        translationRu: 'яблоко',
+      },
+    });
+    await setState(BigInt(userId), 'ADDING_WORD_WAIT_EN');
+
+    const callApiSpy = vi
+      .spyOn(Object.getPrototypeOf(bot.telegram), 'callApi')
+      .mockResolvedValue({} as any);
+
+    suggestTranslationMock.mockResolvedValue('должно-не-вызываться');
+
+    await bot.handleUpdate(makeMessageUpdate('apple', 59), {} as any);
+
+    expect(suggestTranslationMock).not.toHaveBeenCalled();
+    const duplicateMsg = sentTexts(callApiSpy).find(
+      (text) => text.includes('apple') && text.includes('яблоко')
+    );
+    expect(duplicateMsg).toBeTruthy();
+  });
+
+  it('shows suggested pair in user input order for russian source input', async () => {
+    await prisma.user.create({ data: { id: BigInt(userId), language: 'ru' } });
+    await setState(BigInt(userId), 'ADDING_WORD_WAIT_EN');
+    const callApiSpy = vi
+      .spyOn(Object.getPrototypeOf(bot.telegram), 'callApi')
+      .mockResolvedValue({} as any);
+
+    translateAutoMock.mockResolvedValue('hello');
+
+    await bot.handleUpdate(makeMessageUpdate('привет', 62), {} as any);
+
+    const suggestMsg = sentTexts(callApiSpy).find((text) => text.includes('Как тебе такой перевод?'));
+    expect(suggestMsg).toBeTruthy();
+    expect(String(suggestMsg)).toContain('🇷🇺 <b>привет</b> — 🇺🇸');
+    expect(String(suggestMsg)).toContain('hello');
+  });
+
+  it('uses Gemini disambiguation for ambiguous latin input detected as uz', async () => {
+    await prisma.user.create({ data: { id: BigInt(userId), language: 'ru' } });
+    await setState(BigInt(userId), 'ADDING_WORD_WAIT_EN');
+    const callApiSpy = vi
+      .spyOn(Object.getPrototypeOf(bot.telegram), 'callApi')
+      .mockResolvedValue({} as any);
+
+    detectAndTranslateWithGeminiMock.mockResolvedValue({
+      sourceLang: 'en',
+      targetLang: 'ru',
+      translatedText: 'РІРµС‚С‡РёРЅР°',
+      confidence: 0.91,
+    });
+
+    await bot.handleUpdate(makeMessageUpdate('ham', 63), {} as any);
+
+    expect(detectAndTranslateWithGeminiMock).toHaveBeenCalledTimes(1);
+    expect(translateAutoMock).not.toHaveBeenCalled();
+    const suggestMsg = sentTexts(callApiSpy).find(
+      (text) => text.includes('ham') && text.includes('РІРµС‚С‡РёРЅР°')
+    );
+    expect(suggestMsg).toBeTruthy();
+  });
+
+  it('falls back to manual translation when daily auto-translate limit is reached', async () => {
+    const previousDailyLimit = process.env.DAILY_AUTO_TRANSLATE_LIMIT;
+    process.env.DAILY_AUTO_TRANSLATE_LIMIT = '1';
+
+    try {
+      await prisma.user.create({ data: { id: BigInt(userId), language: 'ru' } });
+      suggestTranslationMock.mockResolvedValue('альфа');
+      const callApiSpy = vi
+        .spyOn(Object.getPrototypeOf(bot.telegram), 'callApi')
+        .mockResolvedValue({} as any);
+
+      await setState(BigInt(userId), 'ADDING_WORD_WAIT_EN');
+      await bot.handleUpdate(makeMessageUpdate('alpha', 60), {} as any);
+      expect(suggestTranslationMock).toHaveBeenCalledTimes(1);
+
+      await setState(BigInt(userId), 'ADDING_WORD_WAIT_EN');
+      await bot.handleUpdate(makeMessageUpdate('beta', 61), {} as any);
+
+      const texts = sentTexts(callApiSpy);
+      expect(texts).toContain(t('ru', 'add.apiLimitManualTranslation', { limit: 1 }));
+      expect(suggestTranslationMock).toHaveBeenCalledTimes(1);
+    } finally {
+      if (previousDailyLimit === undefined) {
+        delete process.env.DAILY_AUTO_TRANSLATE_LIMIT;
+      } else {
+        process.env.DAILY_AUTO_TRANSLATE_LIMIT = previousDailyLimit;
+      }
+    }
   });
 
   it('add_change callback switches to manual translation state', async () => {

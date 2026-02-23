@@ -7,6 +7,7 @@ import {
   countDueToday,
   countUserWords,
   ensureUser,
+  type TelegramProfile,
   resetProgressIfNeeded,
   setLanguage,
   setNotificationInterval,
@@ -20,7 +21,7 @@ import {
   MAX_NOTIFICATIONS_PER_DAY,
 } from '../services/userService';
 import { DEFAULT_TIMEZONE, nowUtc, startOfUserDay, userNow } from '../utils/time';
-import { verifyInitData } from './auth';
+import { type TelegramUser, verifyInitData } from './auth';
 
 export const app = express();
 
@@ -66,6 +67,26 @@ const persistTimezoneIfProvided = async (userId: bigint, timezoneHeader?: string
     update: { timezone },
     create: { id: userId, timezone },
   });
+};
+
+const toTelegramProfile = (user?: TelegramUser | null): TelegramProfile | undefined => {
+  if (!user) return undefined;
+  return {
+    username: user.username ?? null,
+    firstName: user.first_name ?? null,
+    lastName: user.last_name ?? null,
+  };
+};
+
+const buildDisplayName = (
+  firstName?: string | null,
+  lastName?: string | null,
+  fallback?: string | null
+): string | null => {
+  const combined = `${firstName ?? ''} ${lastName ?? ''}`.trim();
+  if (combined) return combined;
+  const trimmedFallback = (fallback ?? '').trim();
+  return trimmedFallback || null;
 };
 
 app.use(
@@ -115,6 +136,7 @@ app.use('/api', async (req, res, next) => {
           req.telegramUserId = BigInt(devId);
           req.telegramUser = { id: devId } as any;
           try {
+            await ensureUser(devId);
             await persistTimezoneIfProvided(req.telegramUserId, req.header('x-timezone'));
           } catch (error) {
             console.error('Failed to persist timezone', error);
@@ -134,6 +156,7 @@ app.use('/api', async (req, res, next) => {
   req.telegramUser = verified.user;
   req.telegramUserId = BigInt(verified.user.id);
   try {
+    await ensureUser(verified.user.id, toTelegramProfile(verified.user));
     await persistTimezoneIfProvided(req.telegramUserId, req.header('x-timezone'));
   } catch (error) {
     console.error('Failed to persist timezone', error);
@@ -439,9 +462,13 @@ app.get('/api/admin/overview', async (_req, res) => {
       select: {
         id: true,
         createdAt: true,
+        tgUsername: true,
+        tgFirstName: true,
+        tgLastName: true,
+        tgDisplayName: true,
         _count: { select: { words: true } },
       },
-    }),
+    } as any),
   ]);
 
   const recentIds = recentUsers.map((user) => user.id);
@@ -480,10 +507,96 @@ app.get('/api/admin/overview', async (_req, res) => {
     recentUsers: recentUsers.map((user) => ({
       id: user.id.toString(),
       createdAt: user.createdAt,
-      wordsCount: user._count.words,
+      tgUsername: user.tgUsername,
+      tgFirstName: user.tgFirstName,
+      tgLastName: user.tgLastName,
+      displayName: buildDisplayName(user.tgFirstName, user.tgLastName, user.tgDisplayName),
+      wordsCount: (user as any)._count?.words ?? 0,
       learnedCount: learnedMap.get(user.id.toString()) ?? 0,
       postponedCount: skippedMap.get(user.id.toString()) ?? 0,
     })),
+  });
+});
+
+app.get('/api/admin/users', async (req, res) => {
+  const rawQuery = typeof req.query.q === 'string' ? req.query.q.trim() : '';
+  const query = rawQuery.toLowerCase();
+  const normalizedUsername = query.replace(/^@+/, '');
+  const limitRaw = typeof req.query.limit === 'string' ? Number.parseInt(req.query.limit, 10) : NaN;
+  const take = Number.isFinite(limitRaw) ? Math.min(Math.max(limitRaw, 1), 100) : 20;
+  const offsetRaw = typeof req.query.offset === 'string' ? Number.parseInt(req.query.offset, 10) : NaN;
+  const skip = Number.isFinite(offsetRaw) ? Math.min(Math.max(offsetRaw, 0), 10000) : 0;
+  const idCandidate = /^\d+$/.test(query) ? BigInt(query) : null;
+
+  const where: any = query
+    ? {
+      OR: [
+        ...(idCandidate ? [{ id: idCandidate }] : []),
+        { tgUsername: { contains: normalizedUsername, mode: 'insensitive' } },
+        { tgDisplayName: { contains: rawQuery, mode: 'insensitive' } },
+        { tgFirstName: { contains: rawQuery, mode: 'insensitive' } },
+        { tgLastName: { contains: rawQuery, mode: 'insensitive' } },
+      ],
+    }
+    : {};
+
+  const users = await prisma.user.findMany({
+    where,
+    orderBy: [{ lastSeenAt: { sort: 'desc', nulls: 'last' } }, { createdAt: 'desc' }, { id: 'desc' }],
+    skip,
+    take: take + 1,
+    select: {
+      id: true,
+      createdAt: true,
+      tgUsername: true,
+      tgFirstName: true,
+      tgLastName: true,
+      tgDisplayName: true,
+      _count: { select: { words: true } },
+    },
+  } as any);
+
+  const hasMore = users.length > take;
+  const visibleUsers = hasMore ? users.slice(0, take) : users;
+
+  const userIds = visibleUsers.map((user) => user.id);
+  const [learnedCounts, skippedCounts] = await Promise.all([
+    userIds.length
+      ? prisma.review.groupBy({
+        by: ['userId'],
+        where: { userId: { in: userIds }, stage: { gte: LEARNED_STAGE_MIN } },
+        _count: { _all: true },
+      })
+      : Promise.resolve([]),
+    userIds.length
+      ? prisma.review.groupBy({
+        by: ['userId'],
+        where: { userId: { in: userIds }, lastResult: 'SKIPPED' },
+        _count: { _all: true },
+      })
+      : Promise.resolve([]),
+  ]);
+
+  const learnedMap = new Map<string, number>(
+    learnedCounts.map((row) => [row.userId.toString(), row._count._all])
+  );
+  const skippedMap = new Map<string, number>(
+    skippedCounts.map((row) => [row.userId.toString(), row._count._all])
+  );
+
+  res.json({
+    items: visibleUsers.map((user) => ({
+      id: user.id.toString(),
+      createdAt: user.createdAt,
+      tgUsername: user.tgUsername,
+      tgFirstName: user.tgFirstName,
+      tgLastName: user.tgLastName,
+      displayName: buildDisplayName(user.tgFirstName, user.tgLastName, user.tgDisplayName),
+      wordsCount: (user as any)._count?.words ?? 0,
+      learnedCount: learnedMap.get(user.id.toString()) ?? 0,
+      postponedCount: skippedMap.get(user.id.toString()) ?? 0,
+    })),
+    hasMore,
   });
 });
 
@@ -495,8 +608,8 @@ app.get('/api/admin/users/:id', async (req, res) => {
   const userId = BigInt(rawId);
   const user = await prisma.user.findUnique({
     where: { id: userId },
-    select: { id: true, createdAt: true },
-  });
+    select: { id: true, createdAt: true, tgUsername: true, tgFirstName: true, tgLastName: true, tgDisplayName: true },
+  } as any);
 
   if (!user) {
     return res.status(404).json({ error: 'not_found' });
@@ -511,6 +624,10 @@ app.get('/api/admin/users/:id', async (req, res) => {
   return res.json({
     id: user.id.toString(),
     createdAt: user.createdAt,
+    tgUsername: user.tgUsername,
+    tgFirstName: user.tgFirstName,
+    tgLastName: user.tgLastName,
+    displayName: buildDisplayName(user.tgFirstName, user.tgLastName, user.tgDisplayName),
     wordsCount,
     learnedCount,
     postponedCount,

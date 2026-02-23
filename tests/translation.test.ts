@@ -42,6 +42,18 @@ afterEach(() => {
 });
 
 describe('translation service', () => {
+  it('detects Uzbek latin words more reliably', async () => {
+    const { detectLanguage } = await import('../src/services/translation');
+
+    expect(detectLanguage('jamoa')).toBe('uz');
+    expect(detectLanguage('rahmat')).toBe('uz');
+    expect(detectLanguage("o'quvchi")).toBe('uz');
+    expect(detectLanguage('apple')).toBe('en');
+    expect(detectLanguage('change', { preferredNative: 'uz' })).toBe('en');
+    expect(detectLanguage('shopping', { preferredNative: 'uz' })).toBe('en');
+    expect(detectLanguage('english', { preferredNative: 'uz' })).toBe('en');
+  });
+
   it('returns null for empty input and for same source/target language', async () => {
     process.env.HF_API_KEY = '';
     process.env.GEMINI_API_KEY = '';
@@ -94,7 +106,7 @@ describe('translation service', () => {
     const translated = await suggestTranslation('tools');
 
     expect(translated).toBe('\u0438\u043d\u0441\u0442\u0440\u0443\u043c\u0435\u043d\u0442\u044b');
-    expect(fetchMock.mock.calls.length).toBe(3);
+    expect(fetchMock.mock.calls.length).toBe(2);
   });
 
   it('retries Hugging Face after 503 with estimated_time and parses object response', async () => {

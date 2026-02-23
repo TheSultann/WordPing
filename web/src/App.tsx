@@ -249,6 +249,7 @@ type WordStatus = 'learned' | 'due' | 'new';
 const LANG_STORAGE_KEY = 'wordping.lang';
 const DATA_CACHE_TTL_MS = 30_000;
 const LEARNED_STAGE_MIN = 4;
+const ADMIN_USERS_PAGE_SIZE = 20;
 
 const resolveWordStatus = (word: WordItem): WordStatus => {
   if (word.nextReviewAt) {
@@ -271,6 +272,8 @@ const App = () => {
   const [tab, setTab] = useState<'settings' | 'stats' | 'words' | 'admin'>('stats');
   const [settings, setSettings] = useState<Settings | null>(null);
   const [form, setForm] = useState<Settings | null>(null);
+  const [intervalInput, setIntervalInput] = useState('');
+  const [limitInput, setLimitInput] = useState('');
   const [stats, setStats] = useState<Stats | null>(null);
   const [words, setWords] = useState<WordItem[]>([]);
   const [me, setMe] = useState<Me | null>(null);
@@ -284,6 +287,11 @@ const App = () => {
   const [adminOverviewError, setAdminOverviewError] = useState('');
   const [adminQuery, setAdminQuery] = useState('');
   const [adminUser, setAdminUser] = useState<AdminUserSummary | null>(null);
+  const [adminUsers, setAdminUsers] = useState<AdminUserSummary[]>([]);
+  const [adminUsersLoading, setAdminUsersLoading] = useState(false);
+  const [adminUsersError, setAdminUsersError] = useState('');
+  const [adminUsersOffset, setAdminUsersOffset] = useState(0);
+  const [adminUsersHasMore, setAdminUsersHasMore] = useState(false);
   const [adminLookupLoading, setAdminLookupLoading] = useState(false);
   const [adminLookupError, setAdminLookupError] = useState('');
   const [adminNotFound, setAdminNotFound] = useState(false);
@@ -337,6 +345,40 @@ const App = () => {
     const date = new Date(value);
     if (Number.isNaN(date.getTime())) return '—';
     return date.toLocaleString();
+  };
+
+  const formatDateOnly = (value?: string | null) => {
+    if (!value) return '-';
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return '-';
+    return date.toLocaleDateString();
+  };
+
+  const formatAdminName = (user: AdminUserSummary) => {
+    const display = (user.displayName ?? '').trim();
+    if (display) return display;
+    const firstLast = `${user.tgFirstName ?? ''} ${user.tgLastName ?? ''}`.trim();
+    if (firstLast) return firstLast;
+    if (user.tgUsername) return `@${user.tgUsername}`;
+    return `#${user.id}`;
+  };
+
+  const formatAdminCardPrimaryName = (user: AdminUserSummary) => {
+    const display = (user.displayName ?? '').trim();
+    if (display) return display;
+    return `${user.tgFirstName ?? ''} ${user.tgLastName ?? ''}`.trim();
+  };
+
+  const sanitizeNumericInput = (value: string) => {
+    const digits = value.replace(/\D+/g, '');
+    if (!digits) return '';
+    return digits.replace(/^0+(?=\d)/, '');
+  };
+
+  const parseDraftNumber = (value: string): number | null => {
+    if (!value.trim()) return null;
+    const parsed = Number.parseInt(value, 10);
+    return Number.isFinite(parsed) ? parsed : null;
   };
 
   const broadcastLimit = adminBroadcastPhoto.trim() ? 1024 : 4000;
@@ -473,6 +515,7 @@ const App = () => {
     }
     if (tab === 'admin' && isAdmin) {
       void loadAdminOverview();
+      void loadAdminUsers();
     }
     if (tab === 'words') {
       skipWordsDebounceOnceRef.current = true;
@@ -495,6 +538,8 @@ const App = () => {
   useEffect(() => {
     if (settings) {
       setForm(settings);
+      setIntervalInput(String(settings.notificationIntervalMinutes));
+      setLimitInput(String(settings.maxNotificationsPerDay));
     }
   }, [settings]);
 
@@ -576,16 +621,48 @@ const App = () => {
     }
   };
 
-  const loadAdminUser = async (overrideId?: string) => {
+  const loadAdminUsers = async (
+    overrideQuery?: string,
+    options?: { append?: boolean }
+  ) => {
+    if (!isAdmin) return [] as AdminUserSummary[];
+    const raw = (overrideQuery ?? adminQuery).trim();
+    const append = options?.append ?? false;
+    const offset = append ? adminUsersOffset : 0;
+    try {
+      setAdminUsersLoading(true);
+      setAdminUsersError('');
+      const response = await api.getAdminUsers(raw || undefined, ADMIN_USERS_PAGE_SIZE, offset);
+      const list = response.items ?? [];
+      setAdminUsers((prev) => (append ? [...prev, ...list] : list));
+      setAdminUsersOffset(offset + list.length);
+      setAdminUsersHasMore(response.hasMore);
+      if (!append) {
+        setAdminNotFound(Boolean(raw) && list.length === 0);
+      }
+      return list;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : t('adminLookupError');
+      const normalized = message === 'forbidden' || message === 'unauthorized' ? t('adminLookupError') : message;
+      setAdminUsersError(normalized);
+      if (!append) {
+        setAdminUsers([]);
+        setAdminUsersOffset(0);
+        setAdminUsersHasMore(false);
+      }
+      return [] as AdminUserSummary[];
+    } finally {
+      setAdminUsersLoading(false);
+    }
+  };
+
+  const openAdminUser = async (id: string) => {
     if (!isAdmin) return;
-    const raw = (overrideId ?? adminQuery).trim();
-    if (!raw) return;
     try {
       setAdminLookupLoading(true);
       setAdminLookupError('');
       setAdminNotFound(false);
-      setAdminUser(null);
-      const data = await api.getAdminUser(raw);
+      const data = await api.getAdminUser(id);
       setAdminUser(data);
     } catch (err) {
       const message = err instanceof Error ? err.message : t('adminLookupError');
@@ -598,6 +675,30 @@ const App = () => {
     } finally {
       setAdminLookupLoading(false);
     }
+  };
+
+  const loadAdminUser = async (overrideId?: string) => {
+    if (!isAdmin) return;
+    const raw = (overrideId ?? adminQuery).trim();
+    setAdminUser(null);
+    setAdminLookupError('');
+    if (!raw) {
+      await loadAdminUsers('');
+      return;
+    }
+    const list = await loadAdminUsers(raw);
+    if (/^\d+$/.test(raw)) {
+      await openAdminUser(raw);
+      return;
+    }
+    if (list.length === 1) {
+      await openAdminUser(list[0].id);
+    }
+  };
+
+  const loadMoreAdminUsers = async () => {
+    if (adminUsersLoading || !adminUsersHasMore) return;
+    await loadAdminUsers(undefined, { append: true });
   };
 
   const sendAdminBroadcast = async () => {
@@ -655,17 +756,31 @@ const App = () => {
   const clearAdminSearch = () => {
     setAdminQuery('');
     setAdminUser(null);
+    setAdminUsersError('');
+    setAdminUsersOffset(0);
+    setAdminUsersHasMore(false);
     setAdminNotFound(false);
     setAdminLookupError('');
+    void loadAdminUsers('');
   };
 
   const saveSettings = async () => {
     if (!form) return;
+    const notificationIntervalMinutes = parseDraftNumber(intervalInput) ?? form.notificationIntervalMinutes;
+    const maxNotificationsPerDay = parseDraftNumber(limitInput) ?? form.maxNotificationsPerDay;
+    const payload: Settings = {
+      ...form,
+      notificationIntervalMinutes,
+      maxNotificationsPerDay,
+    };
     try {
       setLoading(true);
       setError('');
-      const data = await api.updateSettings(form);
+      const data = await api.updateSettings(payload);
       setSettings(data);
+      setForm(data);
+      setIntervalInput(String(data.notificationIntervalMinutes));
+      setLimitInput(String(data.maxNotificationsPerDay));
       cacheTsRef.current.settings = Date.now();
       setNotice(t('saved'));
       setTimeout(() => setNotice(''), 2000);
@@ -700,6 +815,9 @@ const App = () => {
     : adminCandidateId
       ? `${isAdmin ? t('adminLabel') : t('userIdLabel')} #${adminCandidateId}`
       : t('userFallback');
+  const adminUsersTitle = adminQuery.trim()
+    ? (lang === 'uz' ? 'Qidiruv natijalari' : 'Результаты поиска')
+    : (lang === 'uz' ? 'Foydalanuvchilar' : 'Пользователи');
 
   return (
 
@@ -871,17 +989,29 @@ const App = () => {
                   <div className="field">
                     <label>{t('intervalLabel')}</label>
                     <input
-                      type="number"
+                      type="text"
+                      inputMode="numeric"
                       min={5}
                       max={240}
-                      value={form.notificationIntervalMinutes}
+                      value={intervalInput}
                       onChange={(e) => {
-                        const raw = e.target.value.replace(/^0+(?=\d)/, '');
-                        setForm({
-                          ...form,
-                          notificationIntervalMinutes: Number(raw),
-                        });
-                        e.target.value = raw;
+                        const raw = sanitizeNumericInput(e.target.value);
+                        setIntervalInput(raw);
+                        const parsed = parseDraftNumber(raw);
+                        if (parsed !== null) {
+                          setForm({
+                            ...form,
+                            notificationIntervalMinutes: parsed,
+                          });
+                        }
+                      }}
+                      onBlur={() => {
+                        const parsed = parseDraftNumber(intervalInput);
+                        if (parsed === null) {
+                          setIntervalInput(String(form.notificationIntervalMinutes));
+                          return;
+                        }
+                        setIntervalInput(String(parsed));
                       }}
                     />
                   </div>
@@ -889,17 +1019,29 @@ const App = () => {
                   <div className="field">
                     <label>{t('limitLabel')}</label>
                     <input
-                      type="number"
+                      type="text"
+                      inputMode="numeric"
                       min={5}
                       max={40}
-                      value={form.maxNotificationsPerDay}
+                      value={limitInput}
                       onChange={(e) => {
-                        const raw = e.target.value.replace(/^0+(?=\d)/, '');
-                        setForm({
-                          ...form,
-                          maxNotificationsPerDay: Number(raw),
-                        });
-                        e.target.value = raw;
+                        const raw = sanitizeNumericInput(e.target.value);
+                        setLimitInput(raw);
+                        const parsed = parseDraftNumber(raw);
+                        if (parsed !== null) {
+                          setForm({
+                            ...form,
+                            maxNotificationsPerDay: parsed,
+                          });
+                        }
+                      }}
+                      onBlur={() => {
+                        const parsed = parseDraftNumber(limitInput);
+                        if (parsed === null) {
+                          setLimitInput(String(form.maxNotificationsPerDay));
+                          return;
+                        }
+                        setLimitInput(String(parsed));
                       }}
                     />
                   </div>
@@ -1027,13 +1169,13 @@ const App = () => {
                   <div className="admin-search">
                     <input
                       type="text"
-                      inputMode="numeric"
-                      placeholder={t('adminSearchPlaceholder')}
+                      placeholder="ID / @username / name"
                       value={adminQuery}
                       onChange={(e) => {
                         setAdminQuery(e.target.value);
                         if (adminNotFound) setAdminNotFound(false);
                         if (adminLookupError) setAdminLookupError('');
+                        if (adminUsersError) setAdminUsersError('');
                       }}
                       onKeyDown={(e) => {
                         if (e.key === 'Enter') {
@@ -1067,6 +1209,9 @@ const App = () => {
                   {adminLookupError && (
                     <div className="admin-state admin-state--error">{adminLookupError || t('adminLookupError')}</div>
                   )}
+                  {adminUsersError && (
+                    <div className="admin-state admin-state--error">{adminUsersError || t('adminLookupError')}</div>
+                  )}
                   {adminNotFound && (
                     <div className="admin-state admin-state--error">{t('adminNotFound')}</div>
                   )}
@@ -1076,6 +1221,16 @@ const App = () => {
                       <div className="admin-user-header">
                         <div className="admin-user-left">
                           <div className="admin-user-label">{t('adminUserDetails')}</div>
+                          {formatAdminCardPrimaryName(adminUser) && (
+                            <div className="admin-user-label" style={{ fontSize: 18, color: 'var(--text-main)' }}>
+                              {formatAdminCardPrimaryName(adminUser)}
+                            </div>
+                          )}
+                          {adminUser.tgUsername && (
+                            <div className="admin-user-label" style={{ textTransform: 'none', letterSpacing: 0, fontSize: 13 }}>
+                              @{adminUser.tgUsername}
+                            </div>
+                          )}
                           <div className="admin-user-id-row">
                             <div className="admin-user-id">{adminUser.id}</div>
                           </div>
@@ -1102,6 +1257,59 @@ const App = () => {
                       </div>
                     </div>
                   )}
+
+                  <div style={{ marginTop: 14 }}>
+                    <div className="admin-user-label">{adminUsersTitle}</div>
+                    {adminUsersLoading ? (
+                      <div className="admin-state admin-state--loading">{t('adminLookupLoading')}</div>
+                    ) : adminUsers.length > 0 ? (
+                      <>
+                        <div className="admin-recent-list-clean">
+                          {adminUsers.map((item) => (
+                            <button
+                              key={item.id}
+                              type="button"
+                              className="admin-recent-row-clean"
+                              onClick={() => {
+                                setAdminQuery(item.id);
+                                void openAdminUser(item.id);
+                              }}
+                            >
+                              <div className="admin-recent-col">
+                                <span>Name</span>
+                                <strong>{formatAdminName(item)}</strong>
+                              </div>
+                              <div className="admin-recent-col">
+                                <span>@</span>
+                                <strong>{item.tgUsername ? `@${item.tgUsername}` : '-'}</strong>
+                              </div>
+                              <div className="admin-recent-col admin-recent-col--id">
+                                <span>{t('adminFieldId')}</span>
+                                <strong>{item.id}</strong>
+                              </div>
+                              <div className="admin-recent-col admin-recent-col--date">
+                                <span>{t('adminFieldCreated')}</span>
+                                <strong>{formatDateOnly(item.createdAt)}</strong>
+                              </div>
+                            </button>
+                          ))}
+                        </div>
+                        {adminUsersHasMore && (
+                          <button
+                            type="button"
+                            className="btn-ghost btn-compact"
+                            style={{ marginTop: 10, width: '100%' }}
+                            disabled={adminUsersLoading}
+                            onClick={() => void loadMoreAdminUsers()}
+                          >
+                            {lang === 'uz' ? "Yana ko'rsatish" : 'Показать ещё'}
+                          </button>
+                        )}
+                      </>
+                    ) : (
+                      <div className="admin-state admin-state--loading">{t('adminRecentEmpty')}</div>
+                    )}
+                  </div>
                 </div>
 
                 <div className="panel admin-block">

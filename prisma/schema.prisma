@@ -44,6 +44,11 @@ enum SessionState {
 
 model User {
   id                   BigInt        @id
+  tgUsername           String?       @db.VarChar(64)
+  tgFirstName          String?       @db.VarChar(128)
+  tgLastName           String?       @db.VarChar(128)
+  tgDisplayName        String?       @db.VarChar(191)
+  lastSeenAt           DateTime?
   createdAt            DateTime      @default(now())
   timezone             String?       @db.VarChar(64)
   directionMode        DirectionMode @default(MIXED)
@@ -66,6 +71,7 @@ model User {
 
   // Referrals
   referredById         BigInt?
+  referralQualifiedAt  DateTime?
   referredBy           User?         @relation("UserReferrals", fields: [referredById], references: [id], onDelete: SetNull)
   referrals            User[]        @relation("UserReferrals")
 
@@ -76,10 +82,14 @@ model User {
   todayDate            DateTime?
   words                Word[]
   reviews              Review[]
+  dailyUsages          UserDailyUsage[]
   session              UserSession?
   language             String        @default("ru")
 
   @@index([referredById])
+  @@index([referredById, referralQualifiedAt])
+  @@index([tgUsername])
+  @@index([lastSeenAt])
 }
 
 model Word {
@@ -132,4 +142,17 @@ model UserSession {
   user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([state])
+}
+
+model UserDailyUsage {
+  id                 Int      @id @default(autoincrement())
+  userId             BigInt
+  dayStart           DateTime
+  autoTranslateCount Int      @default(0)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+  user               User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, dayStart])
+  @@index([dayStart])
 }

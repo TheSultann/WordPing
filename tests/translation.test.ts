@@ -298,4 +298,80 @@ describe('translation service', () => {
     await suggestTranslation('word-1');
     expect(fetchMock.mock.calls.length).toBe(102);
   });
+
+  it('refines uz translation when first result is loanword copy of english word', async () => {
+    process.env.HF_API_KEY = '';
+    process.env.GEMINI_API_KEY = 'gm-key';
+    process.env.GEMINI_API_BASE_URL = 'https://gem.test/models';
+    process.env.GEMINI_MODEL = 'gem-primary';
+    process.env.GEMINI_FALLBACK_MODELS = '';
+    process.env.TRANSLATE_API_URL = 'https://mymemory.test/get';
+
+    const fetchMock = installFetchMock((url) => {
+      if (url.includes('https://gem.test/models/gem-primary:generateContent')) {
+        if (fetchMock.mock.calls.length === 1) {
+          return {
+            status: 200,
+            body: {
+              candidates: [{ content: { parts: [{ text: 'konsensus' }] } }],
+            },
+          };
+        }
+        return {
+          status: 200,
+          body: {
+            candidates: [{ content: { parts: [{ text: 'kelishuv' }] } }],
+          },
+        };
+      }
+      if (url.includes('https://mymemory.test/get')) {
+        return { status: 200, body: { responseData: { translatedText: 'konsensus' } } };
+      }
+      return { status: 500, body: { error: 'unexpected url' } };
+    });
+
+    const { suggestTranslation } = await import('../src/services/translation');
+    const translated = await suggestTranslation('consensus', 'uz');
+
+    expect(translated).toBe('kelishuv');
+    expect(fetchMock.mock.calls.length).toBe(2);
+  });
+
+  it('refines ru translation when first result is transliterated loanword', async () => {
+    process.env.HF_API_KEY = '';
+    process.env.GEMINI_API_KEY = 'gm-key';
+    process.env.GEMINI_API_BASE_URL = 'https://gem.test/models';
+    process.env.GEMINI_MODEL = 'gem-primary';
+    process.env.GEMINI_FALLBACK_MODELS = '';
+    process.env.TRANSLATE_API_URL = 'https://mymemory.test/get';
+
+    const fetchMock = installFetchMock((url) => {
+      if (url.includes('https://gem.test/models/gem-primary:generateContent')) {
+        if (fetchMock.mock.calls.length === 1) {
+          return {
+            status: 200,
+            body: {
+              candidates: [{ content: { parts: [{ text: 'консенсус' }] } }],
+            },
+          };
+        }
+        return {
+          status: 200,
+          body: {
+            candidates: [{ content: { parts: [{ text: 'согласие' }] } }],
+          },
+        };
+      }
+      if (url.includes('https://mymemory.test/get')) {
+        return { status: 200, body: { responseData: { translatedText: 'консенсус' } } };
+      }
+      return { status: 500, body: { error: 'unexpected url' } };
+    });
+
+    const { suggestTranslation } = await import('../src/services/translation');
+    const translated = await suggestTranslation('consensus', 'ru');
+
+    expect(translated).toBe('согласие');
+    expect(fetchMock.mock.calls.length).toBe(2);
+  });
 });

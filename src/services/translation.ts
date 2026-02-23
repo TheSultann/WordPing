@@ -67,6 +67,79 @@ const normalizeText = (value: unknown): string | null => {
   return text.length > 0 ? text : null;
 };
 
+const normalizeLatinToken = (value: string): string =>
+  value.toLowerCase().replace(/[^a-z]/g, '');
+
+const isSingleLatinToken = (value: string): boolean => /^[a-z]+$/i.test(value.trim());
+const isSingleCyrillicToken = (value: string): boolean => /^[а-яё]+$/iu.test(value.trim());
+
+const transliterateRuToLatin = (value: string): string => {
+  const map: Record<string, string> = {
+    а: 'a', б: 'b', в: 'v', г: 'g', д: 'd', е: 'e', ё: 'e', ж: 'zh', з: 'z',
+    и: 'i', й: 'i', к: 'k', л: 'l', м: 'm', н: 'n', о: 'o', п: 'p', р: 'r',
+    с: 's', т: 't', у: 'u', ф: 'f', х: 'h', ц: 'c', ч: 'ch', ш: 'sh', щ: 'sch',
+    ъ: '', ы: 'y', ь: '', э: 'e', ю: 'yu', я: 'ya',
+  };
+
+  return value
+    .toLowerCase()
+    .split('')
+    .map((char) => map[char] ?? '')
+    .join('');
+};
+
+const levenshteinDistance = (a: string, b: string): number => {
+  if (a === b) return 0;
+  const n = a.length;
+  const m = b.length;
+  if (n === 0) return m;
+  if (m === 0) return n;
+
+  const prev = new Float64Array(m + 1);
+  const curr = new Float64Array(m + 1);
+
+  for (let j = 0; j <= m; j += 1) prev[j] = j;
+
+  for (let i = 1; i <= n; i += 1) {
+    curr[0] = i;
+    for (let j = 1; j <= m; j += 1) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      curr[j] = Math.min(
+        (prev[j] ?? 0) + 1,
+        (curr[j - 1] ?? 0) + 1,
+        (prev[j - 1] ?? 0) + cost,
+      );
+    }
+    for (let j = 0; j <= m; j += 1) prev[j] = curr[j] ?? 0;
+  }
+
+  return prev[m] ?? 0;
+};
+
+const isLikelyUzLoanwordFromEnglish = (sourceEn: string, translatedUz: string): boolean => {
+  if (!isSingleLatinToken(sourceEn) || !isSingleLatinToken(translatedUz)) return false;
+
+  const source = normalizeLatinToken(sourceEn);
+  const translated = normalizeLatinToken(translatedUz);
+  if (source.length < 5 || translated.length < 5) return false;
+
+  const distance = levenshteinDistance(source, translated);
+  const maxLen = Math.max(source.length, translated.length);
+  return distance <= 2 || distance / maxLen <= 0.3;
+};
+
+const isLikelyRuLoanwordFromEnglish = (sourceEn: string, translatedRu: string): boolean => {
+  if (!isSingleLatinToken(sourceEn) || !isSingleCyrillicToken(translatedRu)) return false;
+
+  const source = normalizeLatinToken(sourceEn);
+  const transliterated = normalizeLatinToken(transliterateRuToLatin(translatedRu));
+  if (source.length < 5 || transliterated.length < 5) return false;
+
+  const distance = levenshteinDistance(source, transliterated);
+  const maxLen = Math.max(source.length, transliterated.length);
+  return distance <= 2 || distance / maxLen <= 0.35;
+};
+
 const wait = async (ms: number): Promise<void> => {
   await new Promise((resolve) => setTimeout(resolve, ms));
 };
@@ -346,6 +419,8 @@ export const detectAndTranslateWithGemini = async (
     'Allowed source_lang values: en, ru, uz only.',
     `If source_lang is "en", translate to "${nativeLang}".`,
     'If source_lang is "ru" or "uz", translate to "en".',
+    'Prefer natural, commonly used native equivalents.',
+    'Avoid transliteration/loanword copy when a common native equivalent exists.',
     'Return ONLY strict JSON with keys: source_lang, target_lang, translated_text, confidence.',
     'confidence must be a number from 0 to 1.',
     `Text: ${text}`,
@@ -389,7 +464,13 @@ export const detectAndTranslateWithGemini = async (
   return null;
 };
 
-const translateWithGeminiStep = async (text: string, source: Lang, target: Lang, timeoutMs: number): Promise<string | null> => {
+const translateWithGeminiStep = async (
+  text: string,
+  source: Lang,
+  target: Lang,
+  timeoutMs: number,
+  options?: { preferNativeEquivalent?: boolean }
+): Promise<string | null> => {
   const key = trimEnv(process.env.GEMINI_API_KEY);
   if (!key) return null;
 
@@ -398,6 +479,12 @@ const translateWithGeminiStep = async (text: string, source: Lang, target: Lang,
 
   const prompt = [
     `Translate text from ${languageName(source)} to ${languageName(target)}.`,
+    ...(options?.preferNativeEquivalent
+      ? [
+        'Use natural, everyday native wording.',
+        'Avoid transliteration/loanword copy if a common native equivalent exists.',
+      ]
+      : []),
     'Return only translated text without comments.',
     `Text: ${text}`,
   ].join('\n');
@@ -479,8 +566,29 @@ export const translateAuto = async (input: string, target: Lang = 'ru'): Promise
 
   const promise = (async () => {
     const translated = await translateWithRouting(text, source, target, readTimeoutMs());
-    if (translated) writeCachedTranslation(cacheKey, translated);
-    return translated;
+    if (!translated) return null;
+
+    let finalTranslation = translated;
+    if (source === 'en' && target === 'uz' && isLikelyUzLoanwordFromEnglish(text, translated)) {
+      const refined = await translateWithGeminiStep(text, source, target, readTimeoutMs(), {
+        preferNativeEquivalent: true,
+      });
+      if (refined && !isLikelyUzLoanwordFromEnglish(text, refined)) {
+        finalTranslation = refined;
+      }
+    }
+
+    if (source === 'en' && target === 'ru' && isLikelyRuLoanwordFromEnglish(text, translated)) {
+      const refined = await translateWithGeminiStep(text, source, target, readTimeoutMs(), {
+        preferNativeEquivalent: true,
+      });
+      if (refined && !isLikelyRuLoanwordFromEnglish(text, refined)) {
+        finalTranslation = refined;
+      }
+    }
+
+    writeCachedTranslation(cacheKey, finalTranslation);
+    return finalTranslation;
   })();
 
   inFlightRequests.set(cacheKey, promise);

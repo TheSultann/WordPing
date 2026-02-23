@@ -103,6 +103,8 @@ const formatPairLine = (
   return `${flagForDetectedLang(leftDetected)} <b>${escapeHtml(leftText)}</b> — ${flagForDetectedLang(rightDetected)} ${escapeHtml(rightText)}`;
 };
 
+const nativeLangForUi = (lang: Lang): 'ru' | 'uz' => (lang === 'uz' ? 'uz' : 'ru');
+
 const hasCyrillic = (value: string) => /[\u0400-\u04FF]/u.test(value);
 
 const hasUzSpecificLatinMarkers = (value: string) =>
@@ -343,7 +345,7 @@ bot.on('text', async (ctx) => {
       preferredNative: lang === 'uz' ? 'uz' : 'ru',
     });
     let resolvedInputLang = inputLang;
-    const targetLang: 'ru' | 'uz' = lang === 'uz' ? 'uz' : 'ru';
+    const targetLang: 'ru' | 'uz' = nativeLangForUi(lang);
 
     let finalEn = normalizedInput;
     let finalTranslation: string | null = null;
@@ -394,7 +396,7 @@ bot.on('text', async (ctx) => {
     } else {
       const existing = await findExistingWord(finalEn);
       if (existing) {
-        const pair = formatPairLine(existing.wordEn, existing.translationRu, lang, 'en');
+        const pair = formatPairLine(existing.wordEn, existing.translationRu, lang, 'en', targetLang);
         await ctx.reply(t(lang, 'add.exists', { pair }), { parse_mode: 'HTML' });
         await resetState(BigInt(userId));
         return;
@@ -420,7 +422,7 @@ bot.on('text', async (ctx) => {
     // Check for duplicate
     const existing = await findExistingWord(finalEn);
     if (existing) {
-      const pair = formatPairLine(existing.wordEn, existing.translationRu, lang, 'en');
+      const pair = formatPairLine(existing.wordEn, existing.translationRu, lang, 'en', targetLang);
       await ctx.reply(t(lang, 'add.exists', { pair }), { parse_mode: 'HTML' });
       await resetState(BigInt(userId));
       return;
@@ -430,7 +432,7 @@ bot.on('text', async (ctx) => {
       const pair =
         resolvedInputLang === 'ru' || resolvedInputLang === 'uz'
           ? formatPairLine(finalTranslation, finalEn, lang, resolvedInputLang, 'en')
-          : formatPairLine(finalEn, finalTranslation, lang, 'en');
+          : formatPairLine(finalEn, finalTranslation, lang, 'en', targetLang);
       await setState(BigInt(userId), 'ADDING_WORD_CONFIRM_TRANSLATION', {
         payload: { wordEn: finalEn, translationRu: finalTranslation },
       });
@@ -536,7 +538,7 @@ bot.on('text', async (ctx) => {
       try {
         await addWordForUser(BigInt(userId), payload.wordEn, text);
         await resetState(BigInt(userId));
-        const pair = formatPairLine(payload.wordEn, text, lang, 'en');
+        const pair = formatPairLine(payload.wordEn, text, lang, 'en', nativeLangForUi(lang));
         await ctx.reply(
           t(lang, 'add.saved', { pair }),
           { parse_mode: 'HTML' }
@@ -722,7 +724,7 @@ bot.on('callback_query', async (ctx) => {
     try {
       await addWordForUser(BigInt(userId), payload.wordEn, payload.translationRu);
       await resetState(BigInt(userId));
-      const pair = formatPairLine(payload.wordEn, payload.translationRu, lang, 'en');
+      const pair = formatPairLine(payload.wordEn, payload.translationRu, lang, 'en', nativeLangForUi(lang));
       await ctx.editMessageText(
         t(lang, 'add.saved', { pair }),
         { parse_mode: 'HTML' }

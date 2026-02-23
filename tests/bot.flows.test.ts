@@ -326,6 +326,24 @@ describe('bot extended flows', () => {
     expect(suggestMsg).toBeTruthy();
   });
 
+  it('shows uz flag for suggested native translation on uz interface', async () => {
+    await prisma.user.create({ data: { id: BigInt(userId), language: 'uz' } });
+    await setState(BigInt(userId), 'ADDING_WORD_WAIT_EN');
+    const callApiSpy = vi
+      .spyOn(Object.getPrototypeOf(bot.telegram), 'callApi')
+      .mockResolvedValue({} as any);
+
+    suggestTranslationMock.mockResolvedValue('kelishuv');
+
+    await bot.handleUpdate(makeMessageUpdate('consensus', 64), {} as any);
+
+    const suggestMsg = sentTexts(callApiSpy).find(
+      (text) => text.includes('consensus') && text.includes('kelishuv')
+    );
+    expect(suggestMsg).toBeTruthy();
+    expect(String(suggestMsg)).toContain('\uD83C\uDDFA\uD83C\uDDF8 <b>consensus</b> — \uD83C\uDDFA\uD83C\uDDFF kelishuv');
+  });
+
   it('falls back to manual translation when daily auto-translate limit is reached', async () => {
     const previousDailyLimit = process.env.DAILY_AUTO_TRANSLATE_LIMIT;
     process.env.DAILY_AUTO_TRANSLATE_LIMIT = '1';

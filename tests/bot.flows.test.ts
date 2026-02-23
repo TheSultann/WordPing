@@ -414,8 +414,9 @@ describe('bot extended flows', () => {
         userId: BigInt(userId),
         wordEn: 'hello',
         translationRu: 'привет',
-        review: {
+        reviews: {
           create: {
+            direction: 'EN_TO_RU',
             userId: BigInt(userId),
             stage: 0,
             intervalMinutes: 5,
@@ -423,11 +424,11 @@ describe('bot extended flows', () => {
           },
         },
       },
-      include: { review: true },
+      include: { reviews: true },
     });
 
     await setState(BigInt(userId), 'WAITING_ANSWER', {
-      reviewId: created.review?.id,
+      reviewId: created.reviews?.[0]?.id,
       wordId: created.id,
       direction: 'EN_TO_RU',
       sentAt: new Date(),

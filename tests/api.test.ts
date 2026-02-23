@@ -116,8 +116,9 @@ describe('API integration', () => {
         userId,
         wordEn: 'learned',
         translationRu: 'выучено',
-        review: {
+        reviews: {
           create: {
+            direction: 'EN_TO_RU',
             userId,
             stage: 4,
             intervalMinutes: 4320,
@@ -131,8 +132,9 @@ describe('API integration', () => {
         userId,
         wordEn: 'notyet',
         translationRu: 'не',
-        review: {
+        reviews: {
           create: {
+            direction: 'EN_TO_RU',
             userId,
             stage: 3,
             intervalMinutes: 1440,
@@ -171,8 +173,9 @@ describe('API integration', () => {
         userId,
         wordEn: 'apple',
         translationRu: 'яблоко',
-        review: {
+        reviews: {
           create: {
+            direction: 'EN_TO_RU',
             userId,
             stage: 0,
             intervalMinutes: 5,
@@ -214,8 +217,9 @@ describe('API integration', () => {
         userId,
         wordEn: 'alpha',
         translationRu: 'альфа',
-        review: {
+        reviews: {
           create: {
+            direction: 'EN_TO_RU',
             userId,
             stage: 4,
             intervalMinutes: 4320,
@@ -230,8 +234,9 @@ describe('API integration', () => {
         userId,
         wordEn: 'beta',
         translationRu: 'бета',
-        review: {
+        reviews: {
           create: {
+            direction: 'EN_TO_RU',
             userId,
             stage: 0,
             intervalMinutes: 5,
@@ -261,8 +266,9 @@ describe('API integration', () => {
         userId,
         wordEn: 'gamma',
         translationRu: 'гамма',
-        review: {
+        reviews: {
           create: {
+            direction: 'EN_TO_RU',
             userId,
             stage: 4,
             intervalMinutes: 4320,

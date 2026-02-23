@@ -82,6 +82,21 @@ describe('service integration', () => {
     expect(due?.word?.wordEn).toBe('test');
   });
 
+  it('addWordForUser creates independent reviews for both directions', async () => {
+    await ensureUser(Number(userId));
+    const { wordId } = await addWordForUser(userId, 'dual', 'dual-ru');
+    const reviews = await prisma.review.findMany({
+      where: { wordId },
+      orderBy: { direction: 'asc' },
+      select: { direction: true, stage: true, intervalMinutes: true },
+    });
+
+    expect(reviews).toHaveLength(2);
+    expect(reviews.map((review) => review.direction).sort()).toEqual(['EN_TO_RU', 'RU_TO_EN']);
+    expect(reviews.every((review) => review.stage === 0)).toBe(true);
+    expect(reviews.every((review) => review.intervalMinutes === 5)).toBe(true);
+  });
+
   it('addWordForUser throws DuplicateWordError if word exists', async () => {
     await ensureUser(Number(userId));
     await addWordForUser(userId, 'duplicate', 'duplicate-ru');
@@ -143,6 +158,30 @@ describe('service integration', () => {
     const updated = await applyRating(review!, 'GOOD', 'CORRECT', 'EN_TO_RU', 'answer');
     expect(updated.lastResult).toBe('CORRECT');
     expect(updated.intervalMinutes).toBeGreaterThan(0);
+  });
+
+  it('applyRating updates only current direction review', async () => {
+    await ensureUser(Number(userId));
+    const { wordId } = await addWordForUser(userId, 'pair', 'пара');
+    const reviews = await prisma.review.findMany({
+      where: { wordId },
+      select: { id: true, direction: true, stage: true, intervalMinutes: true },
+    });
+
+    const enToRu = reviews.find((review) => review.direction === 'EN_TO_RU');
+    const ruToEn = reviews.find((review) => review.direction === 'RU_TO_EN');
+    expect(enToRu).toBeTruthy();
+    expect(ruToEn).toBeTruthy();
+
+    const enToRuReview = await prisma.review.findUnique({ where: { id: enToRu!.id } });
+    const beforeRuToEn = await prisma.review.findUnique({ where: { id: ruToEn!.id } });
+    const updated = await applyRating(enToRuReview!, 'EASY', 'CORRECT', 'EN_TO_RU', 'pair');
+    const afterRuToEn = await prisma.review.findUnique({ where: { id: ruToEn!.id } });
+
+    expect(updated.id).toBe(enToRu!.id);
+    expect(updated.stage).toBeGreaterThan(enToRu!.stage);
+    expect(afterRuToEn?.stage).toBe(beforeRuToEn?.stage);
+    expect(afterRuToEn?.intervalMinutes).toBe(beforeRuToEn?.intervalMinutes);
   });
 
   it('recordCompletion increments streak after 3 completions', async () => {

@@ -270,10 +270,13 @@ app.get('/api/stats', async (req, res) => {
     todayStart.utc().toDate(),
     tomorrow.utc().toDate()
   );
-  const learnedCount = await prisma.review.count({
+  const learnedCount = await prisma.word.count({
     where: {
       userId: user.id,
-      stage: { gte: LEARNED_STAGE_MIN },
+      reviews: {
+        some: {},
+        every: { stage: { gte: LEARNED_STAGE_MIN } },
+      },
     },
   });
   res.json({
@@ -367,7 +370,7 @@ app.get('/api/words', async (req, res) => {
     orderBy: { createdAt: 'desc' },
     take,
     include: {
-      review: {
+      reviews: {
         select: {
           stage: true,
           nextReviewAt: true,
@@ -377,14 +380,23 @@ app.get('/api/words', async (req, res) => {
   });
 
   res.json({
-    items: items.map((item) => ({
-      id: item.id,
-      wordEn: item.wordEn,
-      translationRu: item.translationRu,
-      createdAt: item.createdAt,
-      stage: item.review?.stage ?? null,
-      nextReviewAt: item.review?.nextReviewAt ?? null,
-    })),
+    items: items.map((item) => {
+      const stage = item.reviews.length ? Math.min(...item.reviews.map((review) => review.stage)) : null;
+      const nextReviewAt =
+        item.reviews
+          .map((review) => review.nextReviewAt)
+          .filter((value): value is Date => Boolean(value))
+          .sort((a, b) => a.getTime() - b.getTime())[0] ?? null;
+
+      return {
+        id: item.id,
+        wordEn: item.wordEn,
+        translationRu: item.translationRu,
+        createdAt: item.createdAt,
+        stage,
+        nextReviewAt,
+      };
+    }),
   });
 });
 
@@ -474,16 +486,25 @@ app.get('/api/admin/overview', async (_req, res) => {
   const recentIds = recentUsers.map((user) => user.id);
   const [learnedCounts, skippedCounts] = await Promise.all([
     recentIds.length
-      ? prisma.review.groupBy({
+      ? prisma.word.groupBy({
           by: ['userId'],
-          where: { userId: { in: recentIds }, stage: { gte: LEARNED_STAGE_MIN } },
+          where: {
+            userId: { in: recentIds },
+            reviews: {
+              some: {},
+              every: { stage: { gte: LEARNED_STAGE_MIN } },
+            },
+          },
           _count: { _all: true },
         })
       : Promise.resolve([]),
     recentIds.length
-      ? prisma.review.groupBy({
+      ? prisma.word.groupBy({
           by: ['userId'],
-          where: { userId: { in: recentIds }, lastResult: 'SKIPPED' },
+          where: {
+            userId: { in: recentIds },
+            reviews: { some: { lastResult: 'SKIPPED' } },
+          },
           _count: { _all: true },
         })
       : Promise.resolve([]),
@@ -562,18 +583,27 @@ app.get('/api/admin/users', async (req, res) => {
   const userIds = visibleUsers.map((user) => user.id);
   const [learnedCounts, skippedCounts] = await Promise.all([
     userIds.length
-      ? prisma.review.groupBy({
-        by: ['userId'],
-        where: { userId: { in: userIds }, stage: { gte: LEARNED_STAGE_MIN } },
-        _count: { _all: true },
-      })
+      ? prisma.word.groupBy({
+          by: ['userId'],
+          where: {
+            userId: { in: userIds },
+            reviews: {
+              some: {},
+              every: { stage: { gte: LEARNED_STAGE_MIN } },
+            },
+          },
+          _count: { _all: true },
+        })
       : Promise.resolve([]),
     userIds.length
-      ? prisma.review.groupBy({
-        by: ['userId'],
-        where: { userId: { in: userIds }, lastResult: 'SKIPPED' },
-        _count: { _all: true },
-      })
+      ? prisma.word.groupBy({
+          by: ['userId'],
+          where: {
+            userId: { in: userIds },
+            reviews: { some: { lastResult: 'SKIPPED' } },
+          },
+          _count: { _all: true },
+        })
       : Promise.resolve([]),
   ]);
 
@@ -617,8 +647,21 @@ app.get('/api/admin/users/:id', async (req, res) => {
 
   const [wordsCount, learnedCount, postponedCount] = await Promise.all([
     prisma.word.count({ where: { userId } }),
-    prisma.review.count({ where: { userId, stage: { gte: LEARNED_STAGE_MIN } } }),
-    prisma.review.count({ where: { userId, lastResult: 'SKIPPED' } }),
+    prisma.word.count({
+      where: {
+        userId,
+        reviews: {
+          some: {},
+          every: { stage: { gte: LEARNED_STAGE_MIN } },
+        },
+      },
+    }),
+    prisma.word.count({
+      where: {
+        userId,
+        reviews: { some: { lastResult: 'SKIPPED' } },
+      },
+    }),
   ]);
 
   return res.json({

@@ -52,14 +52,20 @@ describe('worker integration', () => {
     });
   };
 
-  const seedHintReview = async (hardStreak: number, wordEn = 'permanent', translationRu = 'постоянный') => {
+  const seedHintReview = async (
+    hardStreak: number,
+    wordEn = 'permanent',
+    translationRu = 'постоянный',
+    direction: 'EN_TO_RU' | 'RU_TO_EN' = 'EN_TO_RU'
+  ) => {
     await prisma.word.create({
       data: {
         userId,
         wordEn,
         translationRu,
-        review: {
+        reviews: {
           create: {
+            direction,
             userId,
             stage: 1,
             hardStreak,
@@ -91,8 +97,9 @@ describe('worker integration', () => {
         userId,
         wordEn: 'hello',
         translationRu: 'привет',
-        review: {
+        reviews: {
           create: {
+            direction: 'EN_TO_RU',
             userId,
             stage: 0,
             intervalMinutes: 5,
@@ -138,8 +145,9 @@ describe('worker integration', () => {
         userId,
         wordEn: 'night',
         translationRu: 'РЅРѕС‡СЊ',
-        review: {
+        reviews: {
           create: {
+            direction: 'EN_TO_RU',
             userId,
             stage: 0,
             intervalMinutes: 5,
@@ -277,8 +285,9 @@ describe('worker integration', () => {
         userId,
         wordEn: 'interval',
         translationRu: 'интервал',
-        review: {
+        reviews: {
           create: {
+            direction: 'EN_TO_RU',
             userId,
             stage: 1,
             intervalMinutes: 5,
@@ -296,10 +305,9 @@ describe('worker integration', () => {
 
   it('shows first-letter hint after first hard for RU_TO_EN', async () => {
     const sendSpy = vi.spyOn(telegram, 'sendMessage').mockResolvedValue({} as any);
-    vi.spyOn(Math, 'random').mockReturnValue(0.1); // RU_TO_EN
 
     await seedHintUser();
-    await seedHintReview(1);
+    await seedHintReview(1, 'permanent', 'постоянный', 'RU_TO_EN');
 
     const user = await prisma.user.findUnique({ where: { id: userId } });
     await processUser(user);
@@ -311,10 +319,9 @@ describe('worker integration', () => {
 
   it('shows first-and-last-letter hint after second hard for RU_TO_EN', async () => {
     const sendSpy = vi.spyOn(telegram, 'sendMessage').mockResolvedValue({} as any);
-    vi.spyOn(Math, 'random').mockReturnValue(0.1); // RU_TO_EN
 
     await seedHintUser();
-    await seedHintReview(2);
+    await seedHintReview(2, 'permanent', 'постоянный', 'RU_TO_EN');
 
     const user = await prisma.user.findUnique({ where: { id: userId } });
     await processUser(user);
@@ -326,10 +333,9 @@ describe('worker integration', () => {
 
   it('shows first-second-and-last-letter hint after third hard for RU_TO_EN', async () => {
     const sendSpy = vi.spyOn(telegram, 'sendMessage').mockResolvedValue({} as any);
-    vi.spyOn(Math, 'random').mockReturnValue(0.1); // RU_TO_EN
 
     await seedHintUser();
-    await seedHintReview(3);
+    await seedHintReview(3, 'permanent', 'постоянный', 'RU_TO_EN');
 
     const user = await prisma.user.findUnique({ where: { id: userId } });
     await processUser(user);
@@ -341,7 +347,6 @@ describe('worker integration', () => {
 
   it('builds unicode hint correctly for EN_TO_RU', async () => {
     const sendSpy = vi.spyOn(telegram, 'sendMessage').mockResolvedValue({} as any);
-    vi.spyOn(Math, 'random').mockReturnValue(0.9); // EN_TO_RU
 
     await seedHintUser();
     await seedHintReview(3);
@@ -375,8 +380,9 @@ describe('worker integration', () => {
         userId,
         wordEn: 'old-card',
         translationRu: 'СЃС‚Р°СЂР°СЏ РєР°СЂС‚РѕС‡РєР°',
-        review: {
+        reviews: {
           create: {
+            direction: 'EN_TO_RU',
             userId,
             stage: 1,
             intervalMinutes: 25,
@@ -391,8 +397,9 @@ describe('worker integration', () => {
         userId,
         wordEn: 'new-card',
         translationRu: 'РЅРѕРІР°СЏ РєР°СЂС‚РѕС‡РєР°',
-        review: {
+        reviews: {
           create: {
+            direction: 'EN_TO_RU',
             userId,
             stage: 0,
             intervalMinutes: 5,
@@ -434,8 +441,9 @@ describe('worker integration', () => {
         userId,
         wordEn: 'limit-stage0',
         translationRu: 'лимитная карточка',
-        review: {
+        reviews: {
           create: {
+            direction: 'EN_TO_RU',
             userId,
             stage: 0,
             intervalMinutes: 5,
@@ -474,8 +482,9 @@ describe('worker integration', () => {
         userId,
         wordEn: 'older-stage0',
         translationRu: 'старая карточка',
-        review: {
+        reviews: {
           create: {
+            direction: 'EN_TO_RU',
             userId,
             stage: 0,
             intervalMinutes: 5,
@@ -490,8 +499,9 @@ describe('worker integration', () => {
         userId,
         wordEn: 'newer-stage0',
         translationRu: 'новая карточка',
-        review: {
+        reviews: {
           create: {
+            direction: 'EN_TO_RU',
             userId,
             stage: 0,
             intervalMinutes: 5,
@@ -531,8 +541,9 @@ describe('worker integration', () => {
         userId,
         wordEn: 'stage0-reviewed',
         translationRu: 'первая проверка уже была',
-        review: {
+        reviews: {
           create: {
+            direction: 'EN_TO_RU',
             userId,
             stage: 0,
             intervalMinutes: 5,
@@ -591,8 +602,9 @@ describe('worker integration', () => {
         userId,
         wordEn: 'lock',
         translationRu: 'лок',
-        review: {
+        reviews: {
           create: {
+            direction: 'EN_TO_RU',
             userId,
             stage: 0,
             intervalMinutes: 5,
@@ -628,8 +640,9 @@ describe('worker integration', () => {
         userId,
         wordEn: 'fail',
         translationRu: 'провал',
-        review: {
+        reviews: {
           create: {
+            direction: 'EN_TO_RU',
             userId,
             stage: 0,
             intervalMinutes: 5,
@@ -666,6 +679,7 @@ describe('worker integration', () => {
         wordId: (await prisma.word.create({
           data: { userId, wordEn: 'soon', translationRu: 'скоро' },
         })).id,
+        direction: 'EN_TO_RU',
         stage: 0,
         intervalMinutes: 5,
         nextReviewAt: new Date(Date.now() - 1000),
@@ -712,6 +726,7 @@ describe('worker integration', () => {
         wordId: (await prisma.word.create({
           data: { userId, wordEn: 'rem', translationRu: 'напоминание' },
         })).id,
+        direction: 'EN_TO_RU',
         stage: 0,
         intervalMinutes: 5,
         nextReviewAt: new Date(Date.now() - 1000),
@@ -774,6 +789,7 @@ describe('worker integration', () => {
         wordId: (await prisma.word.create({
           data: { userId, wordEn: 'silent', translationRu: 'С‚РёС…Рѕ' },
         })).id,
+        direction: 'EN_TO_RU',
         stage: 0,
         intervalMinutes: 5,
         nextReviewAt: new Date(Date.now() - 1000),

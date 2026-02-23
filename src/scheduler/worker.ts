@@ -4,7 +4,7 @@ import cron from 'node-cron';
 import { Telegraf } from 'telegraf';
 import { prisma } from '../db/client';
 import { ensureSession, setState, setSessionActiveIfIdle } from '../services/sessionService';
-import { findDueReview, findDueReviewByStage, markSkipped, pickDirection } from '../services/reviewService';
+import { findDueReview, findDueReviewByStage, markSkipped } from '../services/reviewService';
 import { CardDirection } from '../generated/prisma/client';
 import { isWithinWindow, nowUtc, startOfUserDay, userNow } from '../utils/time';
 import dayjs from 'dayjs';
@@ -63,6 +63,12 @@ const sendCard = async (userId: number, direction: CardDirection, phrase: string
   const prompt = `Translate: ${phrase}\n(Reply with text)`;
   await telegram.sendMessage(userId, prompt);
 };
+
+const escapeHtml = (value: string) =>
+  value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
 
 const hintPrefix = (lang: Lang) => (lang === 'uz' ? 'Ishora 💡' : 'Подсказка💡');
 
@@ -173,7 +179,7 @@ export const processUser = async (user: any) => {
   if (!hasDailyNotificationCapacity(normalizedUser)) return;
   if (!isFirstStageZeroExposure && !hasNotificationIntervalElapsed(normalizedUser, now)) return;
 
-  const direction = pickDirection(normalizedUser.directionMode);
+  const direction = review.direction;
   const phrase = direction === 'RU_TO_EN' ? review.word.translationRu : review.word.wordEn;
   const lang = (normalizedUser.language as Lang) || 'ru';
   const hint = buildHint(direction, review.word, (review as any).hardStreak, lang);
@@ -191,7 +197,8 @@ export const processUser = async (user: any) => {
   }
 
   try {
-    const base = `${t(lang, 'worker.verifyPrompt', { phrase })}\n${t(lang, 'worker.answerPrompt')}`;
+    const emphasizedPhrase = `<b>${escapeHtml(phrase)}</b>`;
+    const base = `${t(lang, 'worker.verifyPrompt', { phrase: emphasizedPhrase })}\n${t(lang, 'worker.answerPrompt')}`;
     const prompt = hint ? `${base}\n\n${hint}` : base;
     await telegram.sendMessage(Number(normalizedUser.id), prompt, { parse_mode: 'HTML' });
     // Keep helper to allow quick swap during experiments.

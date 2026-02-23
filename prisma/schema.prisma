@@ -99,7 +99,7 @@ model Word {
   translationRu String    @db.VarChar(256)
   createdAt     DateTime  @default(now())
   user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  review        Review?
+  reviews       Review[]
 
   @@index([userId])
   @@unique([userId, wordEn])
@@ -108,7 +108,8 @@ model Word {
 model Review {
   id             Int           @id @default(autoincrement())
   userId         BigInt
-  wordId         Int           @unique
+  wordId         Int
+  direction      CardDirection
   hardStreak     Int           @default(0)
   lastReviewAt   DateTime?
   nextReviewAt   DateTime?
@@ -123,7 +124,8 @@ model Review {
   user           User          @relation(fields: [userId], references: [id], onDelete: Cascade)
   word           Word          @relation(fields: [wordId], references: [id], onDelete: Cascade)
 
-  @@index([userId, nextReviewAt])
+  @@unique([wordId, direction])
+  @@index([userId, direction, nextReviewAt])
   @@index([wordId])
 }
 

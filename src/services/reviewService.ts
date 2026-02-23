@@ -1,5 +1,5 @@
 import { PrismaClientKnownRequestError } from '@prisma/client/runtime/library';
-import { CardDirection, DirectionMode, Review, ReviewResult } from '../generated/prisma/client';
+import { CardDirection, Review, ReviewResult } from '../generated/prisma/client';
 import { prisma } from '../db/client';
 import { initialReviewSchedule, Rating, scheduleNextReview, scheduleSkipped } from './reviewScheduler';
 import { nowUtc, startOfUserDay } from '../utils/time';
@@ -12,6 +12,7 @@ export class DuplicateWordError extends Error {
 }
 
 const DEFAULT_DAILY_WORD_ADD_LIMIT = 9;
+const CARD_DIRECTIONS: readonly CardDirection[] = ['EN_TO_RU', 'RU_TO_EN'] as const;
 
 const trimEnv = (value: string | undefined): string => (value ?? '').trim();
 
@@ -100,16 +101,17 @@ export const addWordForUser = async (
           userId,
           wordEn: wordEn.trim(),
           translationRu: translationRu.trim(),
-          review: {
-            create: {
+          reviews: {
+            create: CARD_DIRECTIONS.map((direction) => ({
               userId,
+              direction,
               stage: schedule.stage,
               intervalMinutes: schedule.intervalMinutes,
               nextReviewAt: schedule.nextReviewAt,
-            },
+            })),
           },
         },
-        select: { id: true, review: { select: { id: true } } },
+        select: { id: true, reviews: { select: { id: true, direction: true } } },
       });
 
       // Referral counts only after the invited user's first successfully added word.
@@ -128,7 +130,11 @@ export const addWordForUser = async (
 
       return word;
     });
-    return { wordId: created.id, reviewId: created.review?.id || 0 };
+    const primaryReviewId =
+      created.reviews.find((review) => review.direction === 'EN_TO_RU')?.id ??
+      created.reviews[0]?.id ??
+      0;
+    return { wordId: created.id, reviewId: primaryReviewId };
   } catch (error) {
     if (error instanceof PrismaClientKnownRequestError && error.code === 'P2002') {
       throw new DuplicateWordError();
@@ -137,18 +143,13 @@ export const addWordForUser = async (
   }
 };
 
-// Always 50/50 regardless of stored mode
-export const pickDirection = (_mode: DirectionMode): CardDirection => {
-  return Math.random() < 0.5 ? 'RU_TO_EN' : 'EN_TO_RU';
-};
-
 export const findDueReview = async (userId: bigint, now = nowUtc()) => {
   return prisma.review.findFirst({
     where: {
       userId,
       nextReviewAt: { lte: now.toDate() },
     },
-    orderBy: { nextReviewAt: 'asc' },
+    orderBy: [{ nextReviewAt: 'asc' }, { id: 'asc' }],
     include: { word: true },
   });
 };
@@ -178,6 +179,7 @@ export const applyRating = async (
 ) => {
   const now = nowUtc();
   const schedule = scheduleNextReview(review, rating, now);
+  const effectiveDirection = direction === review.direction ? direction : review.direction;
   const prevHardStreak = (review as any).hardStreak ?? 0;
   const hardStreak =
     rating === 'HARD'
@@ -190,7 +192,7 @@ export const applyRating = async (
       intervalMinutes: schedule.intervalMinutes,
       nextReviewAt: schedule.nextReviewAt,
       lastReviewAt: schedule.lastReviewAt,
-      lastDirection: direction,
+      lastDirection: effectiveDirection,
       lastResult: result,
       lastAnswerText: answerText ?? null,
       hardStreak,

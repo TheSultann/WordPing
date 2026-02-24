@@ -47,8 +47,12 @@ describe('translation service', () => {
 
     expect(detectLanguage('jamoa')).toBe('uz');
     expect(detectLanguage('rahmat')).toBe('uz');
+    expect(detectLanguage('yugurish')).toBe('uz');
+    expect(detectLanguage('sotib olish')).toBe('uz');
     expect(detectLanguage("o'quvchi")).toBe('uz');
     expect(detectLanguage('apple')).toBe('en');
+    expect(detectLanguage('young')).toBe('en');
+    expect(detectLanguage('finish')).toBe('en');
     expect(detectLanguage('change', { preferredNative: 'uz' })).toBe('en');
     expect(detectLanguage('shopping', { preferredNative: 'uz' })).toBe('en');
     expect(detectLanguage('english', { preferredNative: 'uz' })).toBe('en');

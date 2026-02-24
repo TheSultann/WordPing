@@ -166,6 +166,12 @@ const readGeminiModels = (): string[] => {
   return Array.from(new Set([primary, ...fallback]));
 };
 
+const normalizeUzToken = (value: string): string =>
+  value
+    .toLowerCase()
+    .replace(/[\u02BB\u02BC\u2019`']/g, '')
+    .replace(/[^a-z]/g, '');
+
 const UZ_WORDS = new Set([
   'salom', 'rahmat', 'yaxshi', 'bugun', 'qanday', 'iltimos', 'dunyo',
   'tushun', 'bilaman', 'kerak', 'bormi', 'nima', 'qayerda', 'xayr',
@@ -175,21 +181,31 @@ const UZ_WORDS = new Set([
   'kechqurun', 'kunduzi', 'kecha', 'ertaga', 'hozir', 'soat', 'oy', 'yil',
   'hafta', 'kun', 'dars', 'maktab', 'ish', 'uy', 'kitob', 'qalam', 'telefon',
   'doim', 'jamoa', 'odam', 'bola', 'ota', 'ona', 'aka', 'uka', 'opa', 'singil',
+  'sotib', 'olish', 'yugurish', 'yurish', 'borish', 'kelish', 'qilish',
+  'korish', 'oqish', 'yozish', 'ichish', 'yashash', 'ishlash', 'organish',
+  'oquvchi', 'soz', 'ozbek', 'tarjima',
 ]);
 
-const likelyUzSuffix = /(lar|lik|chi|dan|ning|siz|uvchi|amiz|man|san|miz|lari)$/i;
+const likelyUzSuffix = /(lar|lik|chi|dan|ning|siz|uvchi|amiz|man|san|miz|lari|dagi|gacha|moq)$/i;
+const likelyUzVerbNoun = /(ish|moq)$/i;
+
+const hasStrongUzCluster = (token: string): boolean => {
+  return /q(?!u)|^x|yo|ya|yu|gur|quv|kor|oq/i.test(token);
+};
 
 const scoreUzToken = (token: string): number => {
   let score = 0;
-  const t = token.toLowerCase();
+  const raw = token.toLowerCase();
+  const t = normalizeUzToken(raw);
   if (!t) return 0;
 
   if (UZ_WORDS.has(t)) score += 2;
-  if (/(?:o|g)['\u02BB\u02BC\u2019`]/iu.test(t)) score += 2;
+  if (/(?:o|g)['\u02BB\u02BC\u2019`]/iu.test(raw)) score += 2;
   if (/q(?!u)/iu.test(t)) score += 2; // Uzbek "q" is often not followed by "u"
-  if (/\bx[a-z]/iu.test(t)) score += 1;
+  if (/^x[a-z]/iu.test(t)) score += 1;
   if (/(sh|ch|ng|ya|yo|yu)/iu.test(t)) score += 1;
   if (likelyUzSuffix.test(t)) score += 1;
+  if (likelyUzVerbNoun.test(t) && hasStrongUzCluster(t)) score += 1;
 
   return score;
 };
@@ -522,6 +538,29 @@ const translateWithMyMemoryStep = async (text: string, source: Lang, target: Lan
   return normalizeText(res.data?.responseData?.translatedText);
 };
 
+const translateWithMyMemoryRouting = async (
+  text: string,
+  source: Lang,
+  target: Lang,
+  timeoutMs: number
+): Promise<string | null> => {
+  if (source === target) return null;
+
+  if (source === 'ru' && target === 'uz') {
+    const viaEn = await translateWithMyMemoryStep(text, 'ru', 'en', timeoutMs);
+    if (!viaEn) return null;
+    return translateWithMyMemoryStep(viaEn, 'en', 'uz', timeoutMs);
+  }
+
+  if (source === 'uz' && target === 'ru') {
+    const viaEn = await translateWithMyMemoryStep(text, 'uz', 'en', timeoutMs);
+    if (!viaEn) return null;
+    return translateWithMyMemoryStep(viaEn, 'en', 'ru', timeoutMs);
+  }
+
+  return translateWithMyMemoryStep(text, source, target, timeoutMs);
+};
+
 const translateOneStep = async (text: string, source: Lang, target: Lang, timeoutMs: number): Promise<string | null> => {
   if (source === target) return text;
 
@@ -550,6 +589,24 @@ const translateWithRouting = async (text: string, source: Lang, target: Lang, ti
   }
 
   return translateOneStep(text, source, target, timeoutMs);
+};
+
+export const translateAutoWithMyMemory = async (input: string, target: Lang = 'ru'): Promise<string | null> => {
+  const text = input.trim();
+  if (!text) return null;
+
+  const source = detectLanguage(text);
+  if (source === target) return null;
+
+  const cacheKey = `mymemory|${getCacheKey(text, source, target)}`;
+  const cached = readCachedTranslation(cacheKey);
+  if (cached) return cached;
+
+  const translated = await translateWithMyMemoryRouting(text, source, target, readTimeoutMs());
+  if (!translated) return null;
+
+  writeCachedTranslation(cacheKey, translated);
+  return translated;
 };
 
 export const translateAuto = async (input: string, target: Lang = 'ru'): Promise<string | null> => {

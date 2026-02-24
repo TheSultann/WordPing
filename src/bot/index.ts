@@ -14,7 +14,13 @@ import {
 } from '../services/userService';
 import { prisma } from '../db/client';
 import { ensureSession, getSession, resetState, setState } from '../services/sessionService';
-import { suggestTranslation, detectLanguage, translateAuto, detectAndTranslateWithGemini } from '../services/translation';
+import {
+  suggestTranslation,
+  detectLanguage,
+  translateAuto,
+  detectAndTranslateWithGemini,
+  translateAutoWithMyMemory,
+} from '../services/translation';
 import { addWordForUser, applyRating, loadReviewWithWord, DailyWordLimitError, DuplicateWordError } from '../services/reviewService';
 import { consumeAutoTranslateQuota } from '../services/translationQuota';
 import { CardDirection, ReviewResult } from '../generated/prisma/client';
@@ -374,8 +380,14 @@ bot.on('text', async (ctx) => {
     if (resolvedInputLang === 'ru' || resolvedInputLang === 'uz') {
       const quota = await consumeAutoTranslateQuota(BigInt(userId), user.timezone);
       if (!quota.allowed) {
-        await ctx.reply(t(lang, 'add.apiLimitNeedEnglish', { limit: quota.limit }), { parse_mode: 'HTML' });
-        return;
+        const englishTranslation = await translateAutoWithMyMemory(normalizedInput, 'en');
+        if (!englishTranslation) {
+          await setState(BigInt(userId), 'ADDING_WORD_WAIT_EN');
+          await ctx.reply(t(lang, 'add.error'), { parse_mode: 'HTML' });
+          return;
+        }
+        finalEn = englishTranslation;
+        finalTranslation = normalizedInput;
       }
 
       // User typed in RU/UZ — translate to English and swap
@@ -404,18 +416,23 @@ bot.on('text', async (ctx) => {
 
       const quota = await consumeAutoTranslateQuota(BigInt(userId), user.timezone);
       if (!quota.allowed) {
-        await setState(BigInt(userId), 'ADDING_WORD_WAIT_RU_MANUAL', {
-          payload: { wordEn: finalEn },
-        });
-        await ctx.reply(t(lang, 'add.apiLimitManualTranslation', { limit: quota.limit }), { parse_mode: 'HTML' });
-        return;
+        finalTranslation = await translateAutoWithMyMemory(finalEn, targetLang);
+        if (!finalTranslation) {
+          await setState(BigInt(userId), 'ADDING_WORD_WAIT_EN');
+          await ctx.reply(t(lang, 'add.error'), { parse_mode: 'HTML' });
+          return;
+        }
       }
 
       // User typed in English — translate to user's native language
-      await tryGeminiSmart();
+      if (quota.allowed) {
+        await tryGeminiSmart();
+      }
 
       if (!finalTranslation) {
-        finalTranslation = await suggestTranslation(finalEn, targetLang);
+        finalTranslation = quota.allowed
+          ? await suggestTranslation(finalEn, targetLang)
+          : await translateAutoWithMyMemory(finalEn, targetLang);
       }
     }
 

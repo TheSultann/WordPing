@@ -6,6 +6,7 @@ import { t } from '../src/i18n';
 
 const suggestTranslationMock = vi.fn().mockResolvedValue(null as string | null);
 const translateAutoMock = vi.fn().mockResolvedValue('hello' as string | null);
+const translateAutoWithMyMemoryMock = vi.fn().mockResolvedValue('beta-ru' as string | null);
 const detectAndTranslateWithGeminiMock = vi.fn().mockResolvedValue(null as any);
 
 vi.mock('../src/services/translation', async (importOriginal) => {
@@ -14,6 +15,7 @@ vi.mock('../src/services/translation', async (importOriginal) => {
     ...actual,
     suggestTranslation: suggestTranslationMock,
     translateAuto: translateAutoMock,
+    translateAutoWithMyMemory: translateAutoWithMyMemoryMock,
     detectAndTranslateWithGemini: detectAndTranslateWithGeminiMock,
   };
 });
@@ -90,6 +92,8 @@ beforeEach(async () => {
   suggestTranslationMock.mockResolvedValue(null);
   translateAutoMock.mockReset();
   translateAutoMock.mockResolvedValue('hello');
+  translateAutoWithMyMemoryMock.mockReset();
+  translateAutoWithMyMemoryMock.mockResolvedValue('beta-ru');
   detectAndTranslateWithGeminiMock.mockReset();
   detectAndTranslateWithGeminiMock.mockResolvedValue(null);
 });
@@ -344,7 +348,7 @@ describe('bot extended flows', () => {
     expect(String(suggestMsg)).toContain('\uD83C\uDDFA\uD83C\uDDF8 <b>consensus</b> — \uD83C\uDDFA\uD83C\uDDFF kelishuv');
   });
 
-  it('falls back to manual translation when daily auto-translate limit is reached', async () => {
+  it('uses MyMemory fallback when daily auto-translate limit is reached', async () => {
     const previousDailyLimit = process.env.DAILY_AUTO_TRANSLATE_LIMIT;
     process.env.DAILY_AUTO_TRANSLATE_LIMIT = '1';
 
@@ -363,8 +367,10 @@ describe('bot extended flows', () => {
       await bot.handleUpdate(makeMessageUpdate('beta', 61), {} as any);
 
       const texts = sentTexts(callApiSpy);
-      expect(texts).toContain(t('ru', 'add.apiLimitManualTranslation', { limit: 1 }));
+      expect(texts).not.toContain(t('ru', 'add.apiLimitManualTranslation', { limit: 1 }));
+      expect(texts.some((text) => text.includes('beta') && text.includes('beta-ru'))).toBe(true);
       expect(suggestTranslationMock).toHaveBeenCalledTimes(1);
+      expect(translateAutoWithMyMemoryMock).toHaveBeenCalled();
     } finally {
       if (previousDailyLimit === undefined) {
         delete process.env.DAILY_AUTO_TRANSLATE_LIMIT;

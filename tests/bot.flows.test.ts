@@ -306,7 +306,19 @@ describe('bot extended flows', () => {
     expect(String(suggestMsg)).toContain('hello');
   });
 
-  it('uses Gemini disambiguation for ambiguous latin input detected as uz', async () => {
+  it('shows searching translation message before processing add flow', async () => {
+    await prisma.user.create({ data: { id: BigInt(userId), language: 'ru' } });
+    await setState(BigInt(userId), 'ADDING_WORD_WAIT_EN');
+    const callApiSpy = vi
+      .spyOn(Object.getPrototypeOf(bot.telegram), 'callApi')
+      .mockResolvedValue({} as any);
+
+    await bot.handleUpdate(makeMessageUpdate('alpha', 70), {} as any);
+
+    expect(sentTexts(callApiSpy)).toContain(t('ru', 'add.searchingTranslation'));
+  });
+
+  it('uses Gemini disambiguation for ambiguous latin input', async () => {
     await prisma.user.create({ data: { id: BigInt(userId), language: 'ru' } });
     await setState(BigInt(userId), 'ADDING_WORD_WAIT_EN');
     const callApiSpy = vi
@@ -316,7 +328,7 @@ describe('bot extended flows', () => {
     detectAndTranslateWithGeminiMock.mockResolvedValue({
       sourceLang: 'en',
       targetLang: 'ru',
-      translatedText: 'РІРµС‚С‡РёРЅР°',
+      translatedText: '\u0432\u0435\u0442\u0447\u0438\u043d\u0430',
       confidence: 0.91,
     });
 
@@ -325,9 +337,62 @@ describe('bot extended flows', () => {
     expect(detectAndTranslateWithGeminiMock).toHaveBeenCalledTimes(1);
     expect(translateAutoMock).not.toHaveBeenCalled();
     const suggestMsg = sentTexts(callApiSpy).find(
-      (text) => text.includes('ham') && text.includes('РІРµС‚С‡РёРЅР°')
+      (text) => text.includes('ham') && text.includes('\u0432\u0435\u0442\u0447\u0438\u043d\u0430')
     );
     expect(suggestMsg).toBeTruthy();
+  });
+
+  it('switches to manual input when english auto-translation looks suspicious', async () => {
+    await prisma.user.create({ data: { id: BigInt(userId), language: 'ru' } });
+    await setState(BigInt(userId), 'ADDING_WORD_WAIT_EN');
+    const callApiSpy = vi
+      .spyOn(Object.getPrototypeOf(bot.telegram), 'callApi')
+      .mockResolvedValue({} as any);
+
+    suggestTranslationMock.mockResolvedValue('hello');
+
+    await bot.handleUpdate(makeMessageUpdate('hello', 68), {} as any);
+
+    const session = await prisma.userSession.findUnique({ where: { userId: BigInt(userId) } });
+    expect(session?.state).toBe('ADDING_WORD_WAIT_RU_MANUAL');
+    expect((session?.payload as any)?.wordEn).toBe('hello');
+    expect(sentTexts(callApiSpy)).toContain(t('ru', 'add.suspectAutoTranslation'));
+  });
+
+  it('switches to manual input when translated english candidate looks technical', async () => {
+    await prisma.user.create({ data: { id: BigInt(userId), language: 'ru' } });
+    await setState(BigInt(userId), 'ADDING_WORD_WAIT_EN');
+    const callApiSpy = vi
+      .spyOn(Object.getPrototypeOf(bot.telegram), 'callApi')
+      .mockResolvedValue({} as any);
+
+    detectAndTranslateWithGeminiMock.mockResolvedValue(null);
+    translateAutoMock.mockResolvedValue('c/dictation');
+
+    await bot.handleUpdate(makeMessageUpdate('salom', 69), {} as any);
+
+    const session = await prisma.userSession.findUnique({ where: { userId: BigInt(userId) } });
+    expect(session?.state).toBe('ADDING_WORD_WAIT_RU_MANUAL');
+    expect((session?.payload as any)?.wordEn).toBe('c/dictation');
+    expect(sentTexts(callApiSpy)).toContain(t('ru', 'add.suspectAutoTranslation'));
+  });
+
+  it('shows neutral flag for ambiguous latin input to avoid misleading language flag', async () => {
+    await prisma.user.create({ data: { id: BigInt(userId), language: 'ru' } });
+    await setState(BigInt(userId), 'ADDING_WORD_WAIT_EN');
+    const callApiSpy = vi
+      .spyOn(Object.getPrototypeOf(bot.telegram), 'callApi')
+      .mockResolvedValue({} as any);
+
+    suggestTranslationMock.mockResolvedValue('ham-ru');
+
+    await bot.handleUpdate(makeMessageUpdate('ham', 67), {} as any);
+
+    const suggestMsg = sentTexts(callApiSpy).find(
+      (text) => text.includes('<b>ham</b>') && text.includes('ham-ru')
+    );
+    expect(suggestMsg).toBeTruthy();
+    expect(String(suggestMsg)).toContain('🌐 <b>ham</b> —');
   });
 
   it('shows uz flag for suggested native translation on uz interface', async () => {
@@ -368,9 +433,42 @@ describe('bot extended flows', () => {
 
       const texts = sentTexts(callApiSpy);
       expect(texts).not.toContain(t('ru', 'add.apiLimitManualTranslation', { limit: 1 }));
+      expect(texts).toContain(t('ru', 'add.apiLimitFallbackQuality', { limit: 1 }));
       expect(texts.some((text) => text.includes('beta') && text.includes('beta-ru'))).toBe(true);
       expect(suggestTranslationMock).toHaveBeenCalledTimes(1);
       expect(translateAutoWithMyMemoryMock).toHaveBeenCalled();
+    } finally {
+      if (previousDailyLimit === undefined) {
+        delete process.env.DAILY_AUTO_TRANSLATE_LIMIT;
+      } else {
+        process.env.DAILY_AUTO_TRANSLATE_LIMIT = previousDailyLimit;
+      }
+    }
+  });
+
+  it('does not call Gemini when daily limit is reached for ambiguous latin input', async () => {
+    const previousDailyLimit = process.env.DAILY_AUTO_TRANSLATE_LIMIT;
+    process.env.DAILY_AUTO_TRANSLATE_LIMIT = '1';
+
+    try {
+      await prisma.user.create({ data: { id: BigInt(userId), language: 'ru' } });
+      const callApiSpy = vi
+        .spyOn(Object.getPrototypeOf(bot.telegram), 'callApi')
+        .mockResolvedValue({} as any);
+
+      await setState(BigInt(userId), 'ADDING_WORD_WAIT_EN');
+      await bot.handleUpdate(makeMessageUpdate('alpha', 65), {} as any);
+
+      detectAndTranslateWithGeminiMock.mockClear();
+      translateAutoWithMyMemoryMock.mockClear();
+
+      await setState(BigInt(userId), 'ADDING_WORD_WAIT_EN');
+      await bot.handleUpdate(makeMessageUpdate('ham', 66), {} as any);
+
+      expect(sentTexts(callApiSpy)).toContain(t('ru', 'add.apiLimitFallbackQuality', { limit: 1 }));
+      expect(detectAndTranslateWithGeminiMock).not.toHaveBeenCalled();
+      expect(translateAutoWithMyMemoryMock).toHaveBeenCalledWith('ham', 'ru');
+      expect(sentTexts(callApiSpy).some((text) => text.includes('ham') && text.includes('beta-ru'))).toBe(true);
     } finally {
       if (previousDailyLimit === undefined) {
         delete process.env.DAILY_AUTO_TRANSLATE_LIMIT;

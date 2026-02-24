@@ -43,7 +43,7 @@ afterEach(() => {
 
 describe('translation service', () => {
   it('detects Uzbek latin words more reliably', async () => {
-    const { detectLanguage } = await import('../src/services/translation');
+    const { detectLanguage, detectLanguageWithMeta } = await import('../src/services/translation');
 
     expect(detectLanguage('jamoa')).toBe('uz');
     expect(detectLanguage('rahmat')).toBe('uz');
@@ -56,6 +56,20 @@ describe('translation service', () => {
     expect(detectLanguage('change', { preferredNative: 'uz' })).toBe('en');
     expect(detectLanguage('shopping', { preferredNative: 'uz' })).toBe('en');
     expect(detectLanguage('english', { preferredNative: 'uz' })).toBe('en');
+    expect(detectLanguage('ham', { preferredNative: 'ru' })).toBe('en');
+    expect(detectLanguage('ham', { preferredNative: 'uz' })).toBe('uz');
+    expect(detectLanguageWithMeta('ham', { preferredNative: 'ru' })).toEqual({
+      lang: 'en',
+      ambiguous: true,
+    });
+  });
+
+  it('marks obvious garbage auto-translations as suspicious', async () => {
+    const { isSuspiciousAutoTranslation } = await import('../src/services/translation');
+
+    expect(isSuspiciousAutoTranslation('hello', 'hello')).toBe(true);
+    expect(isSuspiciousAutoTranslation('salom', 'c/dictation')).toBe(true);
+    expect(isSuspiciousAutoTranslation('hello', 'привет')).toBe(false);
   });
 
   it('returns null for empty input and for same source/target language', async () => {

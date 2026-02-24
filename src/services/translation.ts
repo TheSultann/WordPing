@@ -24,6 +24,11 @@ type DetectHint = {
   preferredNative?: 'ru' | 'uz';
 };
 
+export type DetectLanguageResult = {
+  lang: Lang;
+  ambiguous: boolean;
+};
+
 type HfTranslationItem = {
   translation_text?: string;
 };
@@ -172,6 +177,17 @@ const normalizeUzToken = (value: string): string =>
     .replace(/[\u02BB\u02BC\u2019`']/g, '')
     .replace(/[^a-z]/g, '');
 
+const splitLatinTokens = (text: string): string[] =>
+  text
+    .toLowerCase()
+    .split(/[^a-z\u02BB\u02BC\u2019`']+/i)
+    .map((token) => token.trim())
+    .filter(Boolean);
+
+const hasUzSpecificLatinMarkers = (value: string): boolean =>
+  /[\u02BB\u02BC]/u.test(value) ||
+  /(o['\u02BB\u02BC\u2019`]|g['\u02BB\u02BC\u2019`])/iu.test(value);
+
 const UZ_WORDS = new Set([
   'salom', 'rahmat', 'yaxshi', 'bugun', 'qanday', 'iltimos', 'dunyo',
   'tushun', 'bilaman', 'kerak', 'bormi', 'nima', 'qayerda', 'xayr',
@@ -211,11 +227,7 @@ const scoreUzToken = (token: string): number => {
 };
 
 const isLikelyUzbekLatin = (text: string): boolean => {
-  const tokens = text
-    .toLowerCase()
-    .split(/[^a-z\u02BB\u02BC\u2019`']+/i)
-    .map((token) => token.trim())
-    .filter(Boolean);
+  const tokens = splitLatinTokens(text);
 
   if (tokens.length === 0) return false;
 
@@ -226,20 +238,87 @@ const isLikelyUzbekLatin = (text: string): boolean => {
   return maxScore >= 2 || totalScore >= 3;
 };
 
-export const detectLanguage = (text: string, _hint: DetectHint = {}): Lang => {
+const isShortAmbiguousUzToken = (token: string): boolean => {
+  const normalized = normalizeUzToken(token);
+  if (!normalized) return false;
+  if (normalized.length > 3) return false;
+  return UZ_WORDS.has(normalized);
+};
+
+const resolveAmbiguousLatinLang = (hint: DetectHint): Lang => {
+  return hint.preferredNative === 'uz' ? 'uz' : 'en';
+};
+
+export const detectLanguageWithMeta = (text: string, hint: DetectHint = {}): DetectLanguageResult => {
   const value = text.trim().toLowerCase();
-  if (!value) return 'en';
+  if (!value) return { lang: 'en', ambiguous: false };
 
   // Cyrillic text is treated as Russian.
-  if (/[\u0400-\u04FF]/u.test(value)) return 'ru';
+  if (/[\u0400-\u04FF]/u.test(value)) return { lang: 'ru', ambiguous: false };
 
   // Uzbek-specific latin markers: apostrophe-based letters (o', g').
-  if (/[\u02BB\u02BC]/u.test(value)) return 'uz';
-  if (/(o['\u02BB\u02BC\u2019`]|g['\u02BB\u02BC\u2019`])/iu.test(value)) return 'uz';
+  if (hasUzSpecificLatinMarkers(value)) return { lang: 'uz', ambiguous: false };
 
-  if (isLikelyUzbekLatin(value)) return 'uz';
+  const tokens = splitLatinTokens(value);
+  if (tokens.length === 1 && isShortAmbiguousUzToken(tokens[0] ?? '')) {
+    return {
+      lang: resolveAmbiguousLatinLang(hint),
+      ambiguous: true,
+    };
+  }
 
-  return 'en';
+  if (isLikelyUzbekLatin(value)) return { lang: 'uz', ambiguous: false };
+
+  return { lang: 'en', ambiguous: false };
+};
+
+export const detectLanguage = (text: string, hint: DetectHint = {}): Lang => {
+  return detectLanguageWithMeta(text, hint).lang;
+};
+
+const normalizeForSuspicionCompare = (value: string): string =>
+  value
+    .toLowerCase()
+    .replace(/[\u02BB\u02BC\u2019`']/g, '')
+    .replace(/[^a-zа-яё0-9]+/giu, '');
+
+const hasAnyLetters = (value: string): boolean => /[a-zа-яё]/iu.test(value);
+
+const looksLikePathOrTechnicalToken = (value: string): boolean => {
+  const text = value.trim();
+  if (!text) return false;
+  if (/^[a-z]:[\\/]/iu.test(text)) return true;
+  if (/\s/u.test(text)) return false;
+  if (/[a-z0-9._-]+\/[a-z0-9._-]+/iu.test(text)) return true;
+  if (/[a-z0-9._-]+\\[a-z0-9._-]+/iu.test(text)) return true;
+  return false;
+};
+
+const looksLikeMojibake = (value: string): boolean => {
+  const text = value.trim();
+  if (!text) return false;
+  if (/[�]/u.test(text)) return true;
+  const chunks = text.match(/[РС][A-Za-z]/gu);
+  return Boolean(chunks && chunks.length >= 3 && !/[а-яё]/iu.test(text));
+};
+
+export const isSuspiciousAutoTranslation = (sourceText: string, translatedText: string): boolean => {
+  const source = sourceText.trim();
+  const translated = translatedText.trim();
+  if (!translated) return true;
+  if (looksLikeMojibake(translated)) return true;
+  if (looksLikePathOrTechnicalToken(translated)) return true;
+  if (/https?:\/\/|www\./iu.test(translated)) return true;
+  if (!hasAnyLetters(translated)) return true;
+
+  const sourceNorm = normalizeForSuspicionCompare(source);
+  const translatedNorm = normalizeForSuspicionCompare(translated);
+  if (!sourceNorm || !translatedNorm) return false;
+
+  const bothLatin = /^[a-z0-9]+$/i.test(sourceNorm) && /^[a-z0-9]+$/i.test(translatedNorm);
+  if (bothLatin && sourceNorm.length >= 4 && sourceNorm === translatedNorm) return true;
+
+  return false;
 };
 
 const getCacheKey = (text: string, source: Lang, target: Lang): string => {

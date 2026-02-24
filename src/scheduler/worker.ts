@@ -32,6 +32,54 @@ type SessionLike = {
   wordId?: number | null;
 };
 
+const BLOCKED_USER_COOLDOWN_MINUTES = 60;
+const blockedUserCooldownUntil = new Map<string, number>();
+
+const toBigIntUserId = (userId: bigint | number): bigint =>
+  typeof userId === 'bigint' ? userId : BigInt(userId);
+
+const blockedUserKey = (userId: bigint | number): string => toBigIntUserId(userId).toString();
+
+const isBlockedUserCooldownActive = (userId: bigint | number): boolean => {
+  const key = blockedUserKey(userId);
+  const until = blockedUserCooldownUntil.get(key);
+  if (!until) return false;
+  if (Date.now() >= until) {
+    blockedUserCooldownUntil.delete(key);
+    return false;
+  }
+  return true;
+};
+
+const markBlockedUserCooldown = (userId: bigint | number): void => {
+  const key = blockedUserKey(userId);
+  blockedUserCooldownUntil.set(key, Date.now() + BLOCKED_USER_COOLDOWN_MINUTES * 60_000);
+};
+
+const isTelegramBlockedByUserError = (error: unknown): boolean => {
+  const code = (error as any)?.response?.error_code;
+  const description = String((error as any)?.response?.description ?? '').toLowerCase();
+  return code === 403 && description.includes('bot was blocked by the user');
+};
+
+const handleBlockedUserSendError = async (
+  userId: bigint | number,
+  error: unknown,
+  context: 'card' | 'reminder' | 'skip'
+): Promise<boolean> => {
+  if (!isTelegramBlockedByUserError(error)) return false;
+  markBlockedUserCooldown(userId);
+  await setState(toBigIntUserId(userId), 'IDLE');
+  console.warn(
+    `Skip notifications for blocked user ${blockedUserKey(userId)} for ${BLOCKED_USER_COOLDOWN_MINUTES}m (${context}).`
+  );
+  return true;
+};
+
+export const __resetBlockedUserCooldown = () => {
+  blockedUserCooldownUntil.clear();
+};
+
 const hasDailyNotificationCapacity = (user: any) => {
   const limit = user.maxNotificationsPerDay ?? DEFAULT_MAX_NOTIFICATIONS;
   return (user.notificationsSentToday ?? 0) < limit;
@@ -127,14 +175,29 @@ export const handleReminders = async (user: any, session: SessionLike, canNotify
       await markSkipped(review);
     }
     if (canNotify) {
-      await telegram.sendMessage(Number(user.id), t(lang, 'worker.skipped'), { parse_mode: 'HTML' });
+      try {
+        await telegram.sendMessage(Number(user.id), t(lang, 'worker.skipped'), { parse_mode: 'HTML' });
+      } catch (error) {
+        const handled = await handleBlockedUserSendError(user.id, error, 'skip');
+        if (!handled) {
+          console.error('Failed to send skip notification', error);
+        }
+      }
     }
     await setState(BigInt(user.id), 'IDLE');
     return;
   }
 
   if (diff >= 5 && step === 0 && canNotify) {
-    await telegram.sendMessage(Number(user.id), t(lang, 'worker.reminder'), { parse_mode: 'HTML' });
+    try {
+      await telegram.sendMessage(Number(user.id), t(lang, 'worker.reminder'), { parse_mode: 'HTML' });
+    } catch (error) {
+      const handled = await handleBlockedUserSendError(user.id, error, 'reminder');
+      if (!handled) {
+        console.error('Failed to send reminder notification', error);
+      }
+      return;
+    }
     await setState(BigInt(user.id), 'WAITING_ANSWER', {
       ...session,
       reminderStep: 1,
@@ -146,6 +209,7 @@ export const handleReminders = async (user: any, session: SessionLike, canNotify
 export const processUser = async (user: any) => {
   const normalizedUser = await resetNotificationCountersIfNeeded(user);
   const session = await ensureSession(normalizedUser.id);
+  const blockedCooldownActive = isBlockedUserCooldownActive(normalizedUser.id);
   const localNow = userNow(normalizedUser.timezone);
   const allowed = isWithinWindow(
     localNow,
@@ -154,7 +218,7 @@ export const processUser = async (user: any) => {
   );
 
   if (session.state === 'WAITING_ANSWER') {
-    const canNotify = normalizedUser.notificationsEnabled && allowed;
+    const canNotify = normalizedUser.notificationsEnabled && allowed && !blockedCooldownActive;
     await handleReminders(normalizedUser, session, canNotify);
     return;
   }
@@ -165,6 +229,7 @@ export const processUser = async (user: any) => {
 
   if (!normalizedUser.notificationsEnabled) return;
   if (!allowed) return;
+  if (blockedCooldownActive) return;
 
   if (session.state !== 'IDLE') return;
 
@@ -205,6 +270,8 @@ export const processUser = async (user: any) => {
     // await sendCard(Number(normalizedUser.id), direction, phrase);
     await registerNotification(normalizedUser);
   } catch (e) {
+    const handled = await handleBlockedUserSendError(normalizedUser.id, e, 'card');
+    if (handled) return;
     console.error('Failed to send card, reverting state', e);
     await setState(normalizedUser.id, 'IDLE');
   }

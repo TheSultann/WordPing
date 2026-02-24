@@ -16,7 +16,8 @@ import { prisma } from '../db/client';
 import { ensureSession, getSession, resetState, setState } from '../services/sessionService';
 import {
   suggestTranslation,
-  detectLanguage,
+  detectLanguageWithMeta,
+  isSuspiciousAutoTranslation,
   translateAuto,
   detectAndTranslateWithGemini,
   translateAutoWithMyMemory,
@@ -89,7 +90,8 @@ const escapeHtml = (value: string) =>
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;');
 
-const flagForDetectedLang = (detected: 'ru' | 'uz' | 'en') => {
+const flagForDetectedLang = (detected: 'ru' | 'uz' | 'en', ambiguous = false) => {
+  if (ambiguous) return '🌐';
   if (detected === 'ru') return '🇷🇺';
   if (detected === 'uz') return '🇺🇿';
   return '🇺🇸';
@@ -103,10 +105,14 @@ const formatPairLine = (
   rightLang?: 'ru' | 'uz' | 'en'
 ) => {
   const preferredNative = uiLang === 'uz' ? 'uz' : 'ru';
-  const leftDetected = leftLang ?? detectLanguage(leftText, { preferredNative });
-  const rightDetected = rightLang ?? detectLanguage(rightText, { preferredNative });
+  const leftDetected = leftLang
+    ? { lang: leftLang, ambiguous: false }
+    : detectLanguageWithMeta(leftText, { preferredNative });
+  const rightDetected = rightLang
+    ? { lang: rightLang, ambiguous: false }
+    : detectLanguageWithMeta(rightText, { preferredNative });
 
-  return `${flagForDetectedLang(leftDetected)} <b>${escapeHtml(leftText)}</b> — ${flagForDetectedLang(rightDetected)} ${escapeHtml(rightText)}`;
+  return `${flagForDetectedLang(leftDetected.lang, leftDetected.ambiguous)} <b>${escapeHtml(leftText)}</b> — ${flagForDetectedLang(rightDetected.lang, rightDetected.ambiguous)} ${escapeHtml(rightText)}`;
 };
 
 const nativeLangForUi = (lang: Lang): 'ru' | 'uz' => (lang === 'uz' ? 'uz' : 'ru');
@@ -346,15 +352,20 @@ bot.on('text', async (ctx) => {
   const handleAddFlow = async (input: string) => {
     const normalizedInput = input.trim();
     if (!normalizedInput) return;
+    await ctx.reply(t(lang, 'add.searchingTranslation'), { parse_mode: 'HTML' });
 
-    const inputLang = detectLanguage(normalizedInput, {
+    const inputDetection = detectLanguageWithMeta(normalizedInput, {
       preferredNative: lang === 'uz' ? 'uz' : 'ru',
     });
+    const inputLang = inputDetection.lang;
     let resolvedInputLang = inputLang;
+    let resolvedInputAmbiguous = inputDetection.ambiguous;
     const targetLang: 'ru' | 'uz' = nativeLangForUi(lang);
 
     let finalEn = normalizedInput;
     let finalTranslation: string | null = null;
+    let usedMyMemoryDueToLimit = false;
+    let exhaustedAutoTranslateLimit: number | null = null;
     const tryGeminiSmart = async () => {
       const geminiSmart = await detectAndTranslateWithGemini(normalizedInput, targetLang);
       if (!geminiSmart?.translatedText) return false;
@@ -362,6 +373,7 @@ bot.on('text', async (ctx) => {
 
       if (geminiSmart.sourceLang === 'en') {
         resolvedInputLang = 'en';
+        resolvedInputAmbiguous = false;
         finalEn = normalizedInput;
         finalTranslation = geminiSmart.translatedText;
         return true;
@@ -369,6 +381,7 @@ bot.on('text', async (ctx) => {
 
       if (geminiSmart.sourceLang === 'ru' || geminiSmart.sourceLang === 'uz') {
         resolvedInputLang = geminiSmart.sourceLang;
+        resolvedInputAmbiguous = false;
         finalEn = geminiSmart.translatedText;
         finalTranslation = normalizedInput;
         return true;
@@ -380,6 +393,8 @@ bot.on('text', async (ctx) => {
     if (resolvedInputLang === 'ru' || resolvedInputLang === 'uz') {
       const quota = await consumeAutoTranslateQuota(BigInt(userId), user.timezone);
       if (!quota.allowed) {
+        usedMyMemoryDueToLimit = true;
+        exhaustedAutoTranslateLimit = quota.limit;
         const englishTranslation = await translateAutoWithMyMemory(normalizedInput, 'en');
         if (!englishTranslation) {
           await setState(BigInt(userId), 'ADDING_WORD_WAIT_EN');
@@ -391,7 +406,7 @@ bot.on('text', async (ctx) => {
       }
 
       // User typed in RU/UZ — translate to English and swap
-      if (shouldTryGeminiDisambiguation(normalizedInput, resolvedInputLang)) {
+      if (quota.allowed && shouldTryGeminiDisambiguation(normalizedInput, resolvedInputLang)) {
         await tryGeminiSmart();
       }
 
@@ -416,6 +431,8 @@ bot.on('text', async (ctx) => {
 
       const quota = await consumeAutoTranslateQuota(BigInt(userId), user.timezone);
       if (!quota.allowed) {
+        usedMyMemoryDueToLimit = true;
+        exhaustedAutoTranslateLimit = quota.limit;
         finalTranslation = await translateAutoWithMyMemory(finalEn, targetLang);
         if (!finalTranslation) {
           await setState(BigInt(userId), 'ADDING_WORD_WAIT_EN');
@@ -446,10 +463,32 @@ bot.on('text', async (ctx) => {
     }
 
     if (finalTranslation) {
+      if (usedMyMemoryDueToLimit && exhaustedAutoTranslateLimit) {
+        await ctx.reply(t(lang, 'add.apiLimitFallbackQuality', { limit: exhaustedAutoTranslateLimit }), {
+          parse_mode: 'HTML',
+        });
+      }
+
+      const sourceForQuality =
+        resolvedInputLang === 'ru' || resolvedInputLang === 'uz'
+          ? normalizedInput
+          : finalEn;
+      const translatedForQuality =
+        resolvedInputLang === 'ru' || resolvedInputLang === 'uz'
+          ? finalEn
+          : finalTranslation;
+      if (isSuspiciousAutoTranslation(sourceForQuality, translatedForQuality)) {
+        await setState(BigInt(userId), 'ADDING_WORD_WAIT_RU_MANUAL', {
+          payload: { wordEn: finalEn },
+        });
+        await ctx.reply(t(lang, 'add.suspectAutoTranslation'), { parse_mode: 'HTML' });
+        return;
+      }
+
       const pair =
         resolvedInputLang === 'ru' || resolvedInputLang === 'uz'
-          ? formatPairLine(finalTranslation, finalEn, lang, resolvedInputLang, 'en')
-          : formatPairLine(finalEn, finalTranslation, lang, 'en', targetLang);
+          ? formatPairLine(finalTranslation, finalEn, lang, resolvedInputAmbiguous ? undefined : resolvedInputLang, 'en')
+          : formatPairLine(finalEn, finalTranslation, lang, resolvedInputAmbiguous ? undefined : 'en', targetLang);
       await setState(BigInt(userId), 'ADDING_WORD_CONFIRM_TRANSLATION', {
         payload: { wordEn: finalEn, translationRu: finalTranslation },
       });

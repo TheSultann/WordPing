@@ -8,6 +8,7 @@ let processUser: (user: any) => Promise<void>;
 let tick: () => Promise<void>;
 let startWorker: () => void;
 let telegram: any;
+let resetBlockedUserCooldown: () => void;
 
 const userId = BigInt(900000004);
 
@@ -23,6 +24,7 @@ beforeAll(async () => {
   tick = mod.tick;
   startWorker = mod.startWorker;
   telegram = mod.telegram;
+  resetBlockedUserCooldown = mod.__resetBlockedUserCooldown;
 
   prisma = new PrismaClient({ datasources: { db: { url: testUrl } } });
 });
@@ -30,6 +32,7 @@ beforeAll(async () => {
 beforeEach(async () => {
   await cleanupUserData(prisma, userId);
   vi.restoreAllMocks();
+  resetBlockedUserCooldown();
 });
 
 afterAll(async () => {
@@ -657,6 +660,114 @@ describe('worker integration', () => {
 
     const session = await prisma.userSession.findUnique({ where: { userId } });
     expect(session?.state).toBe('IDLE');
+  });
+
+  it('sets blocked-user cooldown after 403 on card send', async () => {
+    const blockedError = {
+      response: {
+        error_code: 403,
+        description: 'Forbidden: bot was blocked by the user',
+      },
+    };
+    const sendSpy = vi.spyOn(telegram, 'sendMessage').mockRejectedValue(blockedError as any);
+
+    await prisma.user.create({
+      data: {
+        id: userId,
+        notificationsEnabled: true,
+        quietHoursStartMinutes: 0,
+        quietHoursEndMinutes: 0,
+        timezone: 'UTC',
+        notificationIntervalMinutes: 5,
+        maxNotificationsPerDay: 100,
+      },
+    });
+
+    await prisma.word.create({
+      data: {
+        userId,
+        wordEn: 'blocked-card',
+        translationRu: 'блок',
+        reviews: {
+          create: {
+            direction: 'EN_TO_RU',
+            userId,
+            stage: 0,
+            intervalMinutes: 5,
+            nextReviewAt: new Date(Date.now() - 1000),
+          },
+        },
+      },
+    });
+
+    let user = await prisma.user.findUnique({ where: { id: userId } });
+    await processUser(user);
+
+    const sessionAfterFirst = await prisma.userSession.findUnique({ where: { userId } });
+    expect(sessionAfterFirst?.state).toBe('IDLE');
+    expect(sendSpy).toHaveBeenCalledTimes(1);
+
+    // Second tick should be skipped by cooldown (no extra send attempts).
+    user = await prisma.user.findUnique({ where: { id: userId } });
+    await processUser(user);
+    expect(sendSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('sets blocked-user cooldown after 403 on reminder send', async () => {
+    const blockedError = {
+      response: {
+        error_code: 403,
+        description: 'Forbidden: bot was blocked by the user',
+      },
+    };
+    const sendSpy = vi.spyOn(telegram, 'sendMessage').mockRejectedValue(blockedError as any);
+
+    await prisma.user.create({
+      data: {
+        id: userId,
+        notificationsEnabled: true,
+        quietHoursStartMinutes: 0,
+        quietHoursEndMinutes: 0,
+        timezone: 'UTC',
+        notificationIntervalMinutes: 5,
+        maxNotificationsPerDay: 100,
+      },
+    });
+    const review = await prisma.review.create({
+      data: {
+        userId,
+        wordId: (await prisma.word.create({
+          data: { userId, wordEn: 'blocked-reminder', translationRu: 'блок-напоминание' },
+        })).id,
+        direction: 'EN_TO_RU',
+        stage: 0,
+        intervalMinutes: 5,
+        nextReviewAt: new Date(Date.now() - 1000),
+      },
+    });
+
+    await prisma.userSession.create({
+      data: {
+        userId,
+        state: 'WAITING_ANSWER',
+        reviewId: review.id,
+        wordId: review.wordId,
+        sentAt: new Date(Date.now() - 6 * 60 * 1000),
+        reminderStep: 0,
+      },
+    });
+
+    let user = await prisma.user.findUnique({ where: { id: userId } });
+    await processUser(user);
+
+    const sessionAfterFirst = await prisma.userSession.findUnique({ where: { userId } });
+    expect(sessionAfterFirst?.state).toBe('IDLE');
+    expect(sendSpy).toHaveBeenCalledTimes(1);
+
+    // Due card exists, but immediate retry should be suppressed by cooldown.
+    user = await prisma.user.findUnique({ where: { id: userId } });
+    await processUser(user);
+    expect(sendSpy).toHaveBeenCalledTimes(1);
   });
 
   it('does not remind before 5 minutes', async () => {

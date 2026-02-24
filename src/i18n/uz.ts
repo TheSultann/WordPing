@@ -62,6 +62,7 @@ const uz = {
   'stats.due': '📌 <b>Navbat kutmoqda</b>: {value}',
 
   'add.enter': '✍️ <b>Yangi so‘z</b>\n\n👇 Inglizchasini yozing:',
+  'add.searchingTranslation': '🔎 <b>Tarjimani izlayapman...</b>',
   'add.manual': '✍️ <b>Tarjima</b>\n\n👇 Tarjimasini o‘zingiz yozing:',
   'add.confirmPrompt': 'To‘g‘ri bo‘lsa tasdiqlang.',
   'add.failSave': '❌ <b>Saqlashda xato.</b> Qayta urinib ko‘ring.',
@@ -72,6 +73,10 @@ const uz = {
   'add.needEnglishWord': '✏️ <b>Inglizcha variantni ola olmadim.</b>\n👇 So‘zni ingliz tilida qo‘lda yozing.',
   'add.apiLimitManualTranslation': '🛑 <b>Bugungi avtotarjima limiti tugadi ({limit}).</b>\n👇 Tarjimani qo‘lda yozing:',
   'add.apiLimitNeedEnglish': '🛑 <b>Bugungi avtotarjima limiti tugadi ({limit}).</b>\n👇 So‘zni ingliz tilida qo‘lda yozing.',
+  'add.apiLimitFallbackQuality':
+    '🛑 <b>Bugungi avtotarjima limiti tugadi ({limit}).</b>\n⚠️ Endi MyMemory orqali tarjima qilaman, sifat biroz pastroq bo‘lishi mumkin.',
+  'add.suspectAutoTranslation':
+    '⚠️ <b>Avtotarjima ishonchsiz ko‘rindi.</b>\n👇 To‘g‘ri saqlash uchun tarjimani qo‘lda yozing:',
   'add.dailyLimit': '🙏 <b>Kechirasiz, bugungi limit: {limit} ta so‘z.</b>\nErtaga yana qo‘shishingiz mumkin.',
   'add.saved': '✨ <b>Saqladim!</b>\n{pair}\n\n🔔 5 daqiqadan keyin eslataman.',
   'add.duplicate': '👯‍♂️ <b>Allaqachon bor!</b>\nO‘zgartirish uchun /settings ga kiring.',

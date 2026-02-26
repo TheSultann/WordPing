@@ -177,6 +177,7 @@ export const resetProgressIfNeeded = async (user: User): Promise<User> => {
       where: { id: user.id },
       data: {
         doneTodayCount: 0,
+        correctTodayCount: 0,
         lastDoneDate: today.toDate(),
         todayCompleted: 0, // legacy sync
         todayDate: today.toDate(),
@@ -186,7 +187,7 @@ export const resetProgressIfNeeded = async (user: User): Promise<User> => {
   return user;
 };
 
-export const recordCompletion = async (user: User): Promise<DailyProgressResult> => {
+export const recordCompletion = async (user: User, isCorrect = false): Promise<DailyProgressResult> => {
   const tz = user.timezone;
   const now = userNow(tz);
   const today = startOfDay(tz, now);
@@ -194,7 +195,9 @@ export const recordCompletion = async (user: User): Promise<DailyProgressResult>
   const lastStreakDay = user.lastStreakDate ? startOfDay(tz, user.lastStreakDate) : null;
 
   let doneToday = lastDoneDay && diffInDays(today, lastDoneDay) === 0 ? user.doneTodayCount : 0;
+  let correctToday = lastDoneDay && diffInDays(today, lastDoneDay) === 0 ? user.correctTodayCount : 0;
   doneToday += 1;
+  if (isCorrect) correctToday += 1;
 
   let streakCount = user.streakCount;
   if (lastStreakDay) {
@@ -227,6 +230,7 @@ export const recordCompletion = async (user: User): Promise<DailyProgressResult>
     where: { id: user.id },
     data: {
       doneTodayCount: doneToday,
+      correctTodayCount: correctToday,
       lastDoneDate: today.toDate(),
       todayCompleted: doneToday, // keep legacy in sync
       todayDate: today.toDate(),
@@ -247,14 +251,42 @@ export const countUserWords = async (userId: bigint) => {
 };
 
 export const countDueToday = async (userId: bigint, todayStartUtc: Date, tomorrowStartUtc: Date) => {
-  return prisma.review.count({
+  // Count unique words that have at least one due review in today's window.
+  // This keeps UI "На повтор" on word-level (not doubled by two directions).
+  return prisma.word.count({
     where: {
       userId,
-      nextReviewAt: {
-        gte: todayStartUtc,
-        lt: tomorrowStartUtc,
+      reviews: {
+        some: {
+          nextReviewAt: {
+            gte: todayStartUtc,
+            lt: tomorrowStartUtc,
+          },
+        },
       },
     },
   });
 };
 
+export const countDueNow = async (userId: bigint, nowUtcDate: Date) => {
+  // Count words due right now, excluding words already in learned bucket.
+  // This keeps dictionary counters mutually exclusive.
+  return prisma.word.count({
+    where: {
+      userId,
+      reviews: {
+        some: {
+          nextReviewAt: {
+            lte: nowUtcDate,
+          },
+        },
+      },
+      NOT: {
+        reviews: {
+          some: {},
+          every: { stage: { gte: 4 } },
+        },
+      },
+    },
+  });
+};

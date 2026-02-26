@@ -72,7 +72,17 @@ describe('web api client', () => {
       createFetchResponse({
         ok: true,
         status: 200,
-        body: { streakCount: 0, words: 0, doneTodayCount: 0, dailyLimit: 20, dueToday: 0, learnedCount: 0 },
+        body: {
+          streakCount: 0,
+          wordsTotal: 0,
+          learnedTotal: 0,
+          dueTodayCount: 0,
+          dueNowTotal: 0,
+          doneTodayCount: 0,
+          accuracyTodayPercent: 0,
+          notificationsSentToday: 0,
+          dailyLimit: 20,
+        },
       })
     );
     vi.stubGlobal('fetch', fetchSpy as unknown as typeof fetch);
@@ -95,7 +105,7 @@ describe('web api client', () => {
         createFetchResponse({
           ok: true,
           status: 200,
-          body: { items: [] },
+          body: { items: [], hasMore: false },
         })
       )
       .mockResolvedValueOnce(
@@ -108,10 +118,10 @@ describe('web api client', () => {
     vi.stubGlobal('fetch', fetchSpy as unknown as typeof fetch);
 
     const { api } = await import('../web/src/api');
-    await api.getWords('hello world?');
+    await api.getWords('hello world?', 25, 50);
 
     const [firstUrl] = fetchSpy.mock.calls[0] as [string, RequestInit];
-    expect(firstUrl).toBe('/api/words?q=hello%20world%3F');
+    expect(firstUrl).toBe('/api/words?q=hello+world%3F&limit=25&offset=50');
 
     await expect(api.getAdminOverview()).rejects.toThrow('forbidden');
   });

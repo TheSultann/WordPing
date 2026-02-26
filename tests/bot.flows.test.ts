@@ -455,6 +455,7 @@ describe('bot extended flows', () => {
       const callApiSpy = vi
         .spyOn(Object.getPrototypeOf(bot.telegram), 'callApi')
         .mockResolvedValue({} as any);
+      suggestTranslationMock.mockResolvedValueOnce('альфа');
 
       await setState(BigInt(userId), 'ADDING_WORD_WAIT_EN');
       await bot.handleUpdate(makeMessageUpdate('alpha', 65), {} as any);
@@ -469,6 +470,40 @@ describe('bot extended flows', () => {
       expect(detectAndTranslateWithGeminiMock).not.toHaveBeenCalled();
       expect(translateAutoWithMyMemoryMock).toHaveBeenCalledWith('ham', 'ru');
       expect(sentTexts(callApiSpy).some((text) => text.includes('ham') && text.includes('beta-ru'))).toBe(true);
+    } finally {
+      if (previousDailyLimit === undefined) {
+        delete process.env.DAILY_AUTO_TRANSLATE_LIMIT;
+      } else {
+        process.env.DAILY_AUTO_TRANSLATE_LIMIT = previousDailyLimit;
+      }
+    }
+  });
+
+  it('does not spend auto-translate quota when translation fails and goes manual', async () => {
+    const previousDailyLimit = process.env.DAILY_AUTO_TRANSLATE_LIMIT;
+    process.env.DAILY_AUTO_TRANSLATE_LIMIT = '1';
+
+    try {
+      await prisma.user.create({ data: { id: BigInt(userId), language: 'ru' } });
+      const callApiSpy = vi
+        .spyOn(Object.getPrototypeOf(bot.telegram), 'callApi')
+        .mockResolvedValue({} as any);
+
+      suggestTranslationMock.mockResolvedValueOnce(null).mockResolvedValueOnce('бета');
+
+      await setState(BigInt(userId), 'ADDING_WORD_WAIT_EN');
+      await bot.handleUpdate(makeMessageUpdate('alpha', 67), {} as any);
+
+      await setState(BigInt(userId), 'ADDING_WORD_WAIT_EN');
+      await bot.handleUpdate(makeMessageUpdate('beta', 68), {} as any);
+
+      const texts = sentTexts(callApiSpy);
+      expect(texts).toContain(t('ru', 'add.noSuggest', { en: 'alpha' }));
+      expect(texts).not.toContain(t('ru', 'add.apiLimitFallbackQuality', { limit: 1 }));
+      expect(texts.some((text) => text.includes('beta') && text.includes('бета'))).toBe(true);
+
+      expect(suggestTranslationMock).toHaveBeenCalledTimes(2);
+      expect(translateAutoWithMyMemoryMock).not.toHaveBeenCalled();
     } finally {
       if (previousDailyLimit === undefined) {
         delete process.env.DAILY_AUTO_TRANSLATE_LIMIT;
@@ -531,11 +566,12 @@ describe('bot extended flows', () => {
       include: { reviews: true },
     });
 
+    const sentAt = new Date();
     await setState(BigInt(userId), 'WAITING_ANSWER', {
       reviewId: created.reviews?.[0]?.id,
       wordId: created.id,
       direction: 'EN_TO_RU',
-      sentAt: new Date(),
+      sentAt,
       reminderStep: 0,
     });
 
@@ -548,6 +584,8 @@ describe('bot extended flows', () => {
     const session = await prisma.userSession.findUnique({ where: { userId: BigInt(userId) } });
     expect(session?.state).toBe('WAITING_GRADE');
     expect((session?.payload as any)?.correct).toBe(true);
+    expect(session?.sentAt).not.toBeNull();
+    expect(session?.sentAt?.getTime()).toBe(sentAt.getTime());
     expect(sentTexts(callApiSpy).some((text) => text.includes(t('ru', 'answer.pickGrade')))).toBe(true);
   });
 

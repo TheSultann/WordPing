@@ -268,6 +268,132 @@ describe('worker integration', () => {
     expect(telegram.sendMessage).not.toHaveBeenCalled();
   });
 
+  it('auto-closes WAITING_GRADE after 20 minutes with GOOD for correct answer', async () => {
+    vi.spyOn(telegram, 'sendMessage').mockResolvedValue({} as any);
+
+    await prisma.user.create({
+      data: {
+        id: userId,
+        notificationsEnabled: true,
+        quietHoursStartMinutes: 0,
+        quietHoursEndMinutes: 0,
+        timezone: 'UTC',
+        notificationIntervalMinutes: 5,
+        maxNotificationsPerDay: 100,
+      },
+    });
+
+    const word = await prisma.word.create({
+      data: {
+        userId,
+        wordEn: 'graded-correct',
+        translationRu: 'РїСЂРѕРІРµСЂРєР°',
+      },
+    });
+
+    const review = await prisma.review.create({
+      data: {
+        userId,
+        wordId: word.id,
+        direction: 'EN_TO_RU',
+        stage: 2,
+        intervalMinutes: 120,
+        nextReviewAt: new Date(Date.now() - 1000),
+      },
+    });
+
+    await prisma.userSession.create({
+      data: {
+        userId,
+        state: 'WAITING_GRADE',
+        reviewId: review.id,
+        wordId: word.id,
+        direction: 'EN_TO_RU',
+        sentAt: new Date(Date.now() - 25 * 60 * 1000),
+        answerText: 'РїСЂРѕРІРµСЂРєР°',
+        payload: { correct: true },
+      },
+    });
+
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+    await processUser(user);
+
+    const session = await prisma.userSession.findUnique({ where: { userId } });
+    expect(session?.state).toBe('IDLE');
+
+    const updatedReview = await prisma.review.findUnique({ where: { id: review.id } });
+    expect(updatedReview?.lastResult).toBe('CORRECT');
+    expect(updatedReview?.stage).toBe(3);
+
+    const updatedUser = await prisma.user.findUnique({ where: { id: userId } });
+    expect(updatedUser?.doneTodayCount).toBe(1);
+    expect(updatedUser?.correctTodayCount).toBe(1);
+    expect(telegram.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it('auto-closes WAITING_GRADE after 20 minutes with HARD for incorrect answer', async () => {
+    vi.spyOn(telegram, 'sendMessage').mockResolvedValue({} as any);
+
+    await prisma.user.create({
+      data: {
+        id: userId,
+        notificationsEnabled: true,
+        quietHoursStartMinutes: 0,
+        quietHoursEndMinutes: 0,
+        timezone: 'UTC',
+        notificationIntervalMinutes: 5,
+        maxNotificationsPerDay: 100,
+      },
+    });
+
+    const word = await prisma.word.create({
+      data: {
+        userId,
+        wordEn: 'graded-incorrect',
+        translationRu: 'РѕС€РёР±РєР°',
+      },
+    });
+
+    const review = await prisma.review.create({
+      data: {
+        userId,
+        wordId: word.id,
+        direction: 'EN_TO_RU',
+        stage: 2,
+        intervalMinutes: 120,
+        nextReviewAt: new Date(Date.now() - 1000),
+      },
+    });
+
+    await prisma.userSession.create({
+      data: {
+        userId,
+        state: 'WAITING_GRADE',
+        reviewId: review.id,
+        wordId: word.id,
+        direction: 'EN_TO_RU',
+        sentAt: new Date(Date.now() - 25 * 60 * 1000),
+        answerText: 'РЅРµ РІРµСЂРЅРѕ',
+        payload: { correct: false },
+      },
+    });
+
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+    await processUser(user);
+
+    const session = await prisma.userSession.findUnique({ where: { userId } });
+    expect(session?.state).toBe('IDLE');
+
+    const updatedReview = await prisma.review.findUnique({ where: { id: review.id } });
+    expect(updatedReview?.lastResult).toBe('INCORRECT');
+    expect(updatedReview?.stage).toBe(1);
+
+    const updatedUser = await prisma.user.findUnique({ where: { id: userId } });
+    expect(updatedUser?.doneTodayCount).toBe(1);
+    expect(updatedUser?.correctTodayCount).toBe(0);
+    expect(telegram.sendMessage).not.toHaveBeenCalled();
+  });
+
   it('does not send when interval since last notification is too short', async () => {
     vi.spyOn(telegram, 'sendMessage').mockResolvedValue({} as any);
 

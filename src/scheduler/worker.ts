@@ -4,12 +4,14 @@ import cron from 'node-cron';
 import { Telegraf } from 'telegraf';
 import { prisma } from '../db/client';
 import { ensureSession, setState, setSessionActiveIfIdle } from '../services/sessionService';
-import { findDueReview, findDueReviewByStage, markSkipped } from '../services/reviewService';
-import { CardDirection } from '../generated/prisma/client';
+import { applyRating, findDueReview, findDueReviewByStage, markSkipped } from '../services/reviewService';
+import { CardDirection, Prisma, ReviewResult } from '../generated/prisma/client';
 import { isWithinWindow, nowUtc, startOfUserDay, userNow } from '../utils/time';
 import dayjs from 'dayjs';
 import {
   resetNotificationCountersIfNeeded,
+  ensureUser,
+  recordCompletion,
   DEFAULT_MAX_NOTIFICATIONS,
   DEFAULT_NOTIFICATION_INTERVAL,
   DEFAULT_QUIET_START,
@@ -30,9 +32,12 @@ type SessionLike = {
   direction?: CardDirection | null;
   reminderStep?: number | null;
   wordId?: number | null;
+  answerText?: string | null;
+  payload?: unknown;
 };
 
 const BLOCKED_USER_COOLDOWN_MINUTES = 60;
+const GRADE_AUTO_CLOSE_MINUTES = 20;
 const blockedUserCooldownUntil = new Map<string, number>();
 
 const toBigIntUserId = (userId: bigint | number): bigint =>
@@ -199,11 +204,70 @@ export const handleReminders = async (user: any, session: SessionLike, canNotify
       return;
     }
     await setState(BigInt(user.id), 'WAITING_ANSWER', {
-      ...session,
+      reviewId: session.reviewId ?? null,
+      wordId: session.wordId ?? null,
+      direction: session.direction ?? null,
+      sentAt: session.sentAt ?? null,
+      answerText: session.answerText ?? null,
       reminderStep: 1,
     });
     return;
   }
+};
+
+export const handlePendingGrade = async (user: any, session: SessionLike) => {
+  const now = nowUtc();
+  if (!session.sentAt) {
+    await setState(BigInt(user.id), 'WAITING_GRADE', {
+      reviewId: session.reviewId ?? null,
+      wordId: session.wordId ?? null,
+      direction: session.direction ?? null,
+      sentAt: now.toDate(),
+      reminderStep: session.reminderStep ?? 0,
+      answerText: session.answerText ?? null,
+      payload: (session.payload as any) ?? null,
+    });
+    return;
+  }
+
+  const sentAt = dayjs(session.sentAt);
+  if (now.diff(sentAt, 'minute') < GRADE_AUTO_CLOSE_MINUTES) return;
+
+  if (!session.reviewId || !session.direction) {
+    await setState(BigInt(user.id), 'IDLE');
+    return;
+  }
+
+  const claim = await prisma.userSession.updateMany({
+    where: {
+      userId: BigInt(user.id),
+      state: 'WAITING_GRADE',
+      reviewId: session.reviewId,
+      direction: session.direction,
+    },
+    data: {
+      state: 'IDLE',
+      reviewId: null,
+      wordId: null,
+      direction: null,
+      sentAt: null,
+      reminderStep: 0,
+      answerText: null,
+      payload: Prisma.DbNull,
+    },
+  });
+  if (claim.count === 0) return;
+
+  const review = await prisma.review.findUnique({ where: { id: session.reviewId } });
+  if (!review) return;
+
+  const wasCorrect = Boolean((session.payload as any)?.correct);
+  const rating = wasCorrect ? 'GOOD' : 'HARD';
+  const result: ReviewResult = wasCorrect ? 'CORRECT' : 'INCORRECT';
+  await applyRating(review, rating, result, session.direction, session.answerText ?? undefined);
+
+  const freshUser = await ensureUser(Number(user.id));
+  await recordCompletion(freshUser, wasCorrect);
 };
 
 export const processUser = async (user: any) => {
@@ -224,6 +288,7 @@ export const processUser = async (user: any) => {
   }
 
   if (session.state === 'WAITING_GRADE') {
+    await handlePendingGrade(normalizedUser, session);
     return;
   }
 

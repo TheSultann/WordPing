@@ -104,12 +104,98 @@ describe('API integration', () => {
       .get('/api/stats')
       .set('x-dev-user-id', userId.toString());
     expect(res.status).toBe(200);
-    expect(res.body.words).toBeDefined();
-    expect(res.body.dueToday).toBeDefined();
+    expect(res.body.wordsTotal).toBeDefined();
+    expect(res.body.learnedTotal).toBeDefined();
+    expect(res.body.dueTodayCount).toBeDefined();
+    expect(res.body.dueNowTotal).toBeDefined();
+    expect(res.body.accuracyTodayPercent).toBeDefined();
+    expect(res.body.notificationsSentToday).toBeDefined();
     expect(res.body.dailyLimit).toBeDefined();
   });
 
-  it('GET /api/stats returns learnedCount based on stage >= 4', async () => {
+  it('GET /api/stats returns accuracyTodayPercent from daily counters', async () => {
+    await prisma.user.create({
+      data: {
+        id: userId,
+        doneTodayCount: 5,
+        correctTodayCount: 4,
+        lastDoneDate: new Date(),
+      },
+    });
+
+    const res = await request(app)
+      .get('/api/stats')
+      .set('x-dev-user-id', userId.toString());
+    expect(res.status).toBe(200);
+    expect(res.body.doneTodayCount).toBe(5);
+    expect(res.body.accuracyTodayPercent).toBe(80);
+  });
+
+  it('GET /api/stats counts dueToday by words, not by review directions', async () => {
+    await prisma.user.create({ data: { id: userId } });
+    await prisma.word.create({
+      data: {
+        userId,
+        wordEn: 'hello',
+        translationRu: 'привет',
+        reviews: {
+          create: [
+            {
+              direction: 'EN_TO_RU',
+              userId,
+              stage: 0,
+              intervalMinutes: 5,
+              nextReviewAt: new Date(),
+            },
+            {
+              direction: 'RU_TO_EN',
+              userId,
+              stage: 0,
+              intervalMinutes: 5,
+              nextReviewAt: new Date(),
+            },
+          ],
+        },
+      },
+    });
+
+    const res = await request(app)
+      .get('/api/stats')
+      .set('x-dev-user-id', userId.toString());
+    expect(res.status).toBe(200);
+    expect(res.body.wordsTotal).toBe(1);
+    expect(res.body.dueTodayCount).toBe(1);
+    expect(res.body.dueNowTotal).toBe(1);
+  });
+
+  it('GET /api/stats separates dueNowTotal from dueTodayCount', async () => {
+    await prisma.user.create({ data: { id: userId } });
+    await prisma.word.create({
+      data: {
+        userId,
+        wordEn: 'overdue',
+        translationRu: 'просрочено',
+        reviews: {
+          create: {
+            direction: 'EN_TO_RU',
+            userId,
+            stage: 1,
+            intervalMinutes: 10,
+            nextReviewAt: new Date(Date.now() - 24 * 60 * 60 * 1000),
+          },
+        },
+      },
+    });
+
+    const res = await request(app)
+      .get('/api/stats')
+      .set('x-dev-user-id', userId.toString());
+    expect(res.status).toBe(200);
+    expect(res.body.dueNowTotal).toBe(1);
+    expect(res.body.dueTodayCount).toBe(0);
+  });
+
+  it('GET /api/stats returns learnedTotal based on stage >= 4', async () => {
     await prisma.user.create({ data: { id: userId } });
     await prisma.word.create({
       data: {
@@ -148,7 +234,36 @@ describe('API integration', () => {
       .get('/api/stats')
       .set('x-dev-user-id', userId.toString());
     expect(res.status).toBe(200);
-    expect(res.body.learnedCount).toBe(1);
+    expect(res.body.learnedTotal).toBe(1);
+    expect(res.body.dueNowTotal).toBe(1);
+  });
+
+  it('GET /api/stats excludes learned words from dueNowTotal', async () => {
+    await prisma.user.create({ data: { id: userId } });
+    await prisma.word.create({
+      data: {
+        userId,
+        wordEn: 'mastered',
+        translationRu: 'выучено',
+        reviews: {
+          create: {
+            direction: 'EN_TO_RU',
+            userId,
+            stage: 4,
+            intervalMinutes: 4320,
+            nextReviewAt: new Date(),
+          },
+        },
+      },
+    });
+
+    const res = await request(app)
+      .get('/api/stats')
+      .set('x-dev-user-id', userId.toString());
+    expect(res.status).toBe(200);
+    expect(res.body.wordsTotal).toBe(1);
+    expect(res.body.learnedTotal).toBe(1);
+    expect(res.body.dueNowTotal).toBe(0);
   });
 
   it('GET /api/admin/overview rejects non-admin', async () => {
@@ -191,12 +306,14 @@ describe('API integration', () => {
     expect(list.status).toBe(200);
     expect(list.body.items.length).toBe(1);
     expect(list.body.items[0].wordEn).toBe('apple');
+    expect(list.body.hasMore).toBe(false);
 
     const filtered = await request(app)
       .get('/api/words?q=app')
       .set('x-dev-user-id', userId.toString());
     expect(filtered.status).toBe(200);
     expect(filtered.body.items.length).toBe(1);
+    expect(filtered.body.hasMore).toBe(false);
 
     const del = await request(app)
       .delete(`/api/words/${created.id}`)
@@ -208,6 +325,60 @@ describe('API integration', () => {
       .get('/api/words')
       .set('x-dev-user-id', userId.toString());
     expect(listAfter.body.items.length).toBe(0);
+    expect(listAfter.body.hasMore).toBe(false);
+  });
+
+  it('DELETE /api/words/:id rejects non-integer ids', async () => {
+    const badIds = ['12.5', '0', '-1', 'abc'];
+
+    for (const badId of badIds) {
+      const res = await request(app)
+        .delete(`/api/words/${badId}`)
+        .set('x-dev-user-id', userId.toString());
+      expect(res.status).toBe(400);
+      expect(res.body.error).toBe('invalid_id');
+    }
+  });
+
+  it('GET /api/words supports limit+offset pagination', async () => {
+    await prisma.user.create({ data: { id: userId } });
+    for (let index = 0; index < 26; index += 1) {
+      await prisma.word.create({
+        data: {
+          userId,
+          wordEn: `word-${index}`,
+          translationRu: `слово-${index}`,
+          reviews: {
+            create: {
+              direction: 'EN_TO_RU',
+              userId,
+              stage: 0,
+              intervalMinutes: 5,
+              nextReviewAt: new Date(),
+            },
+          },
+        },
+      });
+    }
+
+    const firstPage = await request(app)
+      .get('/api/words?limit=25&offset=0')
+      .set('x-dev-user-id', userId.toString());
+    expect(firstPage.status).toBe(200);
+    expect(firstPage.body.items.length).toBe(25);
+    expect(firstPage.body.hasMore).toBe(true);
+
+    const secondPage = await request(app)
+      .get('/api/words?limit=25&offset=25')
+      .set('x-dev-user-id', userId.toString());
+    expect(secondPage.status).toBe(200);
+    expect(secondPage.body.items.length).toBe(1);
+    expect(secondPage.body.hasMore).toBe(false);
+
+    const firstIds = new Set<number>((firstPage.body.items as Array<{ id: number }>).map((item) => item.id));
+    const secondIds = new Set<number>((secondPage.body.items as Array<{ id: number }>).map((item) => item.id));
+    const intersection = [...secondIds].filter((id) => firstIds.has(id));
+    expect(intersection.length).toBe(0);
   });
 
   it('GET /api/admin/overview returns learned and postponed counts', async () => {

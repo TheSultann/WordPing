@@ -10,11 +10,14 @@ export type Settings = {
 
 export type Stats = {
   streakCount: number;
-  words: number;
+  wordsTotal: number;
+  learnedTotal: number;
+  dueTodayCount: number;
+  dueNowTotal: number;
   doneTodayCount: number;
+  accuracyTodayPercent: number;
+  notificationsSentToday: number;
   dailyLimit: number;
-  dueToday: number;
-  learnedCount: number;
 };
 
 export type Me = {
@@ -38,6 +41,11 @@ export type WordItem = {
   createdAt: string;
   stage?: number | null;
   nextReviewAt?: string | null;
+};
+
+export type WordsResponse = {
+  items: WordItem[];
+  hasMore: boolean;
 };
 
 export type AdminUserSummary = {
@@ -141,9 +149,17 @@ export const api = {
       body: JSON.stringify(payload),
     }),
   getStats: () => apiFetch<Stats>('/stats'),
-  getWords: (q?: string) => {
-    const query = q ? `?q=${encodeURIComponent(q)}` : '';
-    return apiFetch<{ items: WordItem[] }>(`/words${query}`);
+  getWords: (q?: string, limit?: number, offset?: number) => {
+    const params = new URLSearchParams();
+    if (q?.trim()) params.set('q', q.trim());
+    if (typeof limit === 'number' && Number.isFinite(limit) && limit > 0) {
+      params.set('limit', String(Math.min(Math.max(limit, 1), 200)));
+    }
+    if (typeof offset === 'number' && Number.isFinite(offset) && offset > 0) {
+      params.set('offset', String(Math.max(offset, 0)));
+    }
+    const query = params.toString();
+    return apiFetch<WordsResponse>(`/words${query ? `?${query}` : ''}`);
   },
   deleteWord: (id: number) =>
     apiFetch<{ ok: boolean }>(`/words/${id}`, { method: 'DELETE' }),

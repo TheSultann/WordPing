@@ -23,8 +23,8 @@ import {
   translateAutoWithMyMemory,
 } from '../services/translation';
 import { addWordForUser, applyRating, loadReviewWithWord, DailyWordLimitError, DuplicateWordError } from '../services/reviewService';
-import { consumeAutoTranslateQuota } from '../services/translationQuota';
-import { CardDirection, ReviewResult } from '../generated/prisma/client';
+import { checkAutoTranslateQuota, commitAutoTranslateQuota } from '../services/translationQuota';
+import { CardDirection, Prisma, ReviewResult } from '../generated/prisma/client';
 import { checkAnswer } from '../services/answerChecker';
 import { Rating } from '../services/reviewScheduler';
 import { minutesToTimeString } from '../utils/time';
@@ -366,6 +366,7 @@ bot.on('text', async (ctx) => {
     let finalTranslation: string | null = null;
     let usedMyMemoryDueToLimit = false;
     let exhaustedAutoTranslateLimit: number | null = null;
+    let shouldCommitAutoTranslateQuota = false;
     const tryGeminiSmart = async () => {
       const geminiSmart = await detectAndTranslateWithGemini(normalizedInput, targetLang);
       if (!geminiSmart?.translatedText) return false;
@@ -391,7 +392,7 @@ bot.on('text', async (ctx) => {
     };
 
     if (resolvedInputLang === 'ru' || resolvedInputLang === 'uz') {
-      const quota = await consumeAutoTranslateQuota(BigInt(userId), user.timezone);
+      const quota = await checkAutoTranslateQuota(BigInt(userId), user.timezone);
       if (!quota.allowed) {
         usedMyMemoryDueToLimit = true;
         exhaustedAutoTranslateLimit = quota.limit;
@@ -404,8 +405,9 @@ bot.on('text', async (ctx) => {
         finalEn = englishTranslation;
         finalTranslation = normalizedInput;
       }
+      if (quota.allowed) shouldCommitAutoTranslateQuota = true;
 
-      // User typed in RU/UZ — translate to English and swap
+      // User typed in RU/UZ - translate to English and swap.
       if (quota.allowed && shouldTryGeminiDisambiguation(normalizedInput, resolvedInputLang)) {
         await tryGeminiSmart();
       }
@@ -429,7 +431,7 @@ bot.on('text', async (ctx) => {
         return;
       }
 
-      const quota = await consumeAutoTranslateQuota(BigInt(userId), user.timezone);
+      const quota = await checkAutoTranslateQuota(BigInt(userId), user.timezone);
       if (!quota.allowed) {
         usedMyMemoryDueToLimit = true;
         exhaustedAutoTranslateLimit = quota.limit;
@@ -440,8 +442,9 @@ bot.on('text', async (ctx) => {
           return;
         }
       }
+      if (quota.allowed) shouldCommitAutoTranslateQuota = true;
 
-      // User typed in English — translate to user's native language
+      // User typed in English - translate to user's native language.
       if (quota.allowed) {
         await tryGeminiSmart();
       }
@@ -489,6 +492,16 @@ bot.on('text', async (ctx) => {
         resolvedInputLang === 'ru' || resolvedInputLang === 'uz'
           ? formatPairLine(finalTranslation, finalEn, lang, resolvedInputAmbiguous ? undefined : resolvedInputLang, 'en')
           : formatPairLine(finalEn, finalTranslation, lang, resolvedInputAmbiguous ? undefined : 'en', targetLang);
+      if (shouldCommitAutoTranslateQuota) {
+        const committed = await commitAutoTranslateQuota(BigInt(userId), user.timezone);
+        if (!committed.allowed) {
+          console.warn('Auto-translate quota commit skipped due to concurrent limit usage', {
+            userId,
+            limit: committed.limit,
+            used: committed.used,
+          });
+        }
+      }
       await setState(BigInt(userId), 'ADDING_WORD_CONFIRM_TRANSLATION', {
         payload: { wordEn: finalEn, translationRu: finalTranslation },
       });
@@ -640,6 +653,7 @@ bot.on('text', async (ctx) => {
         reviewId: session.reviewId,
         wordId: review.wordId,
         direction,
+        sentAt: session.sentAt ?? new Date(),
         answerText: text,
         payload: { correct },
       });
@@ -735,10 +749,31 @@ bot.on('callback_query', async (ctx) => {
       await ctx.answerCbQuery(t(lang, 'grade.noActive'));
       return;
     }
+    const claim = await prisma.userSession.updateMany({
+      where: {
+        userId: BigInt(userId),
+        state: 'WAITING_GRADE',
+        reviewId: session.reviewId,
+        direction: session.direction,
+      },
+      data: {
+        state: 'IDLE',
+        reviewId: null,
+        wordId: null,
+        direction: null,
+        sentAt: null,
+        reminderStep: 0,
+        answerText: null,
+        payload: Prisma.DbNull,
+      },
+    });
+    if (claim.count === 0) {
+      await ctx.answerCbQuery(t(lang, 'grade.noActive'));
+      return;
+    }
     const rating = data.split(':')[1] as Rating;
     const review = await loadReviewWithWord(session.reviewId);
     if (!review || !review.word) {
-      await resetState(BigInt(userId));
       await ctx.answerCbQuery(t(lang, 'session.lost'));
       return;
     }
@@ -746,7 +781,7 @@ bot.on('callback_query', async (ctx) => {
     const result: ReviewResult = wasCorrect ? 'CORRECT' : 'INCORRECT';
     await applyRating(review, rating, result, session.direction, session.answerText ?? undefined);
 
-    const progress = await recordCompletion(user);
+    const progress = await recordCompletion(user, wasCorrect);
     const limit = user.maxNotificationsPerDay ?? DEFAULT_MAX_NOTIFICATIONS;
     let progressLine = '';
     if (Number.isFinite(limit) && limit > 0) {
@@ -757,7 +792,6 @@ bot.on('callback_query', async (ctx) => {
         : t(lang, 'grade.limitReached');
     }
 
-    await resetState(BigInt(userId));
     const accepted = t(lang, 'grade.accepted');
     const message = progressLine ? `${accepted}\n${progressLine}` : accepted;
     await ctx.editMessageText(message, { parse_mode: 'HTML' });

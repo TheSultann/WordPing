@@ -67,6 +67,7 @@ model User {
   streakCount          Int           @default(0)
   lastStreakDate       DateTime?
   doneTodayCount       Int           @default(0)
+  correctTodayCount    Int           @default(0)
   lastDoneDate         DateTime?
 
   // Referrals

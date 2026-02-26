@@ -4,11 +4,13 @@ import cors from 'cors';
 import { prisma } from '../db/client';
 import { Prisma } from '../generated/prisma/client';
 import {
+  countDueNow,
   countDueToday,
   countUserWords,
   ensureUser,
   type TelegramProfile,
   resetProgressIfNeeded,
+  resetNotificationCountersIfNeeded,
   setLanguage,
   setNotificationInterval,
   setNotificationLimit,
@@ -260,32 +262,47 @@ app.patch('/api/me', async (req, res) => {
 
 app.get('/api/stats', async (req, res) => {
   const userId = req.telegramUserId!;
-  const user = await resetProgressIfNeeded(await ensureUser(Number(userId)));
-  const words = await countUserWords(user.id);
+  const baseUser = await ensureUser(Number(userId));
+  const progressUser = await resetProgressIfNeeded(baseUser);
+  const user = await resetNotificationCountersIfNeeded(progressUser);
   const now = userNow(user.timezone);
+  const nowUtcDate = now.utc().toDate();
   const todayStart = startOfUserDay(user.timezone, now);
   const tomorrow = todayStart.add(1, 'day');
-  const dueToday = await countDueToday(
-    user.id,
-    todayStart.utc().toDate(),
-    tomorrow.utc().toDate()
-  );
-  const learnedCount = await prisma.word.count({
-    where: {
-      userId: user.id,
-      reviews: {
-        some: {},
-        every: { stage: { gte: LEARNED_STAGE_MIN } },
+
+  const [wordsTotal, dueTodayCount, dueNowTotal, learnedTotal] = await Promise.all([
+    countUserWords(user.id),
+    countDueToday(
+      user.id,
+      todayStart.utc().toDate(),
+      tomorrow.utc().toDate()
+    ),
+    countDueNow(user.id, nowUtcDate),
+    prisma.word.count({
+      where: {
+        userId: user.id,
+        reviews: {
+          some: {},
+          every: { stage: { gte: LEARNED_STAGE_MIN } },
+        },
       },
-    },
-  });
+    }),
+  ]);
+
+  const accuracyTodayPercent = user.doneTodayCount > 0
+    ? Math.round((user.correctTodayCount / user.doneTodayCount) * 100)
+    : 0;
+
   res.json({
     streakCount: user.streakCount,
-    words,
+    wordsTotal,
+    learnedTotal,
+    dueTodayCount,
+    dueNowTotal,
     doneTodayCount: user.doneTodayCount,
+    accuracyTodayPercent,
+    notificationsSentToday: user.notificationsSentToday,
     dailyLimit: user.maxNotificationsPerDay,
-    dueToday,
-    learnedCount,
   });
 });
 
@@ -354,6 +371,8 @@ app.get('/api/words', async (req, res) => {
   const q = typeof req.query.q === 'string' ? req.query.q.trim() : '';
   const limitRaw = typeof req.query.limit === 'string' ? parseInt(req.query.limit, 10) : undefined;
   const take = Number.isFinite(limitRaw) ? Math.min(Math.max(limitRaw!, 1), 200) : 50;
+  const offsetRaw = typeof req.query.offset === 'string' ? parseInt(req.query.offset, 10) : NaN;
+  const skip = Number.isFinite(offsetRaw) ? Math.max(offsetRaw, 0) : 0;
 
   const where: Prisma.WordWhereInput = q
     ? {
@@ -365,10 +384,11 @@ app.get('/api/words', async (req, res) => {
       }
     : { userId };
 
-  const items = await prisma.word.findMany({
+  const rows = await prisma.word.findMany({
     where,
-    orderBy: { createdAt: 'desc' },
-    take,
+    orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+    skip,
+    take: take + 1,
     include: {
       reviews: {
         select: {
@@ -378,6 +398,9 @@ app.get('/api/words', async (req, res) => {
       },
     },
   });
+
+  const hasMore = rows.length > take;
+  const items = hasMore ? rows.slice(0, take) : rows;
 
   res.json({
     items: items.map((item) => {
@@ -397,13 +420,14 @@ app.get('/api/words', async (req, res) => {
         nextReviewAt,
       };
     }),
+    hasMore,
   });
 });
 
 app.delete('/api/words/:id', async (req, res) => {
   const userId = req.telegramUserId!;
   const id = Number(req.params.id);
-  if (!Number.isFinite(id)) {
+  if (!Number.isFinite(id) || !Number.isInteger(id) || id <= 0) {
     return res.status(400).json({ error: 'invalid_id' });
   }
 
@@ -438,9 +462,9 @@ app.delete('/api/words/:id', async (req, res) => {
 
 app.get('/api/admin/overview', async (_req, res) => {
   const now = nowUtc();
-  // lastDoneDate сохраняется как начало дня в таймзоне пользователя, переведённое в UTC.
-  // Чтобы корректно посчитать "активных сегодня" для пользователей из разных часовых поясов,
-  // берём окно последних 24 часов, а не границу текущего UTC-дня.
+  // lastDoneDate is stored as "start of user day" converted to UTC.
+  // For "active today" across timezones, use a rolling 24h window
+  // instead of the current UTC day boundary.
   const activeWindowStart = now.subtract(24, 'hour').toDate();
   const weekAgo = now.subtract(7, 'day').toDate();
 
@@ -722,5 +746,4 @@ export const startApiServer = () => {
 if (require.main === module) {
   startApiServer();
 }
-
 

@@ -13,8 +13,10 @@ import {
   Languages,
   Zap,
   Clock,
+  Hourglass,
   Bell,
   Target,
+  TrendingUp,
   Search,
   Shield,
   Users,
@@ -58,9 +60,14 @@ const COPY = {
     streakTip: 'Начни сегодня — первая серия начинается тут',
     milestoneDays: 'дней',
     progress: 'Прогресс',
-    doneToday: 'Сделано сегодня',
+    doneToday: '\u0421\u0434\u0435\u043b\u0430\u043d\u043e \u0441\u0435\u0433\u043e\u0434\u043d\u044f',
+    waitingToday: '\u0416\u0434\u0443\u0442 \u0441\u0435\u0433\u043e\u0434\u043d\u044f',
+    answeredToday: '\u041e\u0442\u0432\u0435\u0447\u0435\u043d\u043e \u0441\u0435\u0433\u043e\u0434\u043d\u044f',
+    accuracyToday: '\u0422\u043e\u0447\u043d\u043e\u0441\u0442\u044c \u0441\u0435\u0433\u043e\u0434\u043d\u044f',
+    notifications: '\u0423\u0432\u0435\u0434\u043e\u043c\u043b\u0435\u043d\u0438\u044f',
     dictionary: 'Словарь',
     dueToday: 'На повтор',
+    dueNow: 'К повторению',
     learned: 'Изучил',
     statsLoading: 'Загрузка статистики...',
     wordsTitle: 'Словарь',
@@ -158,8 +165,13 @@ const COPY = {
     milestoneDays: 'kun',
     progress: 'Progress',
     doneToday: 'Bugun bajarildi',
+    waitingToday: 'Bugun kutilmoqda',
+    answeredToday: 'Bugun javob berildi',
+    accuracyToday: 'Bugungi aniqlik',
+    notifications: 'Bildirishnomalar',
     dictionary: "Lug'at",
     dueToday: "Qayta ko'rish",
+    dueNow: 'Qaytarish kerak',
     learned: "O'rgangan",
     statsLoading: 'Statistika yuklanmoqda...',
     wordsTitle: "Lug'at",
@@ -251,15 +263,16 @@ const DATA_CACHE_TTL_MS = 30_000;
 const LEARNED_STAGE_MIN = 4;
 const ADMIN_USERS_FIRST_PAGE_SIZE = 3;
 const ADMIN_USERS_NEXT_PAGE_SIZE = 15;
+const WORDS_PAGE_SIZE = 25;
 
 const resolveWordStatus = (word: WordItem): WordStatus => {
+  if ((word.stage ?? 0) >= LEARNED_STAGE_MIN) return 'learned';
   if (word.nextReviewAt) {
     const nextReviewAtMs = Date.parse(word.nextReviewAt);
     if (Number.isFinite(nextReviewAtMs) && nextReviewAtMs <= Date.now()) {
       return 'due';
     }
   }
-  if ((word.stage ?? 0) >= LEARNED_STAGE_MIN) return 'learned';
   return 'new';
 };
 
@@ -277,6 +290,9 @@ const App = () => {
   const [limitInput, setLimitInput] = useState('');
   const [stats, setStats] = useState<Stats | null>(null);
   const [words, setWords] = useState<WordItem[]>([]);
+  const [wordsOffset, setWordsOffset] = useState(0);
+  const [wordsHasMore, setWordsHasMore] = useState(false);
+  const [wordsLoadingMore, setWordsLoadingMore] = useState(false);
   const [me, setMe] = useState<Me | null>(null);
   const [query, setQuery] = useState('');
   const [loading, setLoading] = useState(false);
@@ -338,7 +354,7 @@ const App = () => {
   };
   const getWordStatusLabel = (status: WordStatus) => {
     if (status === 'learned') return t('learned');
-    if (status === 'due') return t('dueToday');
+    if (status === 'due') return t('dueNow');
     return lang === 'uz' ? "O'rganilmagan" : 'Не выучено';
   };
   const formatDateTime = (value?: string | null) => {
@@ -392,7 +408,7 @@ const App = () => {
     stats: 0,
     adminOverview: 0,
   });
-  const wordsCacheRef = useRef<Map<string, { items: WordItem[]; loadedAt: number }>>(new Map());
+  const wordsCacheRef = useRef<Map<string, { items: WordItem[]; hasMore: boolean; offset: number; loadedAt: number }>>(new Map());
   const skipWordsDebounceOnceRef = useRef(false);
   const wordsRequestTokenRef = useRef(0);
   const isFresh = (timestamp: number) => (Date.now() - timestamp) < DATA_CACHE_TTL_MS;
@@ -519,6 +535,7 @@ const App = () => {
       void loadAdminUsers();
     }
     if (tab === 'words') {
+      void loadStats();
       skipWordsDebounceOnceRef.current = true;
       void loadWords(query);
     }
@@ -580,17 +597,27 @@ const App = () => {
     const cached = wordsCacheRef.current.get(cacheKey);
     if (!force && cached && isFresh(cached.loadedAt)) {
       setWords(cached.items);
+      setWordsOffset(cached.offset);
+      setWordsHasMore(cached.hasMore);
       return;
     }
     const requestToken = wordsRequestTokenRef.current + 1;
     wordsRequestTokenRef.current = requestToken;
     try {
       setLoading(true);
+      setWordsLoadingMore(false);
       setError('');
-      const data = await api.getWords(normalizedQuery || undefined);
+      const data = await api.getWords(normalizedQuery || undefined, WORDS_PAGE_SIZE, 0);
       if (requestToken !== wordsRequestTokenRef.current) return;
       setWords(data.items);
-      wordsCacheRef.current.set(cacheKey, { items: data.items, loadedAt: Date.now() });
+      setWordsOffset(data.items.length);
+      setWordsHasMore(Boolean(data.hasMore));
+      wordsCacheRef.current.set(cacheKey, {
+        items: data.items,
+        hasMore: Boolean(data.hasMore),
+        offset: data.items.length,
+        loadedAt: Date.now(),
+      });
       if (wordsCacheRef.current.size > 20) {
         const oldestKey = wordsCacheRef.current.keys().next().value as string | undefined;
         if (oldestKey) wordsCacheRef.current.delete(oldestKey);
@@ -601,6 +628,37 @@ const App = () => {
     } finally {
       if (requestToken !== wordsRequestTokenRef.current) return;
       setLoading(false);
+    }
+  };
+
+  const loadMoreWords = async () => {
+    if (wordsLoadingMore || !wordsHasMore) return;
+    const normalizedQuery = query.trim();
+    const cacheKey = normalizedQuery.toLowerCase();
+    const requestToken = wordsRequestTokenRef.current + 1;
+    wordsRequestTokenRef.current = requestToken;
+    try {
+      setWordsLoadingMore(true);
+      setError('');
+      const data = await api.getWords(normalizedQuery || undefined, WORDS_PAGE_SIZE, wordsOffset);
+      if (requestToken !== wordsRequestTokenRef.current) return;
+      setWords((prev) => {
+        const merged = [...prev, ...data.items];
+        wordsCacheRef.current.set(cacheKey, {
+          items: merged,
+          hasMore: Boolean(data.hasMore),
+          offset: merged.length,
+          loadedAt: Date.now(),
+        });
+        return merged;
+      });
+      setWordsOffset((prev) => prev + data.items.length);
+      setWordsHasMore(Boolean(data.hasMore));
+    } catch (err) {
+      if (requestToken !== wordsRequestTokenRef.current) return;
+      setError(err instanceof Error ? err.message : t('loadWordsError'));
+    } finally {
+      setWordsLoadingMore(false);
     }
   };
 
@@ -799,12 +857,22 @@ const App = () => {
       setLoading(true);
       setError('');
       await api.deleteWord(id);
-      setWords((prev) => prev.filter((item) => item.id !== id));
+      setWords((prev) => {
+        const filtered = prev.filter((item) => item.id !== id);
+        setWordsOffset(filtered.length);
+        return filtered;
+      });
       wordsCacheRef.current.forEach((entry, key) => {
         const filtered = entry.items.filter((item) => item.id !== id);
-        wordsCacheRef.current.set(key, { ...entry, items: filtered, loadedAt: Date.now() });
+        wordsCacheRef.current.set(key, { ...entry, items: filtered, offset: filtered.length, loadedAt: Date.now() });
       });
-      cacheTsRef.current.stats = 0;
+      try {
+        const freshStats = await api.getStats();
+        setStats(freshStats);
+        cacheTsRef.current.stats = Date.now();
+      } catch {
+        cacheTsRef.current.stats = 0;
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : t('deleteError'));
     } finally {
@@ -878,27 +946,32 @@ const App = () => {
                 </div>
 
                 <div className="panel">
-                  <h2><Target size={20} /> {t('progress')}</h2>
+                  <h2 className="stats-section-title">
+                    <span className="stats-section-title__icon" aria-hidden="true">
+                      <TrendingUp size={16} strokeWidth={2.4} />
+                    </span>
+                    {lang === 'uz' ? 'Bugungi statistika' : '\u041f\u0440\u043e\u0433\u0440\u0435\u0441\u0441 \u0437\u0430 \u0441\u0435\u0433\u043e\u0434\u043d\u044f'}
+                  </h2>
                   <div className="stat-grid">
-                    <div className="stat-card stat-card--today">
-                      <div className="stat-emoji stat-emoji--today"><Target size={18} strokeWidth={2.2} /></div>
-                      <span>{t('doneToday')}</span>
-                      <strong>{stats.doneTodayCount} / {stats.dailyLimit}</strong>
-                    </div>
-                    <div className="stat-card stat-card--dictionary">
-                      <div className="stat-emoji stat-emoji--dictionary"><Book size={18} strokeWidth={2.2} /></div>
-                      <span>{t('dictionary')}</span>
-                      <strong>{stats.words}</strong>
-                    </div>
                     <div className="stat-card stat-card--due">
-                      <div className="stat-emoji stat-emoji--due"><Clock size={18} strokeWidth={2.2} /></div>
-                      <span>{t('dueToday')}</span>
-                      <strong>{stats.dueToday}</strong>
+                      <div className="stat-emoji stat-emoji--due"><Hourglass size={18} strokeWidth={2.2} /></div>
+                      <span>{t('waitingToday')}</span>
+                      <strong>{stats.dueTodayCount}</strong>
                     </div>
-                    <div className="stat-card stat-card--learned">
-                      <div className="stat-emoji stat-emoji--learned"><CheckCircle2 size={18} strokeWidth={2.2} /></div>
-                      <span>{t('learned')}</span>
-                      <strong>{stats.learnedCount}</strong>
+                    <div className="stat-card stat-card--today">
+                      <div className="stat-emoji stat-emoji--today"><CheckCircle2 size={18} strokeWidth={2.2} /></div>
+                      <span>{t('answeredToday')}</span>
+                      <strong>{stats.doneTodayCount}</strong>
+                    </div>
+                    <div className="stat-card stat-card--accuracy">
+                      <div className="stat-emoji stat-emoji--accuracy"><Target size={18} strokeWidth={2.2} /></div>
+                      <span>{t('accuracyToday')}</span>
+                      <strong>{stats.accuracyTodayPercent}%</strong>
+                    </div>
+                    <div className="stat-card stat-card--notifications">
+                      <div className="stat-emoji stat-emoji--notifications"><Bell size={18} strokeWidth={2.2} /></div>
+                      <span>{t('notifications')}</span>
+                      <strong>{stats.notificationsSentToday} / {stats.dailyLimit}</strong>
                     </div>
                   </div>
                 </div>
@@ -927,7 +1000,25 @@ const App = () => {
             className="section"
           >
             <div className="panel" style={{ minHeight: '80vh' }}>
-              <h2><Search size={20} /> {t('wordsTitle')}</h2>
+              <div className="words-head">
+                <h2><Search size={20} /> {t('wordsTitle')}</h2>
+                {stats && (
+                  <span className="words-total-chip">
+                    {lang === 'uz' ? 'Jami:' : '\u0412\u0441\u0435\u0433\u043e:'} {stats.wordsTotal}
+                  </span>
+                )}
+              </div>
+              {stats && (
+                <div className="words-meta words-meta--status">
+                  <span className="words-meta-item words-meta-item--new">
+                    {getWordStatusLabel('new')}: {Math.max(0, stats.wordsTotal - stats.learnedTotal - stats.dueNowTotal)}
+                  </span>
+                  <span className="words-meta-separator">|</span>
+                  <span className="words-meta-item words-meta-item--due">{t('dueNow')}: {stats.dueNowTotal}</span>
+                  <span className="words-meta-separator">|</span>
+                  <span className="words-meta-item words-meta-item--learned">{t('learned')}: {stats.learnedTotal}</span>
+                </div>
+              )}
               <div className="field word-search">
                 <input
                   type="text"
@@ -962,6 +1053,19 @@ const App = () => {
                     </div>
                   );
                 })}
+                {wordsHasMore && (
+                  <button
+                    type="button"
+                    className="btn-ghost btn-compact"
+                    style={{ marginTop: 10, width: '100%' }}
+                    disabled={wordsLoadingMore || loading}
+                    onClick={() => void loadMoreWords()}
+                  >
+                    {wordsLoadingMore
+                      ? (lang === 'uz' ? 'Yuklanmoqda...' : 'Загрузка...')
+                      : (lang === 'uz' ? "Yana ko'rsatish" : 'Показать ещё')}
+                  </button>
+                )}
               </div>
             </div>
           </div>

@@ -127,6 +127,109 @@ describe('translation service', () => {
     expect(fetchMock.mock.calls.length).toBe(2);
   });
 
+  it('distributes Gemini requests using round robin order', async () => {
+    process.env.HF_API_KEY = '';
+    process.env.GEMINI_API_KEY = 'gm-key';
+    process.env.GEMINI_API_BASE_URL = 'https://gem.test/models';
+    process.env.GEMINI_MODEL = 'gem-a';
+    process.env.GEMINI_FALLBACK_MODELS = 'gem-b,gem-c';
+    process.env.TRANSLATE_API_URL = 'https://mymemory.test/get';
+
+    const seenModels: string[] = [];
+    const fetchMock = installFetchMock((url) => {
+      const match = url.match(/https:\/\/gem\.test\/models\/([^:]+):generateContent/);
+      if (match) {
+        seenModels.push(match[1] ?? '');
+        return {
+          status: 200,
+          body: { candidates: [{ content: { parts: [{ text: '\u043f\u0435\u0440\u0435\u0432\u043e\u0434' }] } }] },
+        };
+      }
+      if (url.includes('https://mymemory.test/get')) {
+        return { status: 200, body: { responseData: { translatedText: '\u043f\u0435\u0440\u0435\u0432\u043e\u0434' } } };
+      }
+      return { status: 500, body: { error: 'unexpected url' } };
+    });
+
+    const { suggestTranslation } = await import('../src/services/translation');
+    await suggestTranslation('alpha');
+    await suggestTranslation('beta');
+    await suggestTranslation('gamma');
+
+    expect(seenModels).toEqual(['gem-a', 'gem-b', 'gem-c']);
+    expect(fetchMock.mock.calls.length).toBe(3);
+  });
+
+  it('skips rate-limited Gemini model during cooldown window', async () => {
+    process.env.HF_API_KEY = '';
+    process.env.GEMINI_API_KEY = 'gm-key';
+    process.env.GEMINI_API_BASE_URL = 'https://gem.test/models';
+    process.env.GEMINI_MODEL = 'gem-a';
+    process.env.GEMINI_FALLBACK_MODELS = 'gem-b';
+    process.env.TRANSLATE_API_URL = 'https://mymemory.test/get';
+
+    const seenModels: string[] = [];
+    const fetchMock = installFetchMock((url) => {
+      const match = url.match(/https:\/\/gem\.test\/models\/([^:]+):generateContent/);
+      if (match) {
+        const model = match[1] ?? '';
+        seenModels.push(model);
+        if (model === 'gem-a') {
+          return { status: 429, body: { error: { message: 'rate limited' } } };
+        }
+        return {
+          status: 200,
+          body: { candidates: [{ content: { parts: [{ text: '\u043f\u0435\u0440\u0435\u0432\u043e\u0434' }] } }] },
+        };
+      }
+      if (url.includes('https://mymemory.test/get')) {
+        return { status: 200, body: { responseData: { translatedText: '\u043f\u0435\u0440\u0435\u0432\u043e\u0434' } } };
+      }
+      return { status: 500, body: { error: 'unexpected url' } };
+    });
+
+    const { suggestTranslation } = await import('../src/services/translation');
+    await suggestTranslation('first-word');
+    await suggestTranslation('second-word');
+
+    expect(seenModels).toEqual(['gem-a', 'gem-b', 'gem-b']);
+    expect(fetchMock.mock.calls.length).toBe(3);
+  });
+
+  it('activates global Gemini pause only when all models are rate-limited', async () => {
+    process.env.HF_API_KEY = '';
+    process.env.GEMINI_API_KEY = 'gm-key';
+    process.env.GEMINI_API_BASE_URL = 'https://gem.test/models';
+    process.env.GEMINI_MODEL = 'gem-a';
+    process.env.GEMINI_FALLBACK_MODELS = 'gem-b';
+    process.env.TRANSLATE_API_URL = 'https://mymemory.test/get';
+
+    const seenModels: string[] = [];
+    let myMemoryCalls = 0;
+
+    installFetchMock((url) => {
+      const match = url.match(/https:\/\/gem\.test\/models\/([^:]+):generateContent/);
+      if (match) {
+        seenModels.push(match[1] ?? '');
+        return { status: 429, body: { error: { message: 'rate limited' } } };
+      }
+      if (url.includes('https://mymemory.test/get')) {
+        myMemoryCalls += 1;
+        return { status: 200, body: { responseData: { translatedText: '\u043f\u0435\u0440\u0435\u0432\u043e\u0434' } } };
+      }
+      return { status: 500, body: { error: 'unexpected url' } };
+    });
+
+    const { suggestTranslation } = await import('../src/services/translation');
+    const first = await suggestTranslation('first');
+    const second = await suggestTranslation('second');
+
+    expect(first).toBe('\u043f\u0435\u0440\u0435\u0432\u043e\u0434');
+    expect(second).toBe('\u043f\u0435\u0440\u0435\u0432\u043e\u0434');
+    expect(seenModels).toEqual(['gem-a', 'gem-b']);
+    expect(myMemoryCalls).toBe(2);
+  });
+
   it('retries Hugging Face after 503 with estimated_time and parses object response', async () => {
     process.env.HF_API_KEY = 'hf-token';
     process.env.HF_INFERENCE_BASE_URL = 'https://hf.test/models';

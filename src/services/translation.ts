@@ -18,6 +18,8 @@ const MYMEMORY_DEFAULT_URL = 'https://api.mymemory.translated.net/get';
 
 const DEFAULT_TIMEOUT_MS = 8000;
 const DEFAULT_CACHE_MAX = 2000;
+const GEMINI_429_BASE_COOLDOWN_MS = 60_000;
+const GEMINI_429_MAX_COOLDOWN_MS = 5 * 60_000;
 
 type Lang = 'ru' | 'en' | 'uz';
 type DetectHint = {
@@ -61,10 +63,20 @@ type GeminiDetectTranslatePayload = {
   confidence?: number | string;
 };
 
+import { trimEnv } from '../utils/env';
+
 const translationCache = new Map<string, string>();
 const inFlightRequests = new Map<string, Promise<string | null>>();
 
-const trimEnv = (value: string | undefined): string => (value ?? '').trim();
+type GeminiModelRuntime = {
+  cooldownUntil: number;
+  rateLimitedStreak: number;
+  lastUsedAt: number;
+};
+
+const geminiModelPool = new Map<string, GeminiModelRuntime>();
+let geminiRoundRobinCursor = 0;
+let geminiGlobalPauseUntil = 0;
 
 const normalizeText = (value: unknown): string | null => {
   if (typeof value !== 'string') return null;
@@ -164,11 +176,137 @@ const readCacheMax = (): number => {
 const readGeminiModels = (): string[] => {
   const primary = trimEnv(process.env.GEMINI_MODEL) || GEMINI_DEFAULT_MODEL;
   const fallbackRaw = trimEnv(process.env.GEMINI_FALLBACK_MODELS);
-  const fallback = fallbackRaw
+  const fallbackConfigured = Object.prototype.hasOwnProperty.call(process.env, 'GEMINI_FALLBACK_MODELS');
+  const fallback = fallbackConfigured
     ? fallbackRaw.split(',').map((item) => item.trim()).filter(Boolean)
     : GEMINI_DEFAULT_FALLBACK_MODELS;
 
   return Array.from(new Set([primary, ...fallback]));
+};
+
+const ensureGeminiRuntime = (model: string): GeminiModelRuntime => {
+  const existing = geminiModelPool.get(model);
+  if (existing) return existing;
+
+  const created: GeminiModelRuntime = {
+    cooldownUntil: 0,
+    rateLimitedStreak: 0,
+    lastUsedAt: 0,
+  };
+  geminiModelPool.set(model, created);
+  return created;
+};
+
+const syncGeminiModelPool = (models: string[]) => {
+  const active = new Set(models);
+  for (const model of models) ensureGeminiRuntime(model);
+  for (const model of [...geminiModelPool.keys()]) {
+    if (!active.has(model)) geminiModelPool.delete(model);
+  }
+  if (models.length === 0) {
+    geminiRoundRobinCursor = 0;
+    geminiGlobalPauseUntil = 0;
+    return;
+  }
+  geminiRoundRobinCursor %= models.length;
+};
+
+const getRoundRobinOrder = (models: string[]): string[] => {
+  if (models.length <= 1) return [...models];
+  const start = geminiRoundRobinCursor % models.length;
+  geminiRoundRobinCursor = (geminiRoundRobinCursor + 1) % models.length;
+  return [...models.slice(start), ...models.slice(0, start)];
+};
+
+const getEarliestCooldownUntil = (models: string[], nowMs: number): number | null => {
+  let earliest = Number.POSITIVE_INFINITY;
+  for (const model of models) {
+    const runtime = ensureGeminiRuntime(model);
+    if (runtime.cooldownUntil > nowMs) {
+      earliest = Math.min(earliest, runtime.cooldownUntil);
+    }
+  }
+  return Number.isFinite(earliest) ? earliest : null;
+};
+
+const markGeminiRateLimited = (model: string, nowMs: number) => {
+  const runtime = ensureGeminiRuntime(model);
+  runtime.rateLimitedStreak += 1;
+  const cooldownMs = Math.min(
+    GEMINI_429_MAX_COOLDOWN_MS,
+    GEMINI_429_BASE_COOLDOWN_MS * (2 ** Math.max(0, runtime.rateLimitedStreak - 1)),
+  );
+  runtime.cooldownUntil = Math.max(runtime.cooldownUntil, nowMs + cooldownMs);
+};
+
+const markGeminiSuccess = (model: string) => {
+  const runtime = ensureGeminiRuntime(model);
+  runtime.rateLimitedStreak = 0;
+  runtime.cooldownUntil = 0;
+};
+
+const activateGlobalPauseIfAllModelsLimited = (models: string[], nowMs: number) => {
+  if (!models.length) return;
+  const allLimited = models.every((model) => ensureGeminiRuntime(model).cooldownUntil > nowMs);
+  if (!allLimited) return;
+
+  const earliest = getEarliestCooldownUntil(models, nowMs);
+  if (earliest) {
+    geminiGlobalPauseUntil = Math.max(geminiGlobalPauseUntil, earliest);
+  }
+};
+
+type GeminiAttemptResult<T> = {
+  ok: boolean;
+  status: number;
+  parsed: T | null;
+};
+
+const runWithGeminiModelPool = async <T>(
+  models: string[],
+  attempt: (model: string) => Promise<GeminiAttemptResult<T>>,
+): Promise<T | null> => {
+  syncGeminiModelPool(models);
+  if (!models.length) return null;
+
+  const nowMs = Date.now();
+  if (geminiGlobalPauseUntil > nowMs) return null;
+  if (geminiGlobalPauseUntil && geminiGlobalPauseUntil <= nowMs) {
+    geminiGlobalPauseUntil = 0;
+  }
+
+  const ordered = getRoundRobinOrder(models);
+  const available = ordered.filter((model) => ensureGeminiRuntime(model).cooldownUntil <= nowMs);
+  if (!available.length) {
+    const earliest = getEarliestCooldownUntil(models, nowMs);
+    if (earliest) {
+      geminiGlobalPauseUntil = Math.max(geminiGlobalPauseUntil, earliest);
+    }
+    return null;
+  }
+
+  let saw429 = false;
+  for (const model of available) {
+    const runtime = ensureGeminiRuntime(model);
+    runtime.lastUsedAt = Date.now();
+
+    const result = await attempt(model);
+    if (result.ok && result.parsed !== null) {
+      markGeminiSuccess(model);
+      return result.parsed;
+    }
+
+    if (result.status === 429) {
+      saw429 = true;
+      markGeminiRateLimited(model, Date.now());
+    }
+  }
+
+  if (saw429) {
+    activateGlobalPauseIfAllModelsLimited(models, Date.now());
+  }
+
+  return null;
 };
 
 const normalizeUzToken = (value: string): string =>
@@ -521,7 +659,7 @@ export const detectAndTranslateWithGemini = async (
     `Text: ${text}`,
   ].join('\n');
 
-  for (const model of models) {
+  return runWithGeminiModelPool(models, async (model) => {
     const res = await fetchJson<GeminiResponse>(
       `${base}/${model}:generateContent?key=${encodeURIComponent(key)}`,
       {
@@ -535,28 +673,32 @@ export const detectAndTranslateWithGemini = async (
       timeoutMs,
     );
 
-    if (!res.ok) continue;
+    if (!res.ok) return { ok: false, status: res.status, parsed: null };
 
     const raw = parseGeminiTranslation(res.data);
-    if (!raw) continue;
+    if (!raw) return { ok: true, status: res.status, parsed: null };
 
     const parsed = parseGeminiDetectTranslateJson(raw);
-    if (!parsed) continue;
+    if (!parsed) return { ok: true, status: res.status, parsed: null };
 
     const sourceLang = normalizeSourceLang(parsed.source_lang);
     const targetLang = normalizeSourceLang(parsed.target_lang);
     const translatedText = normalizeText(parsed.translated_text);
-    if (!sourceLang || !targetLang || !translatedText) continue;
+    if (!sourceLang || !targetLang || !translatedText) {
+      return { ok: true, status: res.status, parsed: null };
+    }
 
     return {
-      sourceLang,
-      targetLang,
-      translatedText,
-      confidence: normalizeConfidence(parsed.confidence),
+      ok: true,
+      status: res.status,
+      parsed: {
+        sourceLang,
+        targetLang,
+        translatedText,
+        confidence: normalizeConfidence(parsed.confidence),
+      },
     };
-  }
-
-  return null;
+  });
 };
 
 const translateWithGeminiStep = async (
@@ -584,7 +726,7 @@ const translateWithGeminiStep = async (
     `Text: ${text}`,
   ].join('\n');
 
-  for (const model of models) {
+  return runWithGeminiModelPool(models, async (model) => {
     const res = await fetchJson<GeminiResponse>(
       `${base}/${model}:generateContent?key=${encodeURIComponent(key)}`,
       {
@@ -598,13 +740,9 @@ const translateWithGeminiStep = async (
       timeoutMs,
     );
 
-    if (!res.ok) continue;
-
-    const translated = parseGeminiTranslation(res.data);
-    if (translated) return translated;
-  }
-
-  return null;
+    if (!res.ok) return { ok: false, status: res.status, parsed: null };
+    return { ok: true, status: res.status, parsed: parseGeminiTranslation(res.data) };
+  });
 };
 
 const translateWithMyMemoryStep = async (text: string, source: Lang, target: Lang, timeoutMs: number): Promise<string | null> => {

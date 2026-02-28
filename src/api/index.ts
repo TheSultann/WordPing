@@ -9,6 +9,7 @@ import {
   countUserWords,
   ensureUser,
   type TelegramProfile,
+  buildDisplayName,
   resetProgressIfNeeded,
   resetNotificationCountersIfNeeded,
   setLanguage,
@@ -41,7 +42,8 @@ const allowedOrigins = Array.from(new Set([...parseOrigins(process.env.WEB_ORIGI
 
 const parseTimezone = (value?: string | null): string | null => {
   const timezone = (value ?? '').trim();
-  if (!timezone || timezone.length > 64) return DEFAULT_TIMEZONE;
+  if (!timezone) return null;
+  if (timezone.length > 64) return null;
   const normalized = timezone.toLowerCase();
   if (
     normalized === 'utc' ||
@@ -57,7 +59,7 @@ const parseTimezone = (value?: string | null): string | null => {
     Intl.DateTimeFormat('en-US', { timeZone: timezone }).format(new Date());
     return timezone;
   } catch {
-    return DEFAULT_TIMEZONE;
+    return null;
   }
 };
 
@@ -80,16 +82,7 @@ const toTelegramProfile = (user?: TelegramUser | null): TelegramProfile | undefi
   };
 };
 
-const buildDisplayName = (
-  firstName?: string | null,
-  lastName?: string | null,
-  fallback?: string | null
-): string | null => {
-  const combined = `${firstName ?? ''} ${lastName ?? ''}`.trim();
-  if (combined) return combined;
-  const trimmedFallback = (fallback ?? '').trim();
-  return trimmedFallback || null;
-};
+
 
 app.use(
   cors({
@@ -230,6 +223,7 @@ app.get('/api/me', async (req, res) => {
     streakCount: user.streakCount,
     doneTodayCount: user.doneTodayCount,
     referralCount,
+    isAdmin: userId === adminTelegramId,
   });
 });
 
@@ -376,12 +370,12 @@ app.get('/api/words', async (req, res) => {
 
   const where: Prisma.WordWhereInput = q
     ? {
-        userId,
-        OR: [
-          { wordEn: { contains: q, mode: 'insensitive' } },
-          { translationRu: { contains: q, mode: 'insensitive' } },
-        ],
-      }
+      userId,
+      OR: [
+        { wordEn: { contains: q, mode: 'insensitive' } },
+        { translationRu: { contains: q, mode: 'insensitive' } },
+      ],
+    }
     : { userId };
 
   const rows = await prisma.word.findMany({
@@ -479,6 +473,7 @@ app.get('/api/admin/overview', async (_req, res) => {
     prisma.user.count(),
     prisma.word.count(),
     prisma.user.aggregate({
+      where: { notificationsDate: { gte: activeWindowStart } },
       _sum: { notificationsSentToday: true },
     }),
     prisma.user.count({
@@ -511,26 +506,26 @@ app.get('/api/admin/overview', async (_req, res) => {
   const [learnedCounts, skippedCounts] = await Promise.all([
     recentIds.length
       ? prisma.word.groupBy({
-          by: ['userId'],
-          where: {
-            userId: { in: recentIds },
-            reviews: {
-              some: {},
-              every: { stage: { gte: LEARNED_STAGE_MIN } },
-            },
+        by: ['userId'],
+        where: {
+          userId: { in: recentIds },
+          reviews: {
+            some: {},
+            every: { stage: { gte: LEARNED_STAGE_MIN } },
           },
-          _count: { _all: true },
-        })
+        },
+        _count: { _all: true },
+      })
       : Promise.resolve([]),
     recentIds.length
       ? prisma.word.groupBy({
-          by: ['userId'],
-          where: {
-            userId: { in: recentIds },
-            reviews: { some: { lastResult: 'SKIPPED' } },
-          },
-          _count: { _all: true },
-        })
+        by: ['userId'],
+        where: {
+          userId: { in: recentIds },
+          reviews: { some: { lastResult: 'SKIPPED' } },
+        },
+        _count: { _all: true },
+      })
       : Promise.resolve([]),
   ]);
 
@@ -608,26 +603,26 @@ app.get('/api/admin/users', async (req, res) => {
   const [learnedCounts, skippedCounts] = await Promise.all([
     userIds.length
       ? prisma.word.groupBy({
-          by: ['userId'],
-          where: {
-            userId: { in: userIds },
-            reviews: {
-              some: {},
-              every: { stage: { gte: LEARNED_STAGE_MIN } },
-            },
+        by: ['userId'],
+        where: {
+          userId: { in: userIds },
+          reviews: {
+            some: {},
+            every: { stage: { gte: LEARNED_STAGE_MIN } },
           },
-          _count: { _all: true },
-        })
+        },
+        _count: { _all: true },
+      })
       : Promise.resolve([]),
     userIds.length
       ? prisma.word.groupBy({
-          by: ['userId'],
-          where: {
-            userId: { in: userIds },
-            reviews: { some: { lastResult: 'SKIPPED' } },
-          },
-          _count: { _all: true },
-        })
+        by: ['userId'],
+        where: {
+          userId: { in: userIds },
+          reviews: { some: { lastResult: 'SKIPPED' } },
+        },
+        _count: { _all: true },
+      })
       : Promise.resolve([]),
   ]);
 
@@ -718,19 +713,36 @@ app.post('/api/admin/broadcast', async (req, res) => {
   const users = await prisma.user.findMany({ select: { id: true } });
   let sent = 0;
   let failed = 0;
+  const MAX_RETRIES = 3;
 
   for (const user of users) {
-    try {
-      if (trimmedPhoto) {
-        await sendTelegramPhoto(Number(user.id), trimmedPhoto, trimmedMessage);
-      } else {
-        await sendTelegramMessage(Number(user.id), trimmedMessage);
+    let success = false;
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      try {
+        if (trimmedPhoto) {
+          await sendTelegramPhoto(Number(user.id), trimmedPhoto, trimmedMessage);
+        } else {
+          await sendTelegramMessage(Number(user.id), trimmedMessage);
+        }
+        success = true;
+        break;
+      } catch (err: any) {
+        const retryAfter = err?.response?.parameters?.retry_after;
+        const status = err?.response?.error_code ?? err?.response?.statusCode;
+        if (status === 429 && retryAfter && attempt < MAX_RETRIES) {
+          const waitMs = Math.min(retryAfter, 60) * 1000;
+          await sleep(waitMs);
+          continue;
+        }
+        break;
       }
+    }
+    if (success) {
       sent += 1;
-    } catch (err) {
+    } else {
       failed += 1;
     }
-    await sleep(50);
+    await sleep(60);
   }
 
   return res.json({ ok: true, total: users.length, sent, failed });

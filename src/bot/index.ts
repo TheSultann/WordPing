@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import { escapeHtml } from '../utils/html';
 import { Context, Markup, Telegraf } from 'telegraf';
 import {
   ensureUser,
@@ -8,7 +9,6 @@ import {
   setQuietHours,
   setNotificationLimit,
   setNotificationInterval,
-  resetProgressIfNeeded,
   setLanguage,
   setReferredByIfEmpty,
 } from '../services/userService';
@@ -84,11 +84,7 @@ const toTelegramProfile = (from?: Context['from']): TelegramProfile | undefined 
   };
 };
 
-const escapeHtml = (value: string) =>
-  value
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
+
 
 const flagForDetectedLang = (detected: 'ru' | 'uz' | 'en', ambiguous = false) => {
   if (ambiguous) return '🌐';
@@ -137,37 +133,6 @@ const shouldTryGeminiDisambiguation = (input: string, detectedLang: 'ru' | 'uz' 
   return true;
 };
 
-const QUIET_WINDOWS = [
-  { label: '24/7', start: 0, end: 0 },
-  { label: '07-23', start: 420, end: 1380 },
-  { label: '08-22', start: 480, end: 1320 },
-  { label: '09-23', start: 540, end: 1380 },
-  { label: '10-22', start: 600, end: 1320 },
-];
-
-const LIMIT_OPTIONS = [10, 20, 30, 40];
-const FREQ_OPTIONS = [15, 30, 60, 120];
-const PRESETS = {
-  standard: { label: 'Стандарт', quiet: { start: 540, end: 1380 }, limit: 20, freq: 30 },
-  intensive: { label: 'Интенсив', quiet: { start: 480, end: 1380 }, limit: 30, freq: 20 },
-  gentle: { label: 'Щадяще', quiet: { start: 600, end: 1320 }, limit: 10, freq: 60 },
-};
-
-const quietLabel = (startMinutes: number, endMinutes: number) => {
-  if (startMinutes === endMinutes) return '24/7';
-  const end = endMinutes === 0 ? 1440 : endMinutes;
-  return `${minutesToTimeString(startMinutes)}-${minutesToTimeString(end)}`;
-};
-
-const markButton = (active: boolean, label: string) => (active ? `✅ ${label}` : label);
-
-const detectPreset = (user: any): keyof typeof PRESETS | null => {
-  const { quietHoursStartMinutes: s, quietHoursEndMinutes: e, maxNotificationsPerDay: l, notificationIntervalMinutes: f } = user;
-  const match = Object.entries(PRESETS).find(
-    ([, p]) => p.quiet.start === s && p.quiet.end === e && p.limit === l && p.freq === f
-  );
-  return match ? (match[0] as keyof typeof PRESETS) : null;
-};
 
 
 const languageKeyboard = Markup.inlineKeyboard([
@@ -220,7 +185,7 @@ const safeReply = async (ctx: Context, text: string, extra?: any) => {
 };
 
 const sendSettings = async (ctx: Context, userId: number, view: SettingsView = "main", edit = false) => {
-  const fresh = await resetProgressIfNeeded(await ensureUser(userId, toTelegramProfile(ctx.from)));
+  const fresh = await ensureUser(userId, toTelegramProfile(ctx.from));
   const lang = (fresh.language as Lang) || 'ru';
   const text = renderSectionText(view, fresh, lang);
   const keyboard =
@@ -781,8 +746,9 @@ bot.on('callback_query', async (ctx) => {
     const result: ReviewResult = wasCorrect ? 'CORRECT' : 'INCORRECT';
     await applyRating(review, rating, result, session.direction, session.answerText ?? undefined);
 
-    const progress = await recordCompletion(user, wasCorrect);
-    const limit = user.maxNotificationsPerDay ?? DEFAULT_MAX_NOTIFICATIONS;
+    const freshUser = await ensureUser(userId, toTelegramProfile(ctx.from));
+    const progress = await recordCompletion(freshUser, wasCorrect);
+    const limit = freshUser.maxNotificationsPerDay ?? DEFAULT_MAX_NOTIFICATIONS;
     let progressLine = '';
     if (Number.isFinite(limit) && limit > 0) {
       const done = progress.todayCompleted;
@@ -836,7 +802,9 @@ bot.on('callback_query', async (ctx) => {
 
   if (data === 'add_change') {
     if (session.state !== 'ADDING_WORD_CONFIRM_TRANSLATION') {
-      await ctx.answerCbQuery('Нет слова на редактирование');
+      const user = await ensureUser(userId, toTelegramProfile(ctx.from));
+      const lang = (user.language as Lang) || 'ru';
+      await ctx.answerCbQuery(t(lang, 'session.lost'));
       return;
     }
     const payload = (session.payload as any) || {};

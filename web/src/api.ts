@@ -32,6 +32,7 @@ export type Me = {
   streakCount: number;
   doneTodayCount: number;
   referralCount: number;
+  isAdmin?: boolean;
 };
 
 export type WordItem = {

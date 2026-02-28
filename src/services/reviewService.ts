@@ -3,6 +3,7 @@ import { CardDirection, Review, ReviewResult } from '../generated/prisma/client'
 import { prisma } from '../db/client';
 import { initialReviewSchedule, Rating, scheduleNextReview, scheduleSkipped } from './reviewScheduler';
 import { nowUtc, startOfUserDay } from '../utils/time';
+import { trimEnv } from '../utils/env';
 
 export class DuplicateWordError extends Error {
   constructor(message = 'Duplicate word') {
@@ -13,9 +14,6 @@ export class DuplicateWordError extends Error {
 
 const DEFAULT_DAILY_WORD_ADD_LIMIT = 9;
 const CARD_DIRECTIONS: readonly CardDirection[] = ['EN_TO_RU', 'RU_TO_EN'] as const;
-
-const trimEnv = (value: string | undefined): string => (value ?? '').trim();
-
 const readDailyWordAddLimit = (): number => {
   const raw = Number.parseInt(trimEnv(process.env.DAILY_WORD_ADD_LIMIT), 10);
   if (!Number.isFinite(raw) || raw < 1 || raw > 100) return DEFAULT_DAILY_WORD_ADD_LIMIT;
@@ -162,6 +160,19 @@ export const findDueReviewByStage = async (userId: bigint, stage: number, now = 
       nextReviewAt: { lte: now.toDate() },
     },
     orderBy: [{ nextReviewAt: 'asc' }, { id: 'asc' }],
+    include: { word: true },
+  });
+};
+
+/** Find the weakest due word — hardStreak >= minStreak, ordered by worst first. */
+export const findWeakDueReview = async (userId: bigint, now = nowUtc(), minStreak = 2) => {
+  return prisma.review.findFirst({
+    where: {
+      userId,
+      hardStreak: { gte: minStreak },
+      nextReviewAt: { lte: now.toDate() },
+    },
+    orderBy: [{ hardStreak: 'desc' }, { nextReviewAt: 'asc' }],
     include: { word: true },
   });
 };

@@ -41,7 +41,6 @@ const timeToMinutes = (value: string) => {
 
 const getTelegramUser = () => (window as any)?.Telegram?.WebApp?.initDataUnsafe?.user;
 const BOT_USERNAME = (import.meta as any).env?.VITE_BOT_USERNAME ?? '';
-const ADMIN_ID = 467595754;
 
 const COPY = {
   ru: {
@@ -328,20 +327,7 @@ const App = () => {
   const hasInitData = Boolean((window as any)?.Telegram?.WebApp?.initData);
   const devUserId = new URLSearchParams(window.location.search).get('devUserId');
   const canAuth = hasInitData || Boolean(devUserId);
-  const adminCandidateId = useMemo(() => {
-    const candidates: Array<string | number | null | undefined> = [
-      me?.id,
-      telegramUser?.id,
-      devUserId,
-    ];
-    for (const candidate of candidates) {
-      if (candidate === null || candidate === undefined || candidate === '') continue;
-      const value = Number(candidate);
-      if (Number.isFinite(value)) return value;
-    }
-    return null;
-  }, [me?.id, telegramUser?.id, devUserId]);
-  const isAdmin = adminCandidateId === ADMIN_ID;
+  const isAdmin = me?.isAdmin ?? false;
 
   const t = (key: CopyKey, params?: Record<string, string | number>) => {
     let result: string = COPY[lang]?.[key] ?? COPY.ru[key];

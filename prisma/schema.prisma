@@ -70,17 +70,13 @@ model User {
   correctTodayCount    Int           @default(0)
   lastDoneDate         DateTime?
 
+
   // Referrals
   referredById         BigInt?
   referralQualifiedAt  DateTime?
   referredBy           User?         @relation("UserReferrals", fields: [referredById], references: [id], onDelete: SetNull)
   referrals            User[]        @relation("UserReferrals")
 
-  // Legacy fields (kept for compatibility)
-  windowStartMinutes   Int           @default(480) // 08:00
-  windowEndMinutes     Int           @default(1380) // 23:00
-  todayCompleted       Int           @default(0)
-  todayDate            DateTime?
   words                Word[]
   reviews              Review[]
   dailyUsages          UserDailyUsage[]

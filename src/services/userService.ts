@@ -32,10 +32,15 @@ const normalizeProfileValue = (value?: string | null, maxLen = 128): string | nu
   return trimmed.slice(0, maxLen);
 };
 
-const buildDisplayName = (firstName?: string | null, lastName?: string | null): string | null => {
+export const buildDisplayName = (
+  firstName?: string | null,
+  lastName?: string | null,
+  fallback?: string | null
+): string | null => {
   const combined = `${firstName ?? ''} ${lastName ?? ''}`.trim();
-  if (!combined) return null;
-  return combined.slice(0, 191);
+  if (combined) return combined.slice(0, 191);
+  const trimmedFallback = (fallback ?? '').trim();
+  return trimmedFallback ? trimmedFallback.slice(0, 191) : null;
 };
 
 const buildProfileData = (profile?: TelegramProfile) => {
@@ -179,8 +184,6 @@ export const resetProgressIfNeeded = async (user: User): Promise<User> => {
         doneTodayCount: 0,
         correctTodayCount: 0,
         lastDoneDate: today.toDate(),
-        todayCompleted: 0, // legacy sync
-        todayDate: today.toDate(),
       },
     });
   }
@@ -232,8 +235,6 @@ export const recordCompletion = async (user: User, isCorrect = false): Promise<D
       doneTodayCount: doneToday,
       correctTodayCount: correctToday,
       lastDoneDate: today.toDate(),
-      todayCompleted: doneToday, // keep legacy in sync
-      todayDate: today.toDate(),
       streakCount,
       lastStreakDate: goalReached ? today.toDate() : user.lastStreakDate,
     },

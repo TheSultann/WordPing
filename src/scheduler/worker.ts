@@ -1,10 +1,11 @@
 ﻿import 'dotenv/config';
+import { escapeHtml } from '../utils/html';
 import { t, Lang } from '../i18n';
 import cron from 'node-cron';
 import { Telegraf } from 'telegraf';
 import { prisma } from '../db/client';
-import { ensureSession, setState, setSessionActiveIfIdle } from '../services/sessionService';
-import { applyRating, findDueReview, findDueReviewByStage, markSkipped } from '../services/reviewService';
+import { ensureSession, setState, setSessionActiveIfIdle, asPayload } from '../services/sessionService';
+import { applyRating, findDueReview, findDueReviewByStage, findWeakDueReview, markSkipped } from '../services/reviewService';
 import { CardDirection, Prisma, ReviewResult } from '../generated/prisma/client';
 import { isWithinWindow, nowUtc, startOfUserDay, userNow } from '../utils/time';
 import dayjs from 'dayjs';
@@ -33,7 +34,7 @@ type SessionLike = {
   reminderStep?: number | null;
   wordId?: number | null;
   answerText?: string | null;
-  payload?: unknown;
+  payload?: Prisma.JsonValue | null;
 };
 
 const BLOCKED_USER_COOLDOWN_MINUTES = 60;
@@ -112,16 +113,7 @@ const registerNotification = async (user: any) => {
   });
 };
 
-const sendCard = async (userId: number, direction: CardDirection, phrase: string) => {
-  const prompt = `Translate: ${phrase}\n(Reply with text)`;
-  await telegram.sendMessage(userId, prompt);
-};
 
-const escapeHtml = (value: string) =>
-  value
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
 
 const hintPrefix = (lang: Lang) => (lang === 'uz' ? 'Ishora 💡' : 'Подсказка💡');
 
@@ -225,7 +217,7 @@ export const handlePendingGrade = async (user: any, session: SessionLike) => {
       sentAt: now.toDate(),
       reminderStep: session.reminderStep ?? 0,
       answerText: session.answerText ?? null,
-      payload: (session.payload as any) ?? null,
+      payload: asPayload(session.payload) ?? null,
     });
     return;
   }
@@ -261,7 +253,7 @@ export const handlePendingGrade = async (user: any, session: SessionLike) => {
   const review = await prisma.review.findUnique({ where: { id: session.reviewId } });
   if (!review) return;
 
-  const wasCorrect = Boolean((session.payload as any)?.correct);
+  const wasCorrect = Boolean(asPayload(session.payload)?.correct);
   const rating = wasCorrect ? 'GOOD' : 'HARD';
   const result: ReviewResult = wasCorrect ? 'CORRECT' : 'INCORRECT';
   await applyRating(review, rating, result, session.direction, session.answerText ?? undefined);
@@ -299,8 +291,11 @@ export const processUser = async (user: any) => {
   if (session.state !== 'IDLE') return;
 
   const now = nowUtc();
+  // Priority: 1) new words (stage 0), 2) weak words (hardStreak >= 2), 3) any due
   const newReview = await findDueReviewByStage(normalizedUser.id, 0, now);
-  const review = newReview ?? await findDueReview(normalizedUser.id, now);
+  const review = newReview
+    ?? await findWeakDueReview(normalizedUser.id, now)
+    ?? await findDueReview(normalizedUser.id, now);
   if (!review || !review.word) return;
 
   // First exposure of a brand-new card (stage 0, never reviewed) should arrive ASAP once due.
@@ -331,8 +326,6 @@ export const processUser = async (user: any) => {
     const base = `${t(lang, 'worker.verifyPrompt', { phrase: emphasizedPhrase })}\n${t(lang, 'worker.answerPrompt')}`;
     const prompt = hint ? `${base}\n\n${hint}` : base;
     await telegram.sendMessage(Number(normalizedUser.id), prompt, { parse_mode: 'HTML' });
-    // Keep helper to allow quick swap during experiments.
-    // await sendCard(Number(normalizedUser.id), direction, phrase);
     await registerNotification(normalizedUser);
   } catch (e) {
     const handled = await handleBlockedUserSendError(normalizedUser.id, e, 'card');
@@ -343,7 +336,17 @@ export const processUser = async (user: any) => {
 };
 
 export const tick = async () => {
-  const users = await prisma.user.findMany();
+  // Only load users who need processing:
+  // 1. Active session (WAITING_ANSWER/WAITING_GRADE) — reminders, auto-close
+  // 2. Notifications enabled — may need to send a new card
+  const users = await prisma.user.findMany({
+    where: {
+      OR: [
+        { session: { state: { in: ['WAITING_ANSWER', 'WAITING_GRADE'] } } },
+        { notificationsEnabled: true },
+      ],
+    },
+  });
   for (const user of users) {
     try {
       await processUser(user);

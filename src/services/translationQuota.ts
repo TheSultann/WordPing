@@ -1,10 +1,8 @@
 import { prisma } from '../db/client';
 import { nowUtc, startOfUserDay } from '../utils/time';
+import { trimEnv } from '../utils/env';
 
 const DEFAULT_DAILY_AUTO_TRANSLATE_LIMIT = 30;
-
-const trimEnv = (value: string | undefined): string => (value ?? '').trim();
-
 const readDailyAutoTranslateLimit = (): number => {
   const raw = Number.parseInt(trimEnv(process.env.DAILY_AUTO_TRANSLATE_LIMIT), 10);
   if (!Number.isFinite(raw) || raw < 1 || raw > 500) return DEFAULT_DAILY_AUTO_TRANSLATE_LIMIT;

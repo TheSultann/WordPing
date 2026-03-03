@@ -90,13 +90,15 @@ model User {
 }
 
 model Word {
-  id            Int       @id @default(autoincrement())
-  userId        BigInt
-  wordEn        String    @db.VarChar(256)
-  translationRu String    @db.VarChar(256)
-  createdAt     DateTime  @default(now())
-  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  reviews       Review[]
+  id                Int       @id @default(autoincrement())
+  userId            BigInt
+  wordEn            String    @db.VarChar(256)
+  translationRu     String    @db.VarChar(256)
+  exampleSentences  Json?     @db.JsonB
+  sentenceIndex     Int       @default(0)
+  createdAt         DateTime  @default(now())
+  user              User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  reviews           Review[]
 
   @@index([userId])
   @@unique([userId, wordEn])

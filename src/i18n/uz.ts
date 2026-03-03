@@ -1,20 +1,19 @@
 const uz = {
   // Aliases for legacy keys used in code
-  chooseLang: '🌐 Tilni tanlang / Выбери язык:',
+  chooseLang: '🌐 Tilni tanlang / Выбери язык',
   hint:
-    '👋 <b>Salom!</b>\n\nMen senga inglizcha so‘zlarni yodlashga yordam beraman. 🧠\n\n🎯 <b>Qanday ishlaymiz?</b>\n1. Sen so‘z yuborasan ➕\n2. Men o‘z vaqtida eslataman 🔔\n3. Sen yodlash qiyinligini baholaysan (Hard/Good/Easy) ⭐\n\nKetdikmi? 🚀',
+    '👋 Salom!\nInglizcha so\'zlarni intervalli takrorlash usuli bilan yodlashga yordam beraman. 🧠\n\n🎯 Qanday ishlaydi?\n1. So\'z qo\'shasan ➕\n2. Men o\'z vaqtida eslataman 🔔\n3. Qanchalik oson eslaganingni baholaysan ⭐\n\nKetdikmi? 🚀',
   askInterval:
-    '⏱ <b>Sening ritming</b>\n\nSo‘zlarni qanchalik tez yuboray?\n\n👇 Daqiqani yozing ({min} dan {max} gacha).\n<i>Masalan: 15, 30 yoki 60.</i>',
+    '⏱ <b>Har necha daqiqada so\'z yuboray?</b>\n({min}–{max} daq)',
   askGoal:
-    '🎯 <b>Kunlik maqsad</b>\n\nKuniga nechta so‘z o‘rganmoqchisiz?\n\n👇 Son yozing ({min} dan {max} gacha).',
+    '🎯 <b>Bugun nechta so\'z o\'rganamiz?</b>\n({min}–{max})',
   intervalNeedNumber: '🤔 <b>Bu son emas.</b>\nOddiy raqam yozing, masalan: 10',
   intervalOutOfRange: '⚠️ <b>To‘g‘ri kemadi.</b>\nOraliq: {min}–{max} daqiqa bo‘lishi kerak.',
   intervalSaved: '✅ <b>Kelishdik!</b> Har {value} daqiqada yozaman.',
   goalNeedNumber: '🤔 <b>Bu son emas.</b>\nMasalan, kuniga 20 ta so‘z deb yozing.',
   goalOutOfRange: '⚠️ <b>{min} dan {max} gacha son kiriting.</b>\nBoshqa qiymat sinab ko‘ring.',
   settingsTip: '⚙️ Boshqa sozlamalar — menyuda.',
-
-  'onboarding.chooseLang': '🌐 Tilni tanlang / Выбери язык:',
+  'onboarding.chooseLang': '🌐 Tilni tanlang / Выбери язык',
   'onboarding.hint':
     '👋 <b>Oddiy tizim:</b>\nMen so‘z yuboraman — sen tarjima qilasan. Keyin "Hard / Good / Easy" bosasan, men sening xotirangga moslashaman.\n\n⚡️ Sozlamalarni xohlagan vaqt o‘zgartirsa bo‘ladi.',
   'onboarding.askInterval':
@@ -23,7 +22,7 @@ const uz = {
   'onboarding.intervalOutOfRange': '⚠️ <b>{min} dan {max} gacha.</b>\nBoshqa son yozib ko‘ring.',
   'onboarding.intervalSaved': '✅ <b>Ajoyib!</b> Oraliq: {value} daqiqa.',
   'onboarding.settingsTip': '⚙️ Qolganini menyudan topasiz.',
-  'onboarding.finished': '🚀 <b>Tayyorsiz!</b>\nOraliq: {value} daqiqa.\n\n👇 <b>Birinchi inglizcha so‘zni yuboring</b>, o‘rganishni boshlaymiz.',
+  'onboarding.finished': '✅ <b>Tayyor!</b> Interval: {value} daq.\n\nBirinchi inglizcha so\'zni yubor 👇',
   'onboarding.menuTip': '⚙️ <b>Sozlamalar menyusi</b> pastda paydo bo‘ldi.',
 
   'btn.settings': '⚙️ Sozlamalar',
@@ -79,16 +78,31 @@ const uz = {
     '⚠️ <b>Avtotarjima ishonchsiz ko‘rindi.</b>\n👇 To‘g‘ri saqlash uchun tarjimani qo‘lda yozing:',
   'add.dailyLimit': '🙏 <b>Kechirasiz, bugungi limit: {limit} ta so‘z.</b>\nErtaga yana qo‘shishingiz mumkin.',
   'add.saved': '✨ <b>Saqladim!</b>\n{pair}\n\n🔔 5 daqiqadan keyin eslataman.',
-  'add.duplicate': '👯‍♂️ <b>Allaqachon bor!</b>\nO‘zgartirish uchun /settings ga kiring.',
-  'add.error': '❌ <b>Xatolik.</b> Keyinroq urinib ko‘ring.',
+  'add.duplicate': '👯‍♂️ <b>Allaqachon bor!</b>\nO\'zgartirish uchun /settings ga kiring.',
+  'add.error': '❌ <b>Xatolik.</b> Keyinroq urinib ko\'ring.',
   'add.cancelled': '👌 <b>Bekor qilindi.</b>',
 
-  'worker.verifyPrompt': '🧠 <b>Eslab ko‘ring-chi?</b>\n\n🇬🇧 {phrase}',
+  'worker.verifyPrompt': '🧠 <b>Eslab ko\'ring-chi?</b>\n\n🇬🇧 {phrase}',
+  'worker.rememberWord': '🧠 <b>Eslab ko\'ring-chi?</b>',
+  'worker.sentencePrompt': '📖 <b>Qaysi so\'z tushib qolgan?</b>\n\n{sentence}',
+  'worker.context.enBold': '📖 <b>Ajratilgan so\'zni tarjima qiling:</b>\n\n{sentence}',
+  'worker.context.enBlank': '📖 <b>Tushib qolgan so\'zni tarjima qiling:</b>\n\n{sentence}',
+  'worker.context.nativeToEnTitle': '📖 <b>Kontekst bo\'yicha inglizcha so\'zni yozing:</b>',
+  'worker.context.nativeToEn': '📖 <b>Kontekst bo\'yicha inglizcha so\'zni yozing:</b>\n\n{sentence}',
+  'worker.direction.enToNative': '🔁 EN → UZ',
+  'worker.direction.nativeToEn': '🔁 UZ → EN',
+  'worker.answerPrompt.native': '👇 Uzbekcha javobni bitta so\'z bilan yozing:',
+  'worker.answerPrompt.english': '👇 Inglizcha so\'z:',
+  'worker.answerTarget.russian': '✍️ → 🇷🇺',
+  'worker.answerTarget.uzbek': '✍️ → 🇺🇿',
+  'worker.answerTarget.english': '✍️ → 🇬🇧',
+  'worker.hintReveal': '💡 <b>{masked}</b>',
+  'worker.hintLimit': 'Ishora tugadi (3/3)',
   'worker.answerPrompt': '👇 Tarjimani yozing:',
   'worker.reminder': '⏰ <b>Tik-tak!</b> Javob berish esdan chiqmasin.',
   'worker.skipped': '🍃 <b>Uchib ketdi...</b>\nKeyinroq albatta topamiz!',
 
-  'session.lost': '😵 <b>Chalg‘ib ketdim...</b> Boshqatdan boshlaylik.',
+  'session.lost': '😵 <b>Chalg\'ib ketdim...</b> Boshqatdan boshlaylik.',
   'answer.correct': '💎 <b>Qoyil!</b>',
   'answer.incorrect': '👻 <b>Xato!</b>',
   'answer.correctIs': '👉 To‘g‘risi: <b>{answer}</b>',

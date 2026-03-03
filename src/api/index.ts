@@ -63,6 +63,17 @@ const parseTimezone = (value?: string | null): string | null => {
   }
 };
 
+const parsePositiveBigInt = (raw: string): bigint | null => {
+  const value = raw.trim();
+  if (!/^\d+$/.test(value)) return null;
+  try {
+    const parsed = BigInt(value);
+    return parsed > 0n ? parsed : null;
+  } catch {
+    return null;
+  }
+};
+
 const persistTimezoneIfProvided = async (userId: bigint, timezoneHeader?: string | null) => {
   const timezone = parseTimezone(timezoneHeader);
   if (!timezone) return;
@@ -171,6 +182,45 @@ const requireAdmin: RequestHandler = (req, res, next) => {
 
 app.use('/api/admin', requireAdmin);
 
+type TelegramApiErrorPayload = {
+  ok?: boolean;
+  error_code?: number;
+  description?: string;
+  parameters?: {
+    retry_after?: number;
+  };
+};
+
+const buildTelegramRequestError = (status: number, body: string) => {
+  let payload: TelegramApiErrorPayload | null = null;
+  try {
+    payload = JSON.parse(body) as TelegramApiErrorPayload;
+  } catch {
+    payload = null;
+  }
+
+  const error = new Error(`telegram_error:${status}:${body}`) as Error & {
+    response?: {
+      error_code?: number;
+      statusCode?: number;
+      parameters?: {
+        retry_after?: number;
+      };
+    };
+  };
+
+  const response: NonNullable<typeof error.response> = {
+    error_code: payload?.error_code ?? status,
+    statusCode: status,
+  };
+  if (payload?.parameters?.retry_after !== undefined) {
+    response.parameters = { retry_after: payload.parameters.retry_after };
+  }
+  error.response = response;
+
+  return error;
+};
+
 const sendTelegramMessage = async (chatId: number, text: string) => {
   if (!botToken) {
     throw new Error('BOT_TOKEN is not set');
@@ -182,7 +232,7 @@ const sendTelegramMessage = async (chatId: number, text: string) => {
   });
   if (!res.ok) {
     const body = await res.text();
-    throw new Error(`telegram_error:${res.status}:${body}`);
+    throw buildTelegramRequestError(res.status, body);
   }
 };
 
@@ -201,7 +251,7 @@ const sendTelegramPhoto = async (chatId: number, photoUrl: string, caption?: str
   });
   if (!res.ok) {
     const body = await res.text();
-    throw new Error(`telegram_error:${res.status}:${body}`);
+    throw buildTelegramRequestError(res.status, body);
   }
 };
 
@@ -650,11 +700,10 @@ app.get('/api/admin/users', async (req, res) => {
 });
 
 app.get('/api/admin/users/:id', async (req, res) => {
-  const rawId = Number(req.params.id);
-  if (!Number.isFinite(rawId) || rawId <= 0 || !Number.isInteger(rawId)) {
+  const userId = parsePositiveBigInt(req.params.id);
+  if (!userId) {
     return res.status(400).json({ error: 'invalid_id' });
   }
-  const userId = BigInt(rawId);
   const user = await prisma.user.findUnique({
     where: { id: userId },
     select: { id: true, createdAt: true, tgUsername: true, tgFirstName: true, tgLastName: true, tgDisplayName: true },

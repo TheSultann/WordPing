@@ -5,7 +5,8 @@ import { addMinutes } from '../utils/time';
 export type Rating = 'HARD' | 'GOOD' | 'EASY';
 
 // Fixed ladder of intervals per stage (minutes)
-const STAGE_INTERVALS = [5, 25, 120, 1440, 4320, 10080, 23040, 50400] as const;
+// 5m, 25m, 1.5h, 20h, 2.5d, 6d, 14d, 30d
+const STAGE_INTERVALS = [5, 25, 90, 1200, 3600, 8640, 20160, 43200] as const;
 type StageInterval = (typeof STAGE_INTERVALS)[number];
 const MAX_STAGE = STAGE_INTERVALS.length - 1;
 
@@ -37,9 +38,8 @@ const nextByRating = (review: Pick<Review, 'stage'>, rating: Rating) => {
     return { stage: targetStage, intervalMinutes: intervalForStage(targetStage) };
   }
 
-  // EASY
-  const jumpStage = stage <= 2 ? 4 : stage + 2;
-  const targetStage = Math.min(jumpStage, MAX_STAGE);
+  // EASY: strict +2 stage jump (capped by max stage)
+  const targetStage = Math.min(stage + 2, MAX_STAGE);
   return { stage: targetStage, intervalMinutes: intervalForStage(targetStage) };
 };
 

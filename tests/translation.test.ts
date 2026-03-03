@@ -127,6 +127,81 @@ describe('translation service', () => {
     expect(fetchMock.mock.calls.length).toBe(2);
   });
 
+  it('keeps reserve league idle when primary league returns a result', async () => {
+    process.env.HF_API_KEY = '';
+    process.env.GEMINI_API_KEY = 'gm-key';
+    process.env.GEMINI_API_BASE_URL = 'https://gem.test/models';
+    process.env.GEMINI_MODEL = 'gem-a';
+    process.env.GEMINI_FALLBACK_MODELS = 'gem-b,gem-c,gem-d,gem-e';
+    process.env.TRANSLATE_API_URL = 'https://mymemory.test/get';
+
+    const seenModels: string[] = [];
+    installFetchMock((url) => {
+      const match = url.match(/https:\/\/gem\.test\/models\/([^:]+):generateContent/);
+      if (match) {
+        const model = match[1] ?? '';
+        seenModels.push(model);
+        if (model === 'gem-a') {
+          return { status: 429, body: { error: { message: 'rate limited' } } };
+        }
+        if (model === 'gem-b') {
+          return {
+            status: 200,
+            body: { candidates: [{ content: { parts: [{ text: '\u043f\u0435\u0440\u0435\u0432\u043e\u0434' }] } }] },
+          };
+        }
+        return { status: 200, body: { candidates: [{ content: { parts: [{ text: 'reserve' }] } }] } };
+      }
+      if (url.includes('https://mymemory.test/get')) {
+        return { status: 200, body: { responseData: { translatedText: '\u043f\u0435\u0440\u0435\u0432\u043e\u0434' } } };
+      }
+      return { status: 500, body: { error: 'unexpected url' } };
+    });
+
+    const { suggestTranslation } = await import('../src/services/translation');
+    const translated = await suggestTranslation('alpha');
+
+    expect(translated).toBe('\u043f\u0435\u0440\u0435\u0432\u043e\u0434');
+    expect(seenModels).toEqual(['gem-a', 'gem-b']);
+    expect(seenModels).not.toContain('gem-d');
+    expect(seenModels).not.toContain('gem-e');
+  });
+
+  it('uses reserve league only when all primary models fail', async () => {
+    process.env.HF_API_KEY = '';
+    process.env.GEMINI_API_KEY = 'gm-key';
+    process.env.GEMINI_API_BASE_URL = 'https://gem.test/models';
+    process.env.GEMINI_MODEL = 'gem-a';
+    process.env.GEMINI_FALLBACK_MODELS = 'gem-b,gem-c,gem-d,gem-e';
+    process.env.TRANSLATE_API_URL = 'https://mymemory.test/get';
+
+    const seenModels: string[] = [];
+    installFetchMock((url) => {
+      const match = url.match(/https:\/\/gem\.test\/models\/([^:]+):generateContent/);
+      if (match) {
+        const model = match[1] ?? '';
+        seenModels.push(model);
+        if (model === 'gem-d') {
+          return {
+            status: 200,
+            body: { candidates: [{ content: { parts: [{ text: '\u0440\u0435\u0437\u0435\u0440\u0432' }] } }] },
+          };
+        }
+        return { status: 429, body: { error: { message: 'rate limited' } } };
+      }
+      if (url.includes('https://mymemory.test/get')) {
+        return { status: 200, body: { responseData: { translatedText: '\u0440\u0435\u0437\u0435\u0440\u0432' } } };
+      }
+      return { status: 500, body: { error: 'unexpected url' } };
+    });
+
+    const { suggestTranslation } = await import('../src/services/translation');
+    const translated = await suggestTranslation('beta');
+
+    expect(translated).toBe('\u0440\u0435\u0437\u0435\u0440\u0432');
+    expect(seenModels).toEqual(['gem-a', 'gem-b', 'gem-c', 'gem-d']);
+  });
+
   it('distributes Gemini requests using round robin order', async () => {
     process.env.HF_API_KEY = '';
     process.env.GEMINI_API_KEY = 'gm-key';

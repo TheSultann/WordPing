@@ -10,6 +10,7 @@ const userId = BigInt(900000001);
 const otherUserId = BigInt(900000010);
 const seenUserId = BigInt(900000011);
 const unseenUserId = BigInt(900000012);
+const hugeUserId = BigInt('9007199254740993');
 
 beforeAll(async () => {
   const testUrl = await prepareTestDatabase();
@@ -30,6 +31,7 @@ beforeEach(async () => {
   await cleanupUserData(prisma, otherUserId);
   await cleanupUserData(prisma, seenUserId);
   await cleanupUserData(prisma, unseenUserId);
+  await cleanupUserData(prisma, hugeUserId);
 });
 
 afterAll(async () => {
@@ -37,6 +39,7 @@ afterAll(async () => {
   await cleanupUserData(prisma, otherUserId);
   await cleanupUserData(prisma, seenUserId);
   await cleanupUserData(prisma, unseenUserId);
+  await cleanupUserData(prisma, hugeUserId);
   await prisma?.$disconnect();
 });
 
@@ -528,6 +531,23 @@ describe('API integration', () => {
     expect(resMissing.status).toBe(404);
   });
 
+  it('GET /api/admin/users/:id handles ids larger than Number.MAX_SAFE_INTEGER', async () => {
+    await prisma.user.create({
+      data: {
+        id: hugeUserId,
+        tgUsername: 'huge-id-user',
+      },
+    });
+
+    const res = await request(app)
+      .get(`/api/admin/users/${hugeUserId.toString()}`)
+      .set('x-dev-user-id', userId.toString());
+
+    expect(res.status).toBe(200);
+    expect(res.body.id).toBe(hugeUserId.toString());
+    expect(res.body.tgUsername).toBe('huge-id-user');
+  });
+
   it('POST /api/admin/broadcast sends message to all users', async () => {
     await prisma.user.create({ data: { id: userId } });
     await prisma.user.create({ data: { id: otherUserId } });
@@ -555,6 +575,40 @@ describe('API integration', () => {
     });
     expect(sentIds).toContain(userId.toString());
     expect(sentIds).toContain(otherUserId.toString());
+  });
+
+  it('POST /api/admin/broadcast retries after Telegram 429 with retry_after', async () => {
+    await prisma.user.create({ data: { id: userId } });
+
+    const fetchSpy = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 429,
+        text: async () =>
+          JSON.stringify({
+            ok: false,
+            error_code: 429,
+            description: 'Too Many Requests',
+            parameters: { retry_after: 1 },
+          }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        text: async () => '',
+      });
+    vi.stubGlobal('fetch', fetchSpy as any);
+
+    const res = await request(app)
+      .post('/api/admin/broadcast')
+      .set('x-dev-user-id', userId.toString())
+      .send({ message: 'retry me' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.sent).toBe(1);
+    expect(res.body.failed).toBe(0);
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
   });
 
   it('POST /api/admin/broadcast sends photo with caption', async () => {

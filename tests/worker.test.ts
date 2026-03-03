@@ -7,8 +7,11 @@ let prisma: PrismaClient;
 let processUser: (user: any) => Promise<void>;
 let tick: () => Promise<void>;
 let startWorker: () => void;
+let fillSentences: () => Promise<void>;
 let telegram: any;
 let resetBlockedUserCooldown: () => void;
+let setBlockedUserCooldownForTest: (userId: bigint | number, untilMs: number) => void;
+let getBlockedUserCooldownSizeForTest: () => number;
 
 const userId = BigInt(900000004);
 
@@ -23,8 +26,11 @@ beforeAll(async () => {
   processUser = mod.processUser;
   tick = mod.tick;
   startWorker = mod.startWorker;
+  fillSentences = mod.__fillSentencesForTest;
   telegram = mod.telegram;
   resetBlockedUserCooldown = mod.__resetBlockedUserCooldown;
+  setBlockedUserCooldownForTest = mod.__setBlockedUserCooldownForTest;
+  getBlockedUserCooldownSizeForTest = mod.__getBlockedUserCooldownSizeForTest;
 
   prisma = new PrismaClient({ datasources: { db: { url: testUrl } } });
 });
@@ -432,7 +438,110 @@ describe('worker integration', () => {
     expect(telegram.sendMessage).not.toHaveBeenCalled();
   });
 
-  it('shows first-letter hint after first hard for RU_TO_EN', async () => {
+  it('uses native-only context for RU_TO_EN cards and hides swap when examples < 3', async () => {
+    const sendSpy = vi.spyOn(telegram, 'sendMessage').mockResolvedValue({} as any);
+
+    await prisma.user.create({
+      data: {
+        id: userId,
+        notificationsEnabled: true,
+        quietHoursStartMinutes: 0,
+        quietHoursEndMinutes: 0,
+        timezone: 'UTC',
+        language: 'ru',
+        notificationIntervalMinutes: 5,
+        maxNotificationsPerDay: 100,
+      },
+    });
+
+    await prisma.word.create({
+      data: {
+        userId,
+        wordEn: 'accept',
+        translationRu: 'принимать',
+        exampleSentences: [
+          { en: 'He will accept the offer.', native: 'Он готов принимать предложение.' },
+          { en: 'They accept your terms.', native: 'Они готовы принимать ваши условия.' },
+        ] as any,
+        reviews: {
+          create: {
+            direction: 'RU_TO_EN',
+            userId,
+            stage: 2,
+            intervalMinutes: 90,
+            nextReviewAt: new Date(Date.now() - 1000),
+          },
+        },
+      },
+    });
+
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+    await processUser(user);
+
+    expect(sendSpy).toHaveBeenCalledTimes(1);
+    const [, prompt, options] = sendSpy.mock.calls[0] as [number, string, any];
+    expect(prompt).toContain('🗣 ');
+    expect(prompt).toContain('✍️ → 🇬🇧');
+    expect(prompt).not.toContain('RU → EN');
+    expect(prompt.indexOf('🗣 ')).toBeLessThan(prompt.indexOf('✍️ → 🇬🇧'));
+    expect(prompt).toContain('принимать');
+    expect(prompt).not.toContain('accept');
+    expect(String(options?.reply_markup?.inline_keyboard?.[0]?.[0]?.callback_data ?? '')).toContain('hint:');
+    expect(options?.reply_markup?.inline_keyboard?.[0]).toHaveLength(1);
+  });
+
+  it('shows swap button only when sentence pool has at least 3 items', async () => {
+    const sendSpy = vi.spyOn(telegram, 'sendMessage').mockResolvedValue({} as any);
+
+    await prisma.user.create({
+      data: {
+        id: userId,
+        notificationsEnabled: true,
+        quietHoursStartMinutes: 0,
+        quietHoursEndMinutes: 0,
+        timezone: 'UTC',
+        language: 'ru',
+        notificationIntervalMinutes: 5,
+        maxNotificationsPerDay: 100,
+      },
+    });
+
+    const word = await prisma.word.create({
+      data: {
+        userId,
+        wordEn: 'borrow',
+        translationRu: 'занимать',
+        exampleSentences: [
+          { en: 'I borrow books every week.', native: 'Я беру книги каждую неделю.' },
+          { en: 'She can borrow my laptop.', native: 'Она может взять мой ноутбук.' },
+          { en: 'We borrow tools from neighbors.', native: 'Мы берём инструменты у соседей.' },
+        ] as any,
+        reviews: {
+          create: {
+            direction: 'EN_TO_RU',
+            userId,
+            stage: 7,
+            intervalMinutes: 1200,
+            nextReviewAt: new Date(Date.now() - 1000),
+          },
+        },
+      },
+    });
+
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+    await processUser(user);
+
+    expect(sendSpy).toHaveBeenCalledTimes(1);
+    const [, prompt, options] = sendSpy.mock.calls[0] as [number, string, any];
+    expect(prompt).toContain('🗣 ');
+    expect(prompt).toContain('✍️ → 🇷🇺');
+    expect(prompt).not.toContain('EN → RU');
+    expect(prompt).toContain('___');
+    expect(String(options?.reply_markup?.inline_keyboard?.[0]?.[0]?.callback_data ?? '')).toContain('hint:');
+    expect(options?.reply_markup?.inline_keyboard?.[0]?.[1]?.callback_data).toContain(`swap:${word.id}:`);
+  });
+
+  it('adds hint button and does not auto-show hint text after first hard for RU_TO_EN', async () => {
     const sendSpy = vi.spyOn(telegram, 'sendMessage').mockResolvedValue({} as any);
 
     await seedHintUser();
@@ -442,11 +551,12 @@ describe('worker integration', () => {
     await processUser(user);
 
     expect(sendSpy).toHaveBeenCalledTimes(1);
-    const [, prompt] = sendSpy.mock.calls[0] as [number, string, any];
-    expect(prompt).toContain('Подсказка💡: p________');
+    const [, prompt, options] = sendSpy.mock.calls[0] as [number, string, any];
+    expect(prompt).not.toContain('Подсказка💡');
+    expect(String(options?.reply_markup?.inline_keyboard?.[0]?.[0]?.callback_data ?? '')).toContain('hint:');
   });
 
-  it('shows first-and-last-letter hint after second hard for RU_TO_EN', async () => {
+  it('does not auto-show hint text after second hard for RU_TO_EN', async () => {
     const sendSpy = vi.spyOn(telegram, 'sendMessage').mockResolvedValue({} as any);
 
     await seedHintUser();
@@ -457,10 +567,10 @@ describe('worker integration', () => {
 
     expect(sendSpy).toHaveBeenCalledTimes(1);
     const [, prompt] = sendSpy.mock.calls[0] as [number, string, any];
-    expect(prompt).toContain('Подсказка💡: p_______t');
+    expect(prompt).not.toContain('Подсказка💡');
   });
 
-  it('shows first-second-and-last-letter hint after third hard for RU_TO_EN', async () => {
+  it('does not auto-show hint text after third hard for RU_TO_EN', async () => {
     const sendSpy = vi.spyOn(telegram, 'sendMessage').mockResolvedValue({} as any);
 
     await seedHintUser();
@@ -471,10 +581,10 @@ describe('worker integration', () => {
 
     expect(sendSpy).toHaveBeenCalledTimes(1);
     const [, prompt] = sendSpy.mock.calls[0] as [number, string, any];
-    expect(prompt).toContain('Подсказка💡: pe______t');
+    expect(prompt).not.toContain('Подсказка💡');
   });
 
-  it('builds unicode hint correctly for EN_TO_RU', async () => {
+  it('does not auto-show unicode hint for EN_TO_RU', async () => {
     const sendSpy = vi.spyOn(telegram, 'sendMessage').mockResolvedValue({} as any);
 
     await seedHintUser();
@@ -485,7 +595,7 @@ describe('worker integration', () => {
 
     expect(sendSpy).toHaveBeenCalledTimes(1);
     const [, prompt] = sendSpy.mock.calls[0] as [number, string, any];
-    expect(prompt).toContain('Подсказка💡: по_______й');
+    expect(prompt).not.toContain('Подсказка💡');
   });
 
   it('still sends due stage 0 cards when older due cards are interval-limited', async () => {
@@ -526,6 +636,66 @@ describe('worker integration', () => {
         userId,
         wordEn: 'new-card',
         translationRu: 'РЅРѕРІР°СЏ РєР°СЂС‚РѕС‡РєР°',
+        reviews: {
+          create: {
+            direction: 'EN_TO_RU',
+            userId,
+            stage: 0,
+            intervalMinutes: 5,
+            nextReviewAt: new Date(Date.now() - 1000),
+          },
+        },
+      },
+    });
+
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+    await processUser(user);
+
+    expect(telegram.sendMessage).toHaveBeenCalledTimes(1);
+    const session = await prisma.userSession.findUnique({ where: { userId } });
+    expect(session?.state).toBe('WAITING_ANSWER');
+    expect(session?.wordId).toBe(newWord.id);
+  });
+
+  it('still sends first-exposure stage 0 when older stage 0 review is interval-limited', async () => {
+    vi.spyOn(telegram, 'sendMessage').mockResolvedValue({} as any);
+
+    await prisma.user.create({
+      data: {
+        id: userId,
+        notificationsEnabled: true,
+        quietHoursStartMinutes: 0,
+        quietHoursEndMinutes: 0,
+        timezone: 'UTC',
+        notificationIntervalMinutes: 60,
+        maxNotificationsPerDay: 100,
+        lastNotificationAt: new Date(),
+      },
+    });
+
+    await prisma.word.create({
+      data: {
+        userId,
+        wordEn: 'old-stage0-reviewed',
+        translationRu: 'старая stage0 карточка',
+        reviews: {
+          create: {
+            direction: 'EN_TO_RU',
+            userId,
+            stage: 0,
+            intervalMinutes: 5,
+            nextReviewAt: new Date(Date.now() - 10 * 60 * 1000),
+            lastReviewAt: new Date(Date.now() - 2 * 60 * 1000),
+          },
+        },
+      },
+    });
+
+    const newWord = await prisma.word.create({
+      data: {
+        userId,
+        wordEn: 'new-stage0-first-exposure',
+        translationRu: 'новая stage0 карточка',
         reviews: {
           create: {
             direction: 'EN_TO_RU',
@@ -896,6 +1066,15 @@ describe('worker integration', () => {
     expect(sendSpy).toHaveBeenCalledTimes(1);
   });
 
+  it('prunes expired blocked-user cooldown entries during tick', async () => {
+    setBlockedUserCooldownForTest(BigInt(111111111), Date.now() - 5_000);
+    setBlockedUserCooldownForTest(BigInt(222222222), Date.now() + 60_000);
+
+    expect(getBlockedUserCooldownSizeForTest()).toBe(2);
+    await tick();
+    expect(getBlockedUserCooldownSizeForTest()).toBe(1);
+  });
+
   it('does not remind before 5 minutes', async () => {
     vi.spyOn(telegram, 'sendMessage').mockResolvedValue({} as any);
 
@@ -1051,6 +1230,194 @@ describe('worker integration', () => {
     expect(session?.state).toBe('WAITING_ANSWER');
     expect(session?.reminderStep).toBe(0);
     expect(telegram.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it('fillSentences processes only urgent words during daytime', async () => {
+    const sentenceService = await import('../src/services/sentenceService');
+    const generateSpy = vi
+      .spyOn(sentenceService, 'generateSentences')
+      .mockResolvedValue([{ en: 'Fresh urgent sentence.', native: 'Срочный свежий пример.' }]);
+
+    const now = new Date();
+    const currentMinutes = now.getUTCHours() * 60 + now.getUTCMinutes();
+    const windowStart = (currentMinutes + 1439) % 1440;
+    const windowEnd = (currentMinutes + 2) % 1440;
+
+    await prisma.user.create({
+      data: {
+        id: userId,
+        language: 'ru',
+        timezone: 'UTC',
+        quietHoursStartMinutes: windowStart,
+        quietHoursEndMinutes: windowEnd,
+      },
+    });
+
+    const oldWord = await prisma.word.create({
+      data: {
+        userId,
+        wordEn: 'old-backlog',
+        translationRu: 'старый-бэклог',
+      },
+    });
+    await prisma.word.update({
+      where: { id: oldWord.id },
+      data: { createdAt: new Date(Date.now() - 8 * 60 * 60 * 1000) },
+    });
+
+    const urgentWord = await prisma.word.create({
+      data: {
+        userId,
+        wordEn: 'fresh-urgent',
+        translationRu: 'свежий-срочный',
+      },
+    });
+
+    await fillSentences();
+
+    expect(generateSpy).toHaveBeenCalledTimes(1);
+    expect(generateSpy.mock.calls[0]?.[0]).toBe('fresh-urgent');
+
+    const oldFresh = await prisma.word.findUnique({ where: { id: oldWord.id } });
+    const urgentFresh = await prisma.word.findUnique({ where: { id: urgentWord.id } });
+    expect(oldFresh?.exampleSentences).toBeNull();
+    expect(Array.isArray(urgentFresh?.exampleSentences as any)).toBe(true);
+  });
+
+  it('fillSentences tops up backlog for always-on 24/7 windows', async () => {
+    const sentenceService = await import('../src/services/sentenceService');
+    const generateSpy = vi
+      .spyOn(sentenceService, 'generateSentences')
+      .mockResolvedValue([{ en: 'Backlog sentence.', native: 'Пример для бэклога.' }]);
+
+    await prisma.user.create({
+      data: {
+        id: userId,
+        language: 'ru',
+        timezone: 'UTC',
+        quietHoursStartMinutes: 0,
+        quietHoursEndMinutes: 0,
+      },
+    });
+
+    const partialWord = await prisma.word.create({
+      data: {
+        userId,
+        wordEn: 'always-on-backlog',
+        translationRu: 'всегда-онлайн-бэклог',
+        exampleSentences: [{ en: 'Existing sentence.', native: 'Существующий пример.' }] as any,
+      },
+    });
+    await prisma.word.update({
+      where: { id: partialWord.id },
+      data: { createdAt: new Date(Date.now() - 8 * 60 * 60 * 1000) },
+    });
+
+    await fillSentences();
+
+    expect(generateSpy).toHaveBeenCalledTimes(1);
+    expect(generateSpy.mock.calls[0]?.[0]).toBe('always-on-backlog');
+
+    const refreshed = await prisma.word.findUnique({ where: { id: partialWord.id } });
+    expect(Array.isArray(refreshed?.exampleSentences as any)).toBe(true);
+    expect((refreshed?.exampleSentences as any[])?.length).toBeGreaterThan(1);
+  });
+
+  it('fillSentences prioritizes quiet-hours queue: 0 -> 1-2 -> fresh', async () => {
+    const sentenceService = await import('../src/services/sentenceService');
+    const seenWords: string[] = [];
+    vi.spyOn(sentenceService, 'generateSentences').mockImplementation(async (wordEn) => {
+      seenWords.push(wordEn);
+      return [{ en: `${wordEn} example`, native: `${wordEn} пример` }];
+    });
+
+    const now = new Date();
+    const currentMinutes = now.getUTCHours() * 60 + now.getUTCMinutes();
+    const windowStart = (currentMinutes + 1) % 1440;
+    const windowEnd = (currentMinutes + 2) % 1440;
+
+    await prisma.user.create({
+      data: {
+        id: userId,
+        language: 'ru',
+        timezone: 'UTC',
+        quietHoursStartMinutes: windowStart,
+        quietHoursEndMinutes: windowEnd,
+      },
+    });
+
+    const zeroWord = await prisma.word.create({
+      data: { userId, wordEn: 'queue-zero', translationRu: 'очередь-ноль' },
+    });
+    await prisma.word.update({
+      where: { id: zeroWord.id },
+      data: { createdAt: new Date(Date.now() - 9 * 60 * 60 * 1000) },
+    });
+
+    const partialWord = await prisma.word.create({
+      data: {
+        userId,
+        wordEn: 'queue-partial',
+        translationRu: 'очередь-частично',
+        exampleSentences: [{ en: 'queue partial sample', native: 'частичный пример' }] as any,
+      },
+    });
+    await prisma.word.update({
+      where: { id: partialWord.id },
+      data: { createdAt: new Date(Date.now() - 8 * 60 * 60 * 1000) },
+    });
+
+    await prisma.word.create({
+      data: {
+        userId,
+        wordEn: 'queue-fresh',
+        translationRu: 'очередь-свежий',
+      },
+    });
+
+    await fillSentences();
+
+    expect(seenWords).toEqual(['queue-zero', 'queue-partial', 'queue-fresh']);
+  });
+
+  it('fillSentences uses dynamic batch size up to 10', async () => {
+    const sentenceService = await import('../src/services/sentenceService');
+    const generateSpy = vi
+      .spyOn(sentenceService, 'generateSentences')
+      .mockResolvedValue([{ en: 'batch sentence', native: 'пакетный пример' }]);
+
+    const now = new Date();
+    const currentMinutes = now.getUTCHours() * 60 + now.getUTCMinutes();
+    const windowStart = (currentMinutes + 1) % 1440;
+    const windowEnd = (currentMinutes + 2) % 1440;
+
+    await prisma.user.create({
+      data: {
+        id: userId,
+        language: 'ru',
+        timezone: 'UTC',
+        quietHoursStartMinutes: windowStart,
+        quietHoursEndMinutes: windowEnd,
+      },
+    });
+
+    for (let i = 0; i < 20; i += 1) {
+      const word = await prisma.word.create({
+        data: {
+          userId,
+          wordEn: `batch-word-${i}`,
+          translationRu: `батч-${i}`,
+        },
+      });
+      await prisma.word.update({
+        where: { id: word.id },
+        data: { createdAt: new Date(Date.now() - (10 + i) * 60 * 1000) },
+      });
+    }
+
+    await fillSentences();
+
+    expect(generateSpy).toHaveBeenCalledTimes(10);
   });
 
   it('tick catches per-user errors and continues', async () => {

@@ -164,6 +164,19 @@ export const findDueReviewByStage = async (userId: bigint, stage: number, now = 
   });
 };
 
+export const findDueFirstExposureStageZeroReview = async (userId: bigint, now = nowUtc()) => {
+  return prisma.review.findFirst({
+    where: {
+      userId,
+      stage: 0,
+      lastReviewAt: null,
+      nextReviewAt: { lte: now.toDate() },
+    },
+    orderBy: [{ nextReviewAt: 'asc' }, { id: 'asc' }],
+    include: { word: true },
+  });
+};
+
 /** Find the weakest due word — hardStreak >= minStreak, ordered by worst first. */
 export const findWeakDueReview = async (userId: bigint, now = nowUtc(), minStreak = 2) => {
   return prisma.review.findFirst({
@@ -226,4 +239,3 @@ export const markSkipped = async (review: Review) => {
     },
   });
 };
-

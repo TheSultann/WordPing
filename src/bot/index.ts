@@ -23,6 +23,7 @@ import {
   translateAutoWithMyMemory,
 } from '../services/translation';
 import { addWordForUser, applyRating, loadReviewWithWord, DailyWordLimitError, DuplicateWordError } from '../services/reviewService';
+import { generateSentences, saveSentences, removeSentenceAtIndex, getSentenceForReview, getSentenceCount, MIN_SENTENCES_FOR_SWAP } from '../services/sentenceService';
 import { checkAutoTranslateQuota, commitAutoTranslateQuota } from '../services/translationQuota';
 import { CardDirection, Prisma, ReviewResult } from '../generated/prisma/client';
 import { checkAnswer } from '../services/answerChecker';
@@ -133,6 +134,39 @@ const shouldTryGeminiDisambiguation = (input: string, detectedLang: 'ru' | 'uz' 
   return true;
 };
 
+const MAX_HINT_PRESSES_PER_CARD = 3;
+
+const buildMaskedHint = (value: string, revealIndexes: number[]) => {
+  const chars = Array.from(value);
+  if (!chars.length) return null;
+  const reveal = new Set<number>();
+  for (const index of revealIndexes) {
+    if (index >= 0 && index < chars.length) reveal.add(index);
+  }
+  return chars
+    .map((char, index) => {
+      if (reveal.has(index)) return char;
+      if (/\s|['’`-]/.test(char)) return char;
+      return '_';
+    })
+    .join('');
+};
+
+const buildHintMaskByPress = (value: string, press: number): string | null => {
+  const chars = Array.from(value.trim());
+  if (!chars.length) return null;
+  const reveal = [0];
+  if (press >= 2 && chars.length > 1) reveal.push(chars.length - 1);
+  if (press >= 3 && chars.length > 2) reveal.push(1);
+  return buildMaskedHint(value.trim(), reveal);
+};
+
+const cardInlineKeyboard = (reviewId: number, swapData?: string | null) => {
+  const row: Array<{ text: string; callback_data: string }> = [{ text: '💡', callback_data: `hint:${reviewId}` }];
+  if (swapData) row.push({ text: '🔄', callback_data: swapData });
+  return { inline_keyboard: [row] };
+};
+
 
 
 const languageKeyboard = Markup.inlineKeyboard([
@@ -216,7 +250,12 @@ bot.start(async (ctx) => {
   }
   await ensureSession(user.id);
   await setState(user.id, 'IDLE', { payload: { onboarding: { step: 'lang' } } });
-  await ctx.reply(`${t('ru', 'chooseLang')}\n\n${t('uz', 'chooseLang')}`, { parse_mode: 'HTML', ...languageKeyboard });
+  const chooseLangRu = t('ru', 'chooseLang');
+  const chooseLangUz = t('uz', 'chooseLang');
+  const chooseLangText = chooseLangRu === chooseLangUz
+    ? chooseLangRu
+    : `${chooseLangRu}\n\n${chooseLangUz}`;
+  await ctx.reply(chooseLangText, { parse_mode: 'HTML', ...languageKeyboard });
 });
 
 bot.command('app', async (ctx) => {
@@ -317,7 +356,7 @@ bot.on('text', async (ctx) => {
   const handleAddFlow = async (input: string) => {
     const normalizedInput = input.trim();
     if (!normalizedInput) return;
-    await ctx.reply(t(lang, 'add.searchingTranslation'), { parse_mode: 'HTML' });
+    const searchingMsg = await ctx.reply(t(lang, 'add.searchingTranslation'), { parse_mode: 'HTML' });
 
     const inputDetection = detectLanguageWithMeta(normalizedInput, {
       preferredNative: lang === 'uz' ? 'uz' : 'ru',
@@ -364,7 +403,8 @@ bot.on('text', async (ctx) => {
         const englishTranslation = await translateAutoWithMyMemory(normalizedInput, 'en');
         if (!englishTranslation) {
           await setState(BigInt(userId), 'ADDING_WORD_WAIT_EN');
-          await ctx.reply(t(lang, 'add.error'), { parse_mode: 'HTML' });
+          await ctx.deleteMessage(searchingMsg.message_id).catch(() => { });
+          await ctx.reply(t(lang, 'add.apiLimitNeedEnglish', { limit: quota.limit }), { parse_mode: 'HTML' });
           return;
         }
         finalEn = englishTranslation;
@@ -381,6 +421,7 @@ bot.on('text', async (ctx) => {
         const englishTranslation = await translateAuto(normalizedInput, 'en');
         if (!englishTranslation) {
           await setState(BigInt(userId), 'ADDING_WORD_WAIT_EN');
+          await ctx.deleteMessage(searchingMsg.message_id).catch(() => { });
           await ctx.reply(t(lang, 'add.needEnglishWord'), { parse_mode: 'HTML' });
           return;
         }
@@ -391,6 +432,7 @@ bot.on('text', async (ctx) => {
       const existing = await findExistingWord(finalEn);
       if (existing) {
         const pair = formatPairLine(existing.wordEn, existing.translationRu, lang, 'en', targetLang);
+        await ctx.deleteMessage(searchingMsg.message_id).catch(() => { });
         await ctx.reply(t(lang, 'add.exists', { pair }), { parse_mode: 'HTML' });
         await resetState(BigInt(userId));
         return;
@@ -402,8 +444,11 @@ bot.on('text', async (ctx) => {
         exhaustedAutoTranslateLimit = quota.limit;
         finalTranslation = await translateAutoWithMyMemory(finalEn, targetLang);
         if (!finalTranslation) {
-          await setState(BigInt(userId), 'ADDING_WORD_WAIT_EN');
-          await ctx.reply(t(lang, 'add.error'), { parse_mode: 'HTML' });
+          await setState(BigInt(userId), 'ADDING_WORD_WAIT_RU_MANUAL', {
+            payload: { wordEn: finalEn },
+          });
+          await ctx.deleteMessage(searchingMsg.message_id).catch(() => { });
+          await ctx.reply(t(lang, 'add.apiLimitManualTranslation', { limit: quota.limit }), { parse_mode: 'HTML' });
           return;
         }
       }
@@ -425,6 +470,7 @@ bot.on('text', async (ctx) => {
     const existing = await findExistingWord(finalEn);
     if (existing) {
       const pair = formatPairLine(existing.wordEn, existing.translationRu, lang, 'en', targetLang);
+      await ctx.deleteMessage(searchingMsg.message_id).catch(() => { });
       await ctx.reply(t(lang, 'add.exists', { pair }), { parse_mode: 'HTML' });
       await resetState(BigInt(userId));
       return;
@@ -446,9 +492,19 @@ bot.on('text', async (ctx) => {
           ? finalEn
           : finalTranslation;
       if (isSuspiciousAutoTranslation(sourceForQuality, translatedForQuality)) {
+        if (resolvedInputLang === 'ru' || resolvedInputLang === 'uz') {
+          await setState(BigInt(userId), 'ADDING_WORD_WAIT_RU_MANUAL', {
+            payload: { sourceNative: normalizedInput, manualField: 'en' },
+          });
+          await ctx.deleteMessage(searchingMsg.message_id).catch(() => { });
+          await ctx.reply(t(lang, 'add.needEnglishWord'), { parse_mode: 'HTML' });
+          return;
+        }
+
         await setState(BigInt(userId), 'ADDING_WORD_WAIT_RU_MANUAL', {
           payload: { wordEn: finalEn },
         });
+        await ctx.deleteMessage(searchingMsg.message_id).catch(() => { });
         await ctx.reply(t(lang, 'add.suspectAutoTranslation'), { parse_mode: 'HTML' });
         return;
       }
@@ -470,11 +526,13 @@ bot.on('text', async (ctx) => {
       await setState(BigInt(userId), 'ADDING_WORD_CONFIRM_TRANSLATION', {
         payload: { wordEn: finalEn, translationRu: finalTranslation },
       });
+      await ctx.deleteMessage(searchingMsg.message_id).catch(() => { });
       await ctx.reply(t(lang, 'add.suggest', { pair }), { parse_mode: 'HTML', ...confirmKeyboard(lang) });
     } else {
       await setState(BigInt(userId), 'ADDING_WORD_WAIT_RU_MANUAL', {
         payload: { wordEn: finalEn },
       });
+      await ctx.deleteMessage(searchingMsg.message_id).catch(() => { });
       await ctx.reply(t(lang, 'add.noSuggest', { en: finalEn }), { parse_mode: 'HTML' });
     }
   };
@@ -564,13 +622,58 @@ bot.on('text', async (ctx) => {
     }
     case 'ADDING_WORD_WAIT_RU_MANUAL': {
       const payload = (session.payload as any) || {};
+      if (payload.manualField === 'en') {
+        const manualWordEn = text.trim();
+        const sourceNative = typeof payload.sourceNative === 'string' ? payload.sourceNative.trim() : '';
+        if (!manualWordEn || !sourceNative) {
+          await resetState(BigInt(userId));
+          await ctx.reply(t(lang, 'add.failSave'), { parse_mode: 'HTML' });
+          return;
+        }
+        const existing = await findExistingWord(manualWordEn);
+        if (existing) {
+          const pair = formatPairLine(existing.wordEn, existing.translationRu, lang, 'en', nativeLangForUi(lang));
+          await ctx.reply(t(lang, 'add.exists', { pair }), { parse_mode: 'HTML' });
+          await resetState(BigInt(userId));
+          return;
+        }
+        try {
+          const result = await addWordForUser(BigInt(userId), manualWordEn, sourceNative);
+          const addLang = (lang === 'uz' ? 'uz' : 'ru') as 'ru' | 'uz';
+          generateSentences(manualWordEn, sourceNative, addLang)
+            .then((s) => s && saveSentences(result.wordId, s))
+            .catch(() => {/* cron will retry */ });
+          await resetState(BigInt(userId));
+          const pair = formatPairLine(manualWordEn, sourceNative, lang, 'en', nativeLangForUi(lang));
+          await ctx.reply(
+            t(lang, 'add.saved', { pair }),
+            { parse_mode: 'HTML' }
+          );
+        } catch (error) {
+          if (error instanceof DailyWordLimitError) {
+            await ctx.reply(t(lang, 'add.dailyLimit', { limit: error.limit }), { parse_mode: 'HTML' });
+          } else if (error instanceof DuplicateWordError) {
+            await ctx.reply(t(lang, 'add.duplicate', { en: manualWordEn }), { parse_mode: 'HTML' });
+          } else {
+            await ctx.reply(error instanceof Error ? error.message : t(lang, 'add.error'), { parse_mode: 'HTML' });
+          }
+          await resetState(BigInt(userId));
+        }
+        return;
+      }
+
       if (!payload.wordEn) {
         await resetState(BigInt(userId));
         await ctx.reply(t(lang, 'add.failSave'), { parse_mode: 'HTML' });
         return;
       }
       try {
-        await addWordForUser(BigInt(userId), payload.wordEn, text);
+        const result = await addWordForUser(BigInt(userId), payload.wordEn, text);
+        // Fire-and-forget sentence generation
+        const addLang = (lang === 'uz' ? 'uz' : 'ru') as 'ru' | 'uz';
+        generateSentences(payload.wordEn, text, addLang)
+          .then((s) => s && saveSentences(result.wordId, s))
+          .catch(() => {/* cron will retry */ });
         await resetState(BigInt(userId));
         const pair = formatPairLine(payload.wordEn, text, lang, 'en', nativeLangForUi(lang));
         await ctx.reply(
@@ -707,6 +810,73 @@ bot.on('callback_query', async (ctx) => {
     return;
   }
 
+  if (data.startsWith('hint:')) {
+    const reviewId = parseInt(data.split(':')[1] ?? '', 10);
+    const user = await ensureUser(userId, toTelegramProfile(ctx.from));
+    const lang = (user.language as Lang) || 'ru';
+
+    if (!Number.isFinite(reviewId) || reviewId <= 0) {
+      await ctx.answerCbQuery(t(lang, 'session.lost'));
+      return;
+    }
+
+    if (session.state !== 'WAITING_ANSWER' || session.reviewId !== reviewId) {
+      await ctx.answerCbQuery(t(lang, 'session.lost'));
+      return;
+    }
+
+    const payload = (session.payload as any) || {};
+    const currentPresses = Math.max(0, Number(payload.hintPresses ?? 0) || 0);
+    if (currentPresses >= MAX_HINT_PRESSES_PER_CARD) {
+      await ctx.answerCbQuery(t(lang, 'worker.hintLimit'));
+      return;
+    }
+
+    let target = typeof payload.hintTarget === 'string' ? payload.hintTarget.trim() : '';
+    if (!target) {
+      const review = await loadReviewWithWord(reviewId);
+      if (!review || !review.word) {
+        await ctx.answerCbQuery(t(lang, 'session.lost'));
+        return;
+      }
+      target = (session.direction === 'EN_TO_RU' ? review.word.translationRu : review.word.wordEn).trim();
+    }
+
+    const nextPress = currentPresses + 1;
+    const masked = buildHintMaskByPress(target, nextPress);
+    if (!masked) {
+      await ctx.answerCbQuery(t(lang, 'session.lost'));
+      return;
+    }
+
+    const baseText = typeof payload.cardBaseText === 'string' && payload.cardBaseText.trim().length > 0
+      ? payload.cardBaseText
+      : String((ctx.callbackQuery as any)?.message?.text ?? '');
+    const hintInline = Boolean(payload.hintInline);
+    const nextText = (hintInline && baseText.includes('___'))
+      ? baseText.replace('___', escapeHtml(masked))
+      : `${baseText}\n\n${t(lang, 'worker.hintReveal', { masked: escapeHtml(masked) })}`;
+    const swapData = typeof payload.swapData === 'string' ? payload.swapData : null;
+
+    const nextPayload = {
+      ...payload,
+      hintTarget: target,
+      hintPresses: nextPress,
+      cardBaseText: baseText,
+    };
+    await prisma.userSession.update({
+      where: { userId: BigInt(userId) },
+      data: { payload: nextPayload as Prisma.InputJsonValue },
+    });
+
+    await ctx.editMessageText(nextText, {
+      parse_mode: 'HTML',
+      reply_markup: cardInlineKeyboard(reviewId, swapData),
+    });
+    await ctx.answerCbQuery(`${nextPress}/${MAX_HINT_PRESSES_PER_CARD} 💡`);
+    return;
+  }
+
   if (data.startsWith('grade:')) {
     const user = await ensureUser(userId, toTelegramProfile(ctx.from));
     const lang = (user.language as Lang) || 'ru';
@@ -778,7 +948,12 @@ bot.on('callback_query', async (ctx) => {
       return;
     }
     try {
-      await addWordForUser(BigInt(userId), payload.wordEn, payload.translationRu);
+      const result = await addWordForUser(BigInt(userId), payload.wordEn, payload.translationRu);
+      // Fire-and-forget sentence generation
+      const addLang = (lang === 'uz' ? 'uz' : 'ru') as 'ru' | 'uz';
+      generateSentences(payload.wordEn, payload.translationRu, addLang)
+        .then((s) => s && saveSentences(result.wordId, s))
+        .catch(() => {/* cron will retry */ });
       await resetState(BigInt(userId));
       const pair = formatPairLine(payload.wordEn, payload.translationRu, lang, 'en', nativeLangForUi(lang));
       await ctx.editMessageText(
@@ -821,6 +996,126 @@ bot.on('callback_query', async (ctx) => {
     await resetState(BigInt(userId));
     await ctx.answerCbQuery();
     await ctx.editMessageText(t(lang, 'add.cancelled'), { parse_mode: 'HTML' });
+    return;
+  }
+
+  if (data.startsWith('swap:')) {
+    const [, wordIdStr, indexStr] = data.split(':');
+    const wordId = parseInt(wordIdStr, 10);
+    const index = parseInt(indexStr, 10);
+    const user = await ensureUser(userId, toTelegramProfile(ctx.from));
+    const lang = (user.language as Lang) || 'ru';
+
+    if (session.state !== 'WAITING_ANSWER' || session.wordId !== wordId) {
+      await ctx.answerCbQuery(t(lang, 'session.lost'));
+      return;
+    }
+
+    // Rate limit: 1 swap per 24 hours per word. Also prune old entries.
+    const lastSession = await prisma.userSession.findUnique({ where: { userId: BigInt(userId) } });
+    const payload = (lastSession?.payload as any) || {};
+    const wordSwaps = payload.swaps || {};
+    const nowMs = Date.now();
+    for (const [key, val] of Object.entries(wordSwaps)) {
+      if (nowMs - new Date(val as string).getTime() > 24 * 60 * 60 * 1000) {
+        delete wordSwaps[key];
+      }
+    }
+    const lastSwapStr = wordSwaps[wordId];
+    if (lastSwapStr && nowMs - new Date(lastSwapStr).getTime() < 24 * 60 * 60 * 1000) {
+      await ctx.answerCbQuery(lang === 'uz' ? 'Kunda bitta so\'zni faqat 1 marta almashtirish mumkin 🔄' : 'Менять пример можно 1 раз в день 🔄', { show_alert: true });
+      return;
+    }
+
+    // Remove the bad sentence (but keep at least 2 examples in pool).
+    const swapResult = await removeSentenceAtIndex(wordId, index);
+    if (!swapResult.removed) {
+      await ctx.answerCbQuery(
+        lang === 'uz'
+          ? 'Hozircha almashtirib bo\'lmaydi: kamida 2 ta misol qolishi kerak'
+          : 'Сейчас заменить нельзя: должно остаться минимум 2 примера',
+        { show_alert: true }
+      );
+      return;
+    }
+
+    // Record the swap after successful removal
+    wordSwaps[wordId] = new Date().toISOString();
+    payload.swaps = wordSwaps;
+
+    // Load fresh word data with the next sentence
+    const review = await loadReviewWithWord(session.reviewId!);
+    if (!review || !review.word) {
+      await ctx.answerCbQuery(t(lang, 'session.lost'));
+      return;
+    }
+
+    const nextSentence = getSentenceForReview(review.word);
+    if (!nextSentence) {
+      // No sentences left — fallback, worker will handle
+      payload.swapData = null;
+      await prisma.userSession.update({
+        where: { userId: BigInt(userId) },
+        data: { payload: payload as Prisma.InputJsonValue },
+      });
+      await ctx.answerCbQuery(lang === 'uz' ? 'Jumla almashtirildi 🔄' : 'Пример заменён 🔄');
+      return;
+    }
+
+    // Build new card text (replicate worker logic)
+    const escRegex = (v: string) => v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const direction = session.direction!;
+    const wordEn = review.word.wordEn;
+    const isBlankStage = review.stage >= 7;
+    let cardText: string;
+
+    if (direction === 'EN_TO_RU') {
+      let enLine: string;
+      if (!isBlankStage) {
+        enLine = escapeHtml(nextSentence.sentence.en).replace(
+          new RegExp(`(${escRegex(wordEn)})`, 'gi'),
+          '<u><b>$1</b></u>'
+        );
+      } else {
+        enLine = escapeHtml(nextSentence.sentence.en.replace(new RegExp(escRegex(wordEn), 'gi'), '___'));
+      }
+      const targetKey = lang === 'uz' ? 'worker.answerTarget.uzbek' : 'worker.answerTarget.russian';
+      cardText = `${t(lang, 'worker.rememberWord')}\n\n🗣 ${enLine}\n${t(lang, targetKey)}`;
+    } else {
+      const nativeTarget = review.word.translationRu;
+      const nativeLine = isBlankStage
+        ? escapeHtml(nextSentence.sentence.native.replace(new RegExp(escRegex(nativeTarget), 'gi'), '___'))
+        : escapeHtml(nextSentence.sentence.native).replace(
+          new RegExp(`(${escRegex(nativeTarget)})`, 'gi'),
+          '<u><b>$1</b></u>'
+        );
+      cardText = `${t(lang, 'worker.rememberWord')}\n\n🗣 ${nativeLine}\n${t(lang, 'worker.answerTarget.english')}`;
+    }
+
+    // Update session payload with new card info
+    const newSentenceCount = getSentenceCount(review.word);
+    const newSwapData = newSentenceCount >= MIN_SENTENCES_FOR_SWAP
+      ? `swap:${review.wordId}:${nextSentence.index}`
+      : null;
+    const hintTarget = (direction === 'EN_TO_RU' ? review.word.translationRu : review.word.wordEn).trim();
+    payload.cardBaseText = cardText;
+    payload.hintTarget = hintTarget;
+    payload.hintPresses = 0;
+    payload.hintReviewId = review.id;
+    payload.swapData = newSwapData;
+    payload.hintInline = Boolean(isBlankStage && direction === 'EN_TO_RU');
+
+    await prisma.userSession.update({
+      where: { userId: BigInt(userId) },
+      data: { payload: payload as Prisma.InputJsonValue },
+    });
+
+    // Edit (not delete) the message with new sentence
+    await ctx.editMessageText(cardText, {
+      parse_mode: 'HTML',
+      reply_markup: cardInlineKeyboard(review.id, newSwapData),
+    });
+    await ctx.answerCbQuery(lang === 'uz' ? 'Jumla almashtirildi 🔄' : 'Пример заменён 🔄');
     return;
   }
 

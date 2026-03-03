@@ -5,14 +5,12 @@ const HF_DEFAULT_MODEL_UZ_EN = 'Helsinki-NLP/opus-mt-uz-en';
 const HF_DEFAULT_MODEL_EN_UZ = 'Helsinki-NLP/opus-mt-en-uz';
 
 const GEMINI_DEFAULT_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta/models';
-const GEMINI_DEFAULT_MODEL = 'gemini-2.5-flash-lite';
+const GEMINI_DEFAULT_MODEL = 'gemma-3-27b';
 const GEMINI_DEFAULT_FALLBACK_MODELS = [
+  'gemini-2.5-flash-lite',
+  'gemma-3-12b',
   'gemini-2.5-flash',
-  'gemini-2.0-flash-lite',
   'gemini-2.0-flash',
-  'gemini-1.5-flash',
-  'gemini-1.5-flash-8b',
-  'gemini-1.5-pro',
 ];
 const MYMEMORY_DEFAULT_URL = 'https://api.mymemory.translated.net/get';
 
@@ -20,6 +18,7 @@ const DEFAULT_TIMEOUT_MS = 8000;
 const DEFAULT_CACHE_MAX = 2000;
 const GEMINI_429_BASE_COOLDOWN_MS = 60_000;
 const GEMINI_429_MAX_COOLDOWN_MS = 5 * 60_000;
+const GEMINI_PRIMARY_LEAGUE_SIZE = 3;
 
 type Lang = 'ru' | 'en' | 'uz';
 type DetectHint = {
@@ -40,7 +39,7 @@ type HfResponse = {
   estimated_time?: number;
 } | HfTranslationItem[] | HfTranslationItem;
 
-type GeminiResponse = {
+export type GeminiResponse = {
   candidates?: Array<{
     content?: {
       parts?: Array<{
@@ -75,8 +74,8 @@ type GeminiModelRuntime = {
 };
 
 const geminiModelPool = new Map<string, GeminiModelRuntime>();
-let geminiRoundRobinCursor = 0;
-let geminiGlobalPauseUntil = 0;
+const geminiRoundRobinCursorByPool = new Map<string, number>();
+const geminiGlobalPauseUntilByPool = new Map<string, number>();
 
 const normalizeText = (value: unknown): string | null => {
   if (typeof value !== 'string') return null;
@@ -161,7 +160,7 @@ const wait = async (ms: number): Promise<void> => {
   await new Promise((resolve) => setTimeout(resolve, ms));
 };
 
-const readTimeoutMs = (): number => {
+export const readTimeoutMs = (): number => {
   const raw = Number.parseInt(trimEnv(process.env.TRANSLATE_API_TIMEOUT_MS), 10);
   if (!Number.isFinite(raw) || raw < 1000 || raw > 30000) return DEFAULT_TIMEOUT_MS;
   return raw;
@@ -173,7 +172,7 @@ const readCacheMax = (): number => {
   return raw;
 };
 
-const readGeminiModels = (): string[] => {
+export const readGeminiModels = (): string[] => {
   const primary = trimEnv(process.env.GEMINI_MODEL) || GEMINI_DEFAULT_MODEL;
   const fallbackRaw = trimEnv(process.env.GEMINI_FALLBACK_MODELS);
   const fallbackConfigured = Object.prototype.hasOwnProperty.call(process.env, 'GEMINI_FALLBACK_MODELS');
@@ -182,6 +181,42 @@ const readGeminiModels = (): string[] => {
     : GEMINI_DEFAULT_FALLBACK_MODELS;
 
   return Array.from(new Set([primary, ...fallback]));
+};
+
+const parseModelList = (raw: string): string[] =>
+  raw
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean);
+
+export type GeminiModelLeagues = {
+  league1: string[];
+  league2: string[];
+};
+
+const mergeUnique = (items: string[]): string[] => Array.from(new Set(items.filter(Boolean)));
+
+export const readGeminiModelLeagues = (): GeminiModelLeagues => {
+  const configuredLeague1 = trimEnv(process.env.GEMINI_LEAGUE1_MODELS);
+  const configuredLeague2 = trimEnv(process.env.GEMINI_LEAGUE2_MODELS);
+  const hasConfiguredLeagues = Boolean(configuredLeague1 || configuredLeague2);
+  const all = readGeminiModels();
+
+  if (!hasConfiguredLeagues) {
+    return {
+      league1: all.slice(0, GEMINI_PRIMARY_LEAGUE_SIZE),
+      league2: all.slice(GEMINI_PRIMARY_LEAGUE_SIZE),
+    };
+  }
+
+  const rawLeague1 = mergeUnique(parseModelList(configuredLeague1));
+  const rawLeague2 = mergeUnique(parseModelList(configuredLeague2));
+  const league1 = rawLeague1.length > 0 ? rawLeague1 : all.slice(0, GEMINI_PRIMARY_LEAGUE_SIZE);
+  const league2 = rawLeague2.length > 0
+    ? rawLeague2.filter((model) => !league1.includes(model))
+    : all.filter((model) => !league1.includes(model));
+
+  return { league1, league2 };
 };
 
 const ensureGeminiRuntime = (model: string): GeminiModelRuntime => {
@@ -203,18 +238,15 @@ const syncGeminiModelPool = (models: string[]) => {
   for (const model of [...geminiModelPool.keys()]) {
     if (!active.has(model)) geminiModelPool.delete(model);
   }
-  if (models.length === 0) {
-    geminiRoundRobinCursor = 0;
-    geminiGlobalPauseUntil = 0;
-    return;
-  }
-  geminiRoundRobinCursor %= models.length;
 };
 
-const getRoundRobinOrder = (models: string[]): string[] => {
+const poolKeyFor = (models: string[]): string => models.join('|');
+
+const getRoundRobinOrder = (models: string[], poolKey: string): string[] => {
   if (models.length <= 1) return [...models];
-  const start = geminiRoundRobinCursor % models.length;
-  geminiRoundRobinCursor = (geminiRoundRobinCursor + 1) % models.length;
+  const current = geminiRoundRobinCursorByPool.get(poolKey) ?? 0;
+  const start = current % models.length;
+  geminiRoundRobinCursorByPool.set(poolKey, (current + 1) % models.length);
   return [...models.slice(start), ...models.slice(0, start)];
 };
 
@@ -252,37 +284,46 @@ const activateGlobalPauseIfAllModelsLimited = (models: string[], nowMs: number) 
 
   const earliest = getEarliestCooldownUntil(models, nowMs);
   if (earliest) {
-    geminiGlobalPauseUntil = Math.max(geminiGlobalPauseUntil, earliest);
+    const poolKey = poolKeyFor(models);
+    const current = geminiGlobalPauseUntilByPool.get(poolKey) ?? 0;
+    geminiGlobalPauseUntilByPool.set(poolKey, Math.max(current, earliest));
   }
 };
 
-type GeminiAttemptResult<T> = {
+export type GeminiAttemptResult<T> = {
   ok: boolean;
   status: number;
   parsed: T | null;
 };
 
-const runWithGeminiModelPool = async <T>(
+type GeminiPoolAttemptStatus<T> = {
+  result: T | null;
+};
+
+const runWithinSingleGeminiPool = async <T>(
   models: string[],
   attempt: (model: string) => Promise<GeminiAttemptResult<T>>,
-): Promise<T | null> => {
+): Promise<GeminiPoolAttemptStatus<T>> => {
   syncGeminiModelPool(models);
-  if (!models.length) return null;
+  if (!models.length) return { result: null };
 
+  const poolKey = poolKeyFor(models);
   const nowMs = Date.now();
-  if (geminiGlobalPauseUntil > nowMs) return null;
-  if (geminiGlobalPauseUntil && geminiGlobalPauseUntil <= nowMs) {
-    geminiGlobalPauseUntil = 0;
+  const pausedUntil = geminiGlobalPauseUntilByPool.get(poolKey) ?? 0;
+  if (pausedUntil > nowMs) return { result: null };
+  if (pausedUntil && pausedUntil <= nowMs) {
+    geminiGlobalPauseUntilByPool.delete(poolKey);
   }
 
-  const ordered = getRoundRobinOrder(models);
+  const ordered = getRoundRobinOrder(models, poolKey);
   const available = ordered.filter((model) => ensureGeminiRuntime(model).cooldownUntil <= nowMs);
   if (!available.length) {
     const earliest = getEarliestCooldownUntil(models, nowMs);
     if (earliest) {
-      geminiGlobalPauseUntil = Math.max(geminiGlobalPauseUntil, earliest);
+      const current = geminiGlobalPauseUntilByPool.get(poolKey) ?? 0;
+      geminiGlobalPauseUntilByPool.set(poolKey, Math.max(current, earliest));
     }
-    return null;
+    return { result: null };
   }
 
   let saw429 = false;
@@ -293,7 +334,7 @@ const runWithGeminiModelPool = async <T>(
     const result = await attempt(model);
     if (result.ok && result.parsed !== null) {
       markGeminiSuccess(model);
-      return result.parsed;
+      return { result: result.parsed };
     }
 
     if (result.status === 429) {
@@ -306,7 +347,39 @@ const runWithGeminiModelPool = async <T>(
     activateGlobalPauseIfAllModelsLimited(models, Date.now());
   }
 
-  return null;
+  return { result: null };
+};
+
+const splitModelsIntoLeagues = (models: string[]): GeminiModelLeagues => {
+  const configured = readGeminiModelLeagues();
+  const configuredAll = new Set([...configured.league1, ...configured.league2]);
+  const hasCustomModelSet = models.some((model) => !configuredAll.has(model));
+  if (hasCustomModelSet) {
+    return {
+      league1: models.slice(0, GEMINI_PRIMARY_LEAGUE_SIZE),
+      league2: models.slice(GEMINI_PRIMARY_LEAGUE_SIZE),
+    };
+  }
+  return {
+    league1: configured.league1.filter((model) => models.includes(model)),
+    league2: configured.league2.filter((model) => models.includes(model)),
+  };
+};
+
+export const runWithGeminiModelPool = async <T>(
+  models: string[],
+  attempt: (model: string) => Promise<GeminiAttemptResult<T>>,
+): Promise<T | null> => {
+  if (!models.length) return null;
+  const leagues = splitModelsIntoLeagues(models);
+
+  const primary = await runWithinSingleGeminiPool(leagues.league1, attempt);
+  if (primary.result !== null) return primary.result;
+
+  // Reserve cascade: only when primary league has no usable result.
+  if (leagues.league2.length === 0) return null;
+  const reserve = await runWithinSingleGeminiPool(leagues.league2, attempt);
+  return reserve.result;
 };
 
 const normalizeUzToken = (value: string): string =>
@@ -481,7 +554,7 @@ const writeCachedTranslation = (key: string, value: string): void => {
   }
 };
 
-const fetchJson = async <T>(
+export const fetchJson = async <T>(
   url: string,
   init: RequestInit,
   timeoutMs: number,

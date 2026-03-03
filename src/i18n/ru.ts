@@ -1,20 +1,19 @@
 const ru = {
   // Aliases for legacy keys used in code
-  chooseLang: '🌐 Выбери язык / Tilni tanlang:',
+  chooseLang: '🌐 Tilni tanlang / Выбери язык',
   hint:
-    '👋 <b>Привет!</b>\n\nЯ помогу тебе прокачать английский методом интервальных повторений. 🧠\n\n🎯 <b>Как это работает?</b>\n1. Ты кидаешь мне слова ➕\n2. Я вовремя о них напоминаю 🔔\n3. Ты оцениваешь, насколько легко было вспомнить ⭐\n\nПогнали? 🚀',
+    '👋 Привет!\nПомогу выучить английские слова методом интервальных повторений. 🧠\n\n🎯 Как это работает?\n1. Добавляешь слова ➕\n2. Я напоминаю в нужный момент 🔔\n3. Оцениваешь насколько легко вспомнил ⭐\n\nПогнали? 🚀',
   askInterval:
-    '⏱ <b>Твой ритм</b>\n\nКак часто присылать слова?\n\n👇 Напиши число минут (от {min} до {max}).\n<i>Например: 15, 30 или 60.</i>',
+    '⏱ <b>Каждые сколько минут присылать слово?</b>\n({min}–{max} мин)',
   askGoal:
-    '🎯 <b>Цель на день</b>\n\nСколько слов хочешь учить в день?\n\n👇 Напиши число (от {min} до {max}).',
+    '🎯 <b>Сколько слов учим сегодня?</b>\n({min}–{max})',
   intervalNeedNumber: '🤔 <b>Это не число.</b>\nНапиши просто цифрами, например: 10',
   intervalOutOfRange: '⚠️ <b>Не подходит.</b>\nНужно время от {min} до {max} минут.',
   intervalSaved: '✅ <b>Принято!</b> Буду писать раз в {value} мин.',
   goalNeedNumber: '🤔 <b>Это не число.</b>\nНапиши, сколько слов в день хочешь учить, например: 20',
   goalOutOfRange: '⚠️ <b>Нужно число от {min} до {max}.</b>\nПопробуй другое значение.',
   settingsTip: '⚙️ Больше настроек — в меню.',
-
-  'onboarding.chooseLang': '🌐 Выбери язык / Tilni tanlang:',
+  'onboarding.chooseLang': '🌐 Tilni tanlang / Выбери язык',
   'onboarding.hint':
     '👋 <b>Суть проста:</b>\nЯ шлю слово — ты переводишь. Потом жмешь Hard/Good/Easy, и я подстраиваюсь под твою память.\n\n⚡️ Настройки можно поменять в любой момент.',
   'onboarding.askInterval':
@@ -23,7 +22,7 @@ const ru = {
   'onboarding.intervalOutOfRange': '⚠️ <b>От {min} до {max} минут.</b>\nПопробуй другое число.',
   'onboarding.intervalSaved': '✅ <b>Отлично!</b> Интервал: {value} мин.',
   'onboarding.settingsTip': '⚙️ Остальное настроишь потом в меню.',
-  'onboarding.finished': '🚀 <b>Ты в игре!</b>\nИнтервал: {value} мин.\n\n👇 <b>Отправь мне первое слово</b> на английском, и начнем обучение.',
+  'onboarding.finished': '✅ <b>Готово!</b> Интервал: {value} мин.\n\nОтправь первое слово на английском 👇',
   'onboarding.menuTip': '⚙️ <b>Меню настроек</b> появилось внизу.',
 
   'btn.settings': '⚙️ Настройки',
@@ -84,6 +83,21 @@ const ru = {
   'add.cancelled': '👌 <b>Отменил.</b>',
 
   'worker.verifyPrompt': '🧠 <b>Вспомнишь слово?</b>\n\n🇬🇧 {phrase}',
+  'worker.rememberWord': '🧠 <b>Вспомнишь слово?</b>',
+  'worker.sentencePrompt': '📖 <b>Какое слово пропущено?</b>\n\n{sentence}',
+  'worker.context.enBold': '📖 <b>Переведи выделенное слово:</b>\n\n{sentence}',
+  'worker.context.enBlank': '📖 <b>Переведи пропущенное слово:</b>\n\n{sentence}',
+  'worker.context.nativeToEnTitle': '📖 <b>Напиши английское слово по контексту:</b>',
+  'worker.context.nativeToEn': '📖 <b>Напиши английское слово по контексту:</b>\n\n{sentence}',
+  'worker.direction.enToNative': '🔁 EN → RU',
+  'worker.direction.nativeToEn': '🔁 RU → EN',
+  'worker.answerPrompt.native': '👇 Ответь на русском одним словом:',
+  'worker.answerPrompt.english': '👇 Английское слово:',
+  'worker.answerTarget.russian': '✍️ → 🇷🇺',
+  'worker.answerTarget.uzbek': '✍️ → 🇺🇿',
+  'worker.answerTarget.english': '✍️ → 🇬🇧',
+  'worker.hintReveal': '💡 <b>{masked}</b>',
+  'worker.hintLimit': 'Подсказки закончились (3/3)',
   'worker.answerPrompt': '👇 Пиши перевод:',
   'worker.reminder': '⏰ <b>Тик-так!</b> Не забывай отвечать.',
   'worker.skipped': '🍃 <b>Улетело...</b>\nВернусь с ним позже!',

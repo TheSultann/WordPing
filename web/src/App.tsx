@@ -866,6 +866,7 @@ const App = () => {
     }
   };
 
+  const adminCandidateId = me?.id ?? telegramUser?.id ?? (devUserId ? Number(devUserId) : null);
   const displayName = telegramUser
     ? `${telegramUser.first_name ?? ''} ${telegramUser.last_name ?? ''}`.trim() || telegramUser.username || t('userFallback')
     : adminCandidateId

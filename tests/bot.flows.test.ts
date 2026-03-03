@@ -373,8 +373,33 @@ describe('bot extended flows', () => {
 
     const session = await prisma.userSession.findUnique({ where: { userId: BigInt(userId) } });
     expect(session?.state).toBe('ADDING_WORD_WAIT_RU_MANUAL');
-    expect((session?.payload as any)?.wordEn).toBe('c/dictation');
-    expect(sentTexts(callApiSpy)).toContain(t('ru', 'add.suspectAutoTranslation'));
+    expect((session?.payload as any)?.manualField).toBe('en');
+    expect((session?.payload as any)?.sourceNative).toBe('salom');
+    expect(sentTexts(callApiSpy)).toContain(t('ru', 'add.needEnglishWord'));
+  });
+
+  it('saves manual english input after suspicious native-to-english translation', async () => {
+    await prisma.user.create({ data: { id: BigInt(userId), language: 'ru' } });
+    await setState(BigInt(userId), 'ADDING_WORD_WAIT_EN');
+    vi
+      .spyOn(Object.getPrototypeOf(bot.telegram), 'callApi')
+      .mockResolvedValue({} as any);
+
+    detectAndTranslateWithGeminiMock.mockResolvedValue(null);
+    translateAutoMock.mockResolvedValue('c/dictation');
+
+    await bot.handleUpdate(makeMessageUpdate('salom', 70), {} as any);
+    await bot.handleUpdate(makeMessageUpdate('hello', 71), {} as any);
+
+    const saved = await prisma.word.findFirst({
+      where: { userId: BigInt(userId), wordEn: 'hello' },
+    });
+    expect(saved?.translationRu).toBe('salom');
+
+    const wrong = await prisma.word.findFirst({
+      where: { userId: BigInt(userId), wordEn: 'c/dictation' },
+    });
+    expect(wrong).toBeNull();
   });
 
   it('shows neutral flag for ambiguous latin input to avoid misleading language flag', async () => {
@@ -437,6 +462,79 @@ describe('bot extended flows', () => {
       expect(texts.some((text) => text.includes('beta') && text.includes('beta-ru'))).toBe(true);
       expect(suggestTranslationMock).toHaveBeenCalledTimes(1);
       expect(translateAutoWithMyMemoryMock).toHaveBeenCalled();
+    } finally {
+      if (previousDailyLimit === undefined) {
+        delete process.env.DAILY_AUTO_TRANSLATE_LIMIT;
+      } else {
+        process.env.DAILY_AUTO_TRANSLATE_LIMIT = previousDailyLimit;
+      }
+    }
+  });
+
+  it('switches to manual native translation when fallback fails after daily limit', async () => {
+    const previousDailyLimit = process.env.DAILY_AUTO_TRANSLATE_LIMIT;
+    process.env.DAILY_AUTO_TRANSLATE_LIMIT = '1';
+
+    try {
+      await prisma.user.create({ data: { id: BigInt(userId), language: 'ru' } });
+      const callApiSpy = vi
+        .spyOn(Object.getPrototypeOf(bot.telegram), 'callApi')
+        .mockResolvedValue({} as any);
+
+      suggestTranslationMock.mockResolvedValueOnce('Р°Р»СЊС„Р°');
+
+      await setState(BigInt(userId), 'ADDING_WORD_WAIT_EN');
+      await bot.handleUpdate(makeMessageUpdate('alpha', 69), {} as any);
+
+      translateAutoWithMyMemoryMock.mockResolvedValueOnce(null);
+
+      await setState(BigInt(userId), 'ADDING_WORD_WAIT_EN');
+      await bot.handleUpdate(makeMessageUpdate('beta', 70), {} as any);
+
+      const texts = sentTexts(callApiSpy);
+      expect(texts).toContain(t('ru', 'add.apiLimitManualTranslation', { limit: 1 }));
+      expect(texts).not.toContain(t('ru', 'add.error'));
+
+      const session = await prisma.userSession.findUnique({ where: { userId: BigInt(userId) } });
+      expect(session?.state).toBe('ADDING_WORD_WAIT_RU_MANUAL');
+      expect((session?.payload as any)?.wordEn).toBe('beta');
+      expect(translateAutoWithMyMemoryMock).toHaveBeenCalledWith('beta', 'ru');
+    } finally {
+      if (previousDailyLimit === undefined) {
+        delete process.env.DAILY_AUTO_TRANSLATE_LIMIT;
+      } else {
+        process.env.DAILY_AUTO_TRANSLATE_LIMIT = previousDailyLimit;
+      }
+    }
+  });
+
+  it('asks for manual english word when reverse fallback fails after daily limit', async () => {
+    const previousDailyLimit = process.env.DAILY_AUTO_TRANSLATE_LIMIT;
+    process.env.DAILY_AUTO_TRANSLATE_LIMIT = '1';
+
+    try {
+      await prisma.user.create({ data: { id: BigInt(userId), language: 'ru' } });
+      const callApiSpy = vi
+        .spyOn(Object.getPrototypeOf(bot.telegram), 'callApi')
+        .mockResolvedValue({} as any);
+
+      suggestTranslationMock.mockResolvedValueOnce('Р°Р»СЊС„Р°');
+
+      await setState(BigInt(userId), 'ADDING_WORD_WAIT_EN');
+      await bot.handleUpdate(makeMessageUpdate('alpha', 71), {} as any);
+
+      translateAutoWithMyMemoryMock.mockResolvedValueOnce(null);
+
+      await setState(BigInt(userId), 'ADDING_WORD_WAIT_EN');
+      await bot.handleUpdate(makeMessageUpdate('РїСЂРёРІРµС‚', 72), {} as any);
+
+      const texts = sentTexts(callApiSpy);
+      expect(texts).toContain(t('ru', 'add.apiLimitNeedEnglish', { limit: 1 }));
+      expect(texts).not.toContain(t('ru', 'add.error'));
+
+      const session = await prisma.userSession.findUnique({ where: { userId: BigInt(userId) } });
+      expect(session?.state).toBe('ADDING_WORD_WAIT_EN');
+      expect(translateAutoWithMyMemoryMock).toHaveBeenCalledWith('РїСЂРёРІРµС‚', 'en');
     } finally {
       if (previousDailyLimit === undefined) {
         delete process.env.DAILY_AUTO_TRANSLATE_LIMIT;
@@ -544,6 +642,207 @@ describe('bot extended flows', () => {
     const session = await prisma.userSession.findUnique({ where: { userId: BigInt(userId) } });
     expect(session?.state).toBe('IDLE');
     expect(editedTexts(callApiSpy)).toContain(t('ru', 'add.cancelled'));
+  });
+
+  it('swap callback does not remove sentence when pool already has only 2 examples', async () => {
+    await prisma.user.create({ data: { id: BigInt(userId), language: 'ru' } });
+    const word = await prisma.word.create({
+      data: {
+        userId: BigInt(userId),
+        wordEn: 'hold',
+        translationRu: 'держать',
+        sentenceIndex: 0,
+        exampleSentences: [
+          { en: 'Hold the door please.', native: 'Подержи дверь, пожалуйста.' },
+          { en: 'Hold this bag for me.', native: 'Подержи эту сумку для меня.' },
+        ] as any,
+      },
+    });
+    await setState(BigInt(userId), 'WAITING_ANSWER', {
+      wordId: word.id,
+      direction: 'EN_TO_RU',
+      sentAt: new Date(),
+      reminderStep: 0,
+    });
+    const callApiSpy = vi
+      .spyOn(Object.getPrototypeOf(bot.telegram), 'callApi')
+      .mockResolvedValue({} as any);
+
+    await bot.handleUpdate(makeCallbackUpdate(`swap:${word.id}:0`, 561), {} as any);
+
+    const freshWord = await prisma.word.findUnique({ where: { id: word.id } });
+    const sentences = (freshWord?.exampleSentences ?? []) as any[];
+    expect(sentences).toHaveLength(2);
+
+    const session = await prisma.userSession.findUnique({ where: { userId: BigInt(userId) } });
+    expect(session?.state).toBe('WAITING_ANSWER');
+    const deleted = callApiSpy.mock.calls.some(([method]: any[]) => method === 'deleteMessage');
+    expect(deleted).toBe(false);
+
+    const answerCbCall = callApiSpy.mock.calls.find(([method]: any[]) => method === 'answerCallbackQuery');
+    expect(String((answerCbCall?.[1] as any)?.text ?? '')).toContain('минимум 2');
+  });
+
+  it('swap callback removes one sentence when pool has 3 and edits message with next sentence', async () => {
+    await prisma.user.create({ data: { id: BigInt(userId), language: 'ru' } });
+    const word = await prisma.word.create({
+      data: {
+        userId: BigInt(userId),
+        wordEn: 'accept',
+        translationRu: 'принимать',
+        sentenceIndex: 0,
+        exampleSentences: [
+          { en: 'He refused to accept money.', native: 'Он отказался принимать деньги.' },
+          { en: 'They accept your request quickly.', native: 'Они быстро принимают ваш запрос.' },
+          { en: 'Please accept this small gift.', native: 'Пожалуйста, примите этот небольшой подарок.' },
+        ] as any,
+        reviews: {
+          create: {
+            direction: 'EN_TO_RU',
+            userId: BigInt(userId),
+            stage: 3,
+            intervalMinutes: 1200,
+            nextReviewAt: new Date(Date.now() - 1000),
+          },
+        },
+      },
+      include: { reviews: true },
+    });
+    const reviewId = word.reviews[0]!.id;
+    await setState(BigInt(userId), 'WAITING_ANSWER', {
+      wordId: word.id,
+      reviewId,
+      direction: 'EN_TO_RU',
+      sentAt: new Date(),
+      reminderStep: 0,
+    });
+    const callApiSpy = vi
+      .spyOn(Object.getPrototypeOf(bot.telegram), 'callApi')
+      .mockResolvedValue({} as any);
+
+    await bot.handleUpdate(makeCallbackUpdate(`swap:${word.id}:1`, 562), {} as any);
+
+    const freshWord = await prisma.word.findUnique({ where: { id: word.id } });
+    const sentences = (freshWord?.exampleSentences ?? []) as any[];
+    expect(sentences).toHaveLength(2);
+
+    const session = await prisma.userSession.findUnique({ where: { userId: BigInt(userId) } });
+    expect(session?.state).toBe('WAITING_ANSWER');
+    const edited = callApiSpy.mock.calls.some(([method]: any[]) => method === 'editMessageText');
+    expect(edited).toBe(true);
+
+    const answerCbCall = callApiSpy.mock.calls.find(([method]: any[]) => method === 'answerCallbackQuery');
+    expect(String((answerCbCall?.[1] as any)?.text ?? '')).toContain('Пример заменён');
+  });
+
+  it('hint callback reveals letters in 3 steps per card and then stops', async () => {
+    await prisma.user.create({ data: { id: BigInt(userId), language: 'ru' } });
+    const created = await prisma.word.create({
+      data: {
+        userId: BigInt(userId),
+        wordEn: 'apple',
+        translationRu: 'яблоко',
+        reviews: {
+          create: {
+            direction: 'RU_TO_EN',
+            userId: BigInt(userId),
+            stage: 4,
+            intervalMinutes: 1200,
+            nextReviewAt: new Date(Date.now() - 1000),
+          },
+        },
+      },
+      include: { reviews: true },
+    });
+    const reviewId = created.reviews[0]!.id;
+
+    await setState(BigInt(userId), 'WAITING_ANSWER', {
+      reviewId,
+      wordId: created.id,
+      direction: 'RU_TO_EN',
+      sentAt: new Date(),
+      reminderStep: 0,
+      payload: {
+        cardBaseText: '🧠 <b>Вспомнишь слово?</b>\n\n🗣 Это большое <b>яблоко</b>.\n✍️ → 🇬🇧',
+        hintTarget: 'apple',
+        hintPresses: 0,
+        hintReviewId: reviewId,
+        swapData: null,
+      },
+    });
+
+    const callApiSpy = vi
+      .spyOn(Object.getPrototypeOf(bot.telegram), 'callApi')
+      .mockResolvedValue({} as any);
+
+    await bot.handleUpdate(makeCallbackUpdate(`hint:${reviewId}`, 571), {} as any);
+    await bot.handleUpdate(makeCallbackUpdate(`hint:${reviewId}`, 572), {} as any);
+    await bot.handleUpdate(makeCallbackUpdate(`hint:${reviewId}`, 573), {} as any);
+    await bot.handleUpdate(makeCallbackUpdate(`hint:${reviewId}`, 574), {} as any);
+
+    const edits = editedTexts(callApiSpy);
+    expect(edits.some((text) => text.includes('💡 <b>a____</b>'))).toBe(true);
+    expect(edits.some((text) => text.includes('💡 <b>a___e</b>'))).toBe(true);
+    expect(edits.some((text) => text.includes('💡 <b>ap__e</b>'))).toBe(true);
+
+    const answers = callApiSpy.mock.calls
+      .filter(([method]: any[]) => method === 'answerCallbackQuery')
+      .map(([, payload]: any[]) => String(payload?.text ?? ''));
+    expect(answers.some((text) => text.includes('1/3'))).toBe(true);
+    expect(answers.some((text) => text.includes('2/3'))).toBe(true);
+    expect(answers.some((text) => text.includes('3/3'))).toBe(true);
+    expect(answers).toContain(t('ru', 'worker.hintLimit'));
+
+    const session = await prisma.userSession.findUnique({ where: { userId: BigInt(userId) } });
+    expect((session?.payload as any)?.hintPresses).toBe(3);
+  });
+
+  it('hint callback can inject masked letters into sentence blank for stage 7 style cards', async () => {
+    await prisma.user.create({ data: { id: BigInt(userId), language: 'ru' } });
+    const created = await prisma.word.create({
+      data: {
+        userId: BigInt(userId),
+        wordEn: 'apple',
+        translationRu: 'яблоко',
+        reviews: {
+          create: {
+            direction: 'EN_TO_RU',
+            userId: BigInt(userId),
+            stage: 7,
+            intervalMinutes: 43200,
+            nextReviewAt: new Date(Date.now() - 1000),
+          },
+        },
+      },
+      include: { reviews: true },
+    });
+    const reviewId = created.reviews[0]!.id;
+
+    await setState(BigInt(userId), 'WAITING_ANSWER', {
+      reviewId,
+      wordId: created.id,
+      direction: 'EN_TO_RU',
+      sentAt: new Date(),
+      reminderStep: 0,
+      payload: {
+        cardBaseText: '🧠 <b>Вспомнишь слово?</b>\n\n🗣 She ate one ___.\n✍️ → 🇷🇺',
+        hintTarget: 'яблоко',
+        hintPresses: 0,
+        hintReviewId: reviewId,
+        swapData: null,
+        hintInline: true,
+      },
+    });
+
+    const callApiSpy = vi
+      .spyOn(Object.getPrototypeOf(bot.telegram), 'callApi')
+      .mockResolvedValue({} as any);
+
+    await bot.handleUpdate(makeCallbackUpdate(`hint:${reviewId}`, 575), {} as any);
+
+    const edits = editedTexts(callApiSpy);
+    expect(edits.some((text) => text.includes('🗣 She ate one я_____'))).toBe(true);
+    expect(edits.some((text) => text.includes('💡 <b>'))).toBe(false);
   });
 
   it('WAITING_ANSWER text transitions to WAITING_GRADE', async () => {

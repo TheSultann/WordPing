@@ -135,8 +135,10 @@ pm2 logs wordping-worker --lines 60
 3. Запусти Web App:
    - `npm run dev:web`
 4. Для реферальных ссылок укажи `VITE_BOT_USERNAME` в `web/.env`.
+   Опционально для мгновенного показа вкладки админа укажи `VITE_ADMIN_TELEGRAM_ID`.
 5. Укажи `WEBAPP_URL` в `.env`, чтобы бот отправлял кнопку открытия приложения.
 6. Для локального теста без Telegram включи `ALLOW_DEV_AUTH=true` и используй `?devUserId=123`.
+   На продакшене держи `ALLOW_DEV_AUTH=false`.
 7. Авторизация Mini App: API принимает `x-telegram-init-data` (из Telegram WebApp) или `x-dev-user-id` для дев-режима.
 
 Если открываешь Web App не внутри Telegram, можно передать `?devUserId=123456789`.

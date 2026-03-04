@@ -54,6 +54,12 @@ describe('API integration', () => {
     expect(res.status).toBe(401);
   });
 
+  it('does not authorize via DEV_USER_ID fallback without x-dev-user-id header', async () => {
+    process.env.DEV_USER_ID = userId.toString();
+    const res = await request(app).get('/api/settings');
+    expect(res.status).toBe(401);
+  });
+
   it('GET /api/health', async () => {
     const res = await request(app).get('/api/health');
     expect(res.status).toBe(200);

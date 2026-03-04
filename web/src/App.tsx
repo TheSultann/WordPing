@@ -1,28 +1,14 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react';
 import { api, Settings, Stats, WordItem, Me, AdminOverview, AdminUserSummary } from './api';
 import {
   Settings as SettingsIcon,
-  Book,
   BookOpen,
   House,
-  Save,
-  RotateCcw,
-  Trash2,
-  Flame,
-  UserPlus,
-  Languages,
-  Zap,
-  Clock,
-  Hourglass,
-  Bell,
-  Target,
-  TrendingUp,
-  Search,
   Shield,
-  Users,
   CheckCircle2,
   AlertCircle
 } from 'lucide-react';
+import StatsSection from './components/StatsSection';
 
 const minutesToTime = (minutes: number) => {
   const m = ((minutes % 1440) + 1440) % 1440;
@@ -258,11 +244,16 @@ type CopyKey = keyof (typeof COPY)['ru'];
 type WordStatus = 'learned' | 'due' | 'new';
 
 const LANG_STORAGE_KEY = 'wordping.lang';
+const ADMIN_CACHE_KEY_PREFIX = 'wordping.is_admin.';
 const DATA_CACHE_TTL_MS = 30_000;
 const LEARNED_STAGE_MIN = 4;
 const ADMIN_USERS_FIRST_PAGE_SIZE = 3;
 const ADMIN_USERS_NEXT_PAGE_SIZE = 15;
 const WORDS_PAGE_SIZE = 25;
+const STATIC_ADMIN_TELEGRAM_ID = String((import.meta as any).env?.VITE_ADMIN_TELEGRAM_ID ?? '').trim();
+const WordsSection = lazy(() => import('./components/WordsSection'));
+const SettingsSection = lazy(() => import('./components/SettingsSection'));
+const AdminSection = lazy(() => import('./components/AdminSection'));
 
 const resolveWordStatus = (word: WordItem): WordStatus => {
   if ((word.stage ?? 0) >= LEARNED_STAGE_MIN) return 'learned';
@@ -279,6 +270,47 @@ const getStoredLang = (): Lang | null => {
   if (typeof window === 'undefined') return null;
   const value = window.localStorage.getItem(LANG_STORAGE_KEY);
   return value === 'uz' || value === 'ru' ? value : null;
+};
+
+const normalizeUserId = (value: unknown): string | null => {
+  if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
+    return String(Math.trunc(value));
+  }
+  if (typeof value === 'string') {
+    const text = value.trim();
+    if (/^\d+$/.test(text)) return text;
+  }
+  return null;
+};
+
+const adminCacheKey = (userId: string) => `${ADMIN_CACHE_KEY_PREFIX}${userId}`;
+
+const readCachedAdminFlag = (userId: string | null): boolean | null => {
+  if (typeof window === 'undefined' || !userId) return null;
+  const value = window.localStorage.getItem(adminCacheKey(userId));
+  if (value === '1') return true;
+  if (value === '0') return false;
+  return null;
+};
+
+const writeCachedAdminFlag = (userId: string | null, isAdmin: boolean) => {
+  if (typeof window === 'undefined' || !userId) return;
+  window.localStorage.setItem(adminCacheKey(userId), isAdmin ? '1' : '0');
+};
+
+const isStaticAdminUser = (userId: string | null): boolean => {
+  if (!userId || !STATIC_ADMIN_TELEGRAM_ID) return false;
+  return userId === STATIC_ADMIN_TELEGRAM_ID;
+};
+
+const getInitialAdminHint = (): boolean => {
+  if (typeof window === 'undefined') return false;
+  const initTelegramId = normalizeUserId((window as any)?.Telegram?.WebApp?.initDataUnsafe?.user?.id);
+  const initDevId = normalizeUserId(new URLSearchParams(window.location.search).get('devUserId'));
+  const userId = initTelegramId ?? initDevId;
+  const cached = readCachedAdminFlag(userId);
+  if (cached !== null) return cached;
+  return isStaticAdminUser(userId);
 };
 
 const App = () => {
@@ -298,6 +330,7 @@ const App = () => {
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [lang, setLang] = useState<Lang>(() => getStoredLang() ?? 'ru');
+  const [isAdminHint, setIsAdminHint] = useState<boolean>(() => getInitialAdminHint());
   const [adminOverview, setAdminOverview] = useState<AdminOverview | null>(null);
   const [adminOverviewLoading, setAdminOverviewLoading] = useState(false);
   const [adminOverviewError, setAdminOverviewError] = useState('');
@@ -326,8 +359,9 @@ const App = () => {
   const useLiteUi = isTelegramWebApp || prefersReducedMotion;
   const hasInitData = Boolean((window as any)?.Telegram?.WebApp?.initData);
   const devUserId = new URLSearchParams(window.location.search).get('devUserId');
+  const authUserId = normalizeUserId(telegramUser?.id ?? devUserId);
   const canAuth = hasInitData || Boolean(devUserId);
-  const isAdmin = me?.isAdmin ?? false;
+  const isAdmin = me?.isAdmin ?? isAdminHint;
 
   const t = (key: CopyKey, params?: Record<string, string | number>) => {
     let result: string = COPY[lang]?.[key] ?? COPY.ru[key];
@@ -384,6 +418,73 @@ const App = () => {
     return Number.isFinite(parsed) ? parsed : null;
   };
 
+  const handleToggleNotifications = (checked: boolean) => {
+    if (!form) return;
+    setForm({ ...form, notificationsEnabled: checked });
+  };
+
+  const handleIntervalInputChange = (value: string) => {
+    if (!form) return;
+    const raw = sanitizeNumericInput(value);
+    setIntervalInput(raw);
+    const parsed = parseDraftNumber(raw);
+    if (parsed !== null) {
+      setForm({
+        ...form,
+        notificationIntervalMinutes: parsed,
+      });
+    }
+  };
+
+  const handleIntervalInputBlur = () => {
+    if (!form) return;
+    const parsed = parseDraftNumber(intervalInput);
+    if (parsed === null) {
+      setIntervalInput(String(form.notificationIntervalMinutes));
+      return;
+    }
+    setIntervalInput(String(parsed));
+  };
+
+  const handleLimitInputChange = (value: string) => {
+    if (!form) return;
+    const raw = sanitizeNumericInput(value);
+    setLimitInput(raw);
+    const parsed = parseDraftNumber(raw);
+    if (parsed !== null) {
+      setForm({
+        ...form,
+        maxNotificationsPerDay: parsed,
+      });
+    }
+  };
+
+  const handleLimitInputBlur = () => {
+    if (!form) return;
+    const parsed = parseDraftNumber(limitInput);
+    if (parsed === null) {
+      setLimitInput(String(form.maxNotificationsPerDay));
+      return;
+    }
+    setLimitInput(String(parsed));
+  };
+
+  const handleQuietStartChange = (value: string) => {
+    if (!form) return;
+    const minutes = timeToMinutes(value);
+    if (minutes !== null) {
+      setForm({ ...form, quietHoursStartMinutes: minutes });
+    }
+  };
+
+  const handleQuietEndChange = (value: string) => {
+    if (!form) return;
+    const minutes = timeToMinutes(value);
+    if (minutes !== null) {
+      setForm({ ...form, quietHoursEndMinutes: minutes });
+    }
+  };
+
   const broadcastLimit = adminBroadcastPhoto.trim() ? 1024 : 4000;
   const broadcastLength = adminBroadcastMessage.trim().length;
   const broadcastOverLimit = broadcastLength > broadcastLimit;
@@ -404,6 +505,9 @@ const App = () => {
     try {
       const data = await api.getMe();
       setMe(data);
+      const serverIsAdmin = Boolean(data.isAdmin);
+      setIsAdminHint(serverIsAdmin);
+      writeCachedAdminFlag(authUserId ?? normalizeUserId(data.id), serverIsAdmin);
       const value = data.language === 'uz' ? 'uz' : 'ru';
       setLangOverride(value);
       cacheTsRef.current.me = Date.now();
@@ -470,6 +574,15 @@ const App = () => {
   }, []);
 
   useEffect(() => {
+    const cached = readCachedAdminFlag(authUserId);
+    if (cached !== null) {
+      setIsAdminHint(cached);
+      return;
+    }
+    setIsAdminHint(isStaticAdminUser(authUserId));
+  }, [authUserId]);
+
+  useEffect(() => {
     if (typeof window !== 'undefined') {
       window.localStorage.removeItem('wordping.theme');
     }
@@ -507,6 +620,16 @@ const App = () => {
     if (!canAuth) return;
     void loadMe();
   }, [canAuth]);
+
+  useEffect(() => {
+    void import('./components/WordsSection');
+    void import('./components/SettingsSection');
+  }, []);
+
+  useEffect(() => {
+    if (!isAdmin) return;
+    void import('./components/AdminSection');
+  }, [isAdmin]);
 
   useEffect(() => {
     if (!canAuth) return;
@@ -890,569 +1013,130 @@ const App = () => {
 
       <>
         {tab === 'stats' && (
-          <div
-            key="stats"
-            className="section"
-          >
-            {stats ? (
-              <>
-                <div className="panel hero-panel">
-                  <div className="streak-hero">
-                    <div className="streak-main">
-                      <span className={`streak-flame ${stats.streakCount > 0 ? 'is-lit' : ''}`}>
-                        <Flame size={26} />
-                      </span>
-                      <div className="streak-count">
-                        <h1>{stats.streakCount}</h1>
-                      </div>
-                    </div>
-                    <span className="streak-subtitle">{t('streakSubtitle')}</span>
-                    {stats.streakCount === 0 && (
-                      <small className="streak-tip">{t('streakTip')}</small>
-                    )}
-                  </div>
-
-                  <div className="milestones">
-                    <div className={`milestone ${stats.streakCount >= 7 ? 'active' : ''}`}>
-                      <div className="milestone-circle">7</div>
-                      <span className="milestone-label">7 {t('milestoneDays')}</span>
-                    </div>
-                    <div className={`milestone ${stats.streakCount >= 14 ? 'active' : ''}`}>
-                      <div className="milestone-circle">14</div>
-                      <span className="milestone-label">14 {t('milestoneDays')}</span>
-                    </div>
-                    <div className={`milestone ${stats.streakCount >= 30 ? 'active' : ''}`}>
-                      <div className="milestone-circle">30</div>
-                      <span className="milestone-label">30 {t('milestoneDays')}</span>
-                    </div>
-                    <div className={`milestone ${stats.streakCount >= 100 ? 'active' : ''}`}>
-                      <div className="milestone-circle">100</div>
-                      <span className="milestone-label">100 {t('milestoneDays')}</span>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="panel">
-                  <h2 className="stats-section-title">
-                    <span className="stats-section-title__icon" aria-hidden="true">
-                      <TrendingUp size={16} strokeWidth={2.4} />
-                    </span>
-                    {lang === 'uz' ? 'Bugungi statistika' : '\u041f\u0440\u043e\u0433\u0440\u0435\u0441\u0441 \u0437\u0430 \u0441\u0435\u0433\u043e\u0434\u043d\u044f'}
-                  </h2>
-                  <div className="stat-grid">
-                    <div className="stat-card stat-card--due">
-                      <div className="stat-emoji stat-emoji--due"><Hourglass size={18} strokeWidth={2.2} /></div>
-                      <span>{t('waitingToday')}</span>
-                      <strong>{stats.dueTodayCount}</strong>
-                    </div>
-                    <div className="stat-card stat-card--today">
-                      <div className="stat-emoji stat-emoji--today"><CheckCircle2 size={18} strokeWidth={2.2} /></div>
-                      <span>{t('answeredToday')}</span>
-                      <strong>{stats.doneTodayCount}</strong>
-                    </div>
-                    <div className="stat-card stat-card--accuracy">
-                      <div className="stat-emoji stat-emoji--accuracy"><Target size={18} strokeWidth={2.2} /></div>
-                      <span>{t('accuracyToday')}</span>
-                      <strong>{stats.accuracyTodayPercent}%</strong>
-                    </div>
-                    <div className="stat-card stat-card--notifications">
-                      <div className="stat-emoji stat-emoji--notifications"><Bell size={18} strokeWidth={2.2} /></div>
-                      <span>{t('notifications')}</span>
-                      <strong>{stats.notificationsSentToday} / {stats.dailyLimit}</strong>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="invite-row">
-                  <button className="invite-cta invite-cta--full" onClick={handleInvite}>
-                    <span className="invite-cta-main">
-                      <UserPlus size={18} />
-                      <span>{t('inviteButton')}</span>
-                    </span>
-                    <span className="invite-cta-badge">{me?.referralCount ?? 0}</span>
-                  </button>
-                </div>
-              </>
-            ) : (
-              <div className="notice" style={{ background: 'transparent', border: 'none', color: 'var(--text-muted)' }}>
-                {t('statsLoading')}
-              </div>
-            )}
-          </div>
+          <StatsSection
+            t={t}
+            lang={lang}
+            stats={stats}
+            referralCount={me?.referralCount ?? 0}
+            onInvite={handleInvite}
+          />
         )}
 
         {tab === 'words' && (
-          <div
-            key="words"
-            className="section"
-          >
-            <div className="panel" style={{ minHeight: '80vh' }}>
-              <div className="words-head">
-                <h2><Search size={20} /> {t('wordsTitle')}</h2>
-                {stats && (
-                  <span className="words-total-chip">
-                    {lang === 'uz' ? 'Jami:' : '\u0412\u0441\u0435\u0433\u043e:'} {stats.wordsTotal}
-                  </span>
-                )}
-              </div>
-              {stats && (
-                <div className="words-meta words-meta--status">
-                  <span className="words-meta-item words-meta-item--new">
-                    {getWordStatusLabel('new')}: {Math.max(0, stats.wordsTotal - stats.learnedTotal - stats.dueNowTotal)}
-                  </span>
-                  <span className="words-meta-separator">|</span>
-                  <span className="words-meta-item words-meta-item--due">{t('dueNow')}: {stats.dueNowTotal}</span>
-                  <span className="words-meta-separator">|</span>
-                  <span className="words-meta-item words-meta-item--learned">{t('learned')}: {stats.learnedTotal}</span>
-                </div>
-              )}
-              <div className="field word-search">
-                <input
-                  type="text"
-                  placeholder={t('wordsSearch')}
-                  value={query}
-                  onChange={(e) => setQuery(e.target.value)}
-                />
-              </div>
-              <div className="word-list" style={{ marginTop: 16 }}>
-                {words.length === 0 && !loading && (
-                  <div style={{ textAlign: 'center', padding: 40, color: 'var(--text-muted)' }}>
-                    <div style={{ marginBottom: 10 }}><BookOpen size={34} /></div>
-                    {t('wordsEmpty')}
+          <Suspense
+            fallback={(
+              <div key="words-fallback" className="section">
+                <div className="panel" style={{ minHeight: '80vh' }}>
+                  <div className="notice" style={{ background: 'transparent', border: 'none', color: 'var(--text-muted)' }}>
+                    {t('settingsLoading')}
                   </div>
-                )}
-                {words.map((word) => {
-                  const wordStatus = resolveWordStatus(word);
-                  return (
-                    <div key={word.id} className="word-item">
-                      <div className="word-main">
-                        <strong>{word.wordEn}</strong>
-                        <small>{word.translationRu}</small>
-                      </div>
-                      <div className="word-actions">
-                        <span className={`word-status word-status--${wordStatus}`}>
-                          {getWordStatusLabel(wordStatus)}
-                        </span>
-                        <button className="btn-danger btn-danger-icon" onClick={() => handleDelete(word.id)}>
-                          <Trash2 size={18} />
-                        </button>
-                      </div>
-                    </div>
-                  );
-                })}
-                {wordsHasMore && (
-                  <button
-                    type="button"
-                    className="btn-ghost btn-compact"
-                    style={{ marginTop: 10, width: '100%' }}
-                    disabled={wordsLoadingMore || loading}
-                    onClick={() => void loadMoreWords()}
-                  >
-                    {wordsLoadingMore
-                      ? (lang === 'uz' ? 'Yuklanmoqda...' : 'Загрузка...')
-                      : (lang === 'uz' ? "Yana ko'rsatish" : 'Показать ещё')}
-                  </button>
-                )}
+                </div>
               </div>
-            </div>
-          </div>
+            )}
+          >
+            <WordsSection
+              t={t}
+              lang={lang}
+              stats={stats}
+              loading={loading}
+              query={query}
+              setQuery={setQuery}
+              words={words}
+              wordsHasMore={wordsHasMore}
+              wordsLoadingMore={wordsLoadingMore}
+              onLoadMoreWords={() => { void loadMoreWords(); }}
+              onDeleteWord={handleDelete}
+              resolveWordStatus={resolveWordStatus}
+              getWordStatusLabel={getWordStatusLabel}
+            />
+          </Suspense>
         )}
 
         {tab === 'settings' && (
-          <div
-            key="settings"
-            className="section"
+          <Suspense
+            fallback={(
+              <div key="settings-fallback" className="section">
+                <div className="panel">
+                  <div className="notice" style={{ background: 'transparent', border: 'none', color: 'var(--text-muted)' }}>
+                    {t('settingsLoading')}
+                  </div>
+                </div>
+              </div>
+            )}
           >
-            <div className="panel">
-              <h2><Bell size={20} className="text-primary" /> {t('settingsTitle')}</h2>
-              {form ? (
-                <div className="grid">
-                  <div className="checkbox-field">
-                    <label>{t('notifyToggle')}</label>
-                    <label className="checkbox-wrapper">
-                      <input
-                        type="checkbox"
-                        checked={form.notificationsEnabled}
-                        onChange={(e) => setForm({ ...form, notificationsEnabled: e.target.checked })}
-                      />
-                      <span className="toggle-slider"></span>
-                    </label>
-                  </div>
-
-                  <div className="field">
-                    <label>{t('intervalLabel')}</label>
-                    <input
-                      type="text"
-                      inputMode="numeric"
-                      min={5}
-                      max={240}
-                      value={intervalInput}
-                      onChange={(e) => {
-                        const raw = sanitizeNumericInput(e.target.value);
-                        setIntervalInput(raw);
-                        const parsed = parseDraftNumber(raw);
-                        if (parsed !== null) {
-                          setForm({
-                            ...form,
-                            notificationIntervalMinutes: parsed,
-                          });
-                        }
-                      }}
-                      onBlur={() => {
-                        const parsed = parseDraftNumber(intervalInput);
-                        if (parsed === null) {
-                          setIntervalInput(String(form.notificationIntervalMinutes));
-                          return;
-                        }
-                        setIntervalInput(String(parsed));
-                      }}
-                    />
-                  </div>
-
-                  <div className="field">
-                    <label>{t('limitLabel')}</label>
-                    <input
-                      type="text"
-                      inputMode="numeric"
-                      min={5}
-                      max={40}
-                      value={limitInput}
-                      onChange={(e) => {
-                        const raw = sanitizeNumericInput(e.target.value);
-                        setLimitInput(raw);
-                        const parsed = parseDraftNumber(raw);
-                        if (parsed !== null) {
-                          setForm({
-                            ...form,
-                            maxNotificationsPerDay: parsed,
-                          });
-                        }
-                      }}
-                      onBlur={() => {
-                        const parsed = parseDraftNumber(limitInput);
-                        if (parsed === null) {
-                          setLimitInput(String(form.maxNotificationsPerDay));
-                          return;
-                        }
-                        setLimitInput(String(parsed));
-                      }}
-                    />
-                  </div>
-                </div>
-              ) : (
-                <div className="notice" style={{ background: 'transparent', border: 'none', color: 'var(--text-muted)' }}>{t('settingsLoading')}</div>
-              )}
-            </div>
-
-            <div className="panel">
-              <h2><Clock size={20} /> {t('quietHours')}</h2>
-              {form ? (
-                <div className="grid two">
-                  <div className="field">
-                    <label>{t('quietStart')}</label>
-                    <input
-                      type="time"
-                      value={minutesToTime(form.quietHoursStartMinutes)}
-                      onChange={(e) => {
-                        const minutes = timeToMinutes(e.target.value);
-                        if (minutes !== null) {
-                          setForm({ ...form, quietHoursStartMinutes: minutes });
-                        }
-                      }}
-                    />
-                  </div>
-                  <div className="field">
-                    <label>{t('quietEnd')}</label>
-                    <input
-                      type="time"
-                      value={minutesToTime(form.quietHoursEndMinutes)}
-                      onChange={(e) => {
-                        const minutes = timeToMinutes(e.target.value);
-                        if (minutes !== null) {
-                          setForm({ ...form, quietHoursEndMinutes: minutes });
-                        }
-                      }}
-                    />
-                  </div>
-                </div>
-              ) : (
-                <div className="notice" style={{ background: 'transparent', border: 'none', color: 'var(--text-muted)' }}>{t('settingsLoading')}</div>
-              )}
-            </div>
-
-            <div className="actions settings-actions">
-              <button className="btn-primary" onClick={saveSettings} disabled={loading}>
-                <Save size={18} /> {t('save')}
-              </button>
-            </div>
-            <div className="actions settings-actions settings-actions--secondary">
-              <button
-                type="button"
-                className="chip-btn settings-lang-btn"
-                onClick={() => persistLanguage(lang === 'ru' ? 'uz' : 'ru')}
-              >
-                <Languages size={16} />
-                <span>{lang === 'ru' ? t('languageRu') : t('languageUz')}</span>
-              </button>
-            </div>
-          </div>
+            <SettingsSection
+              t={t}
+              lang={lang}
+              form={form}
+              loading={loading}
+              intervalInput={intervalInput}
+              limitInput={limitInput}
+              quietStartValue={form ? minutesToTime(form.quietHoursStartMinutes) : ''}
+              quietEndValue={form ? minutesToTime(form.quietHoursEndMinutes) : ''}
+              onToggleNotifications={handleToggleNotifications}
+              onIntervalInputChange={handleIntervalInputChange}
+              onIntervalInputBlur={handleIntervalInputBlur}
+              onLimitInputChange={handleLimitInputChange}
+              onLimitInputBlur={handleLimitInputBlur}
+              onQuietStartChange={handleQuietStartChange}
+              onQuietEndChange={handleQuietEndChange}
+              onSave={() => { void saveSettings(); }}
+              onToggleLanguage={() => { void persistLanguage(lang === 'ru' ? 'uz' : 'ru'); }}
+            />
+          </Suspense>
         )}
-
         {tab === 'admin' && isAdmin && (
-          <div
-            key="admin"
-            className="section section--admin"
+          <Suspense
+            fallback={(
+              <div key="admin-fallback" className="section section--admin">
+                <div className="panel">
+                  <div className="admin-state admin-state--loading">{t('adminOverviewLoading')}</div>
+                </div>
+              </div>
+            )}
           >
-            <div className="admin-shell">
-              <div className="panel admin-top-panel">
-                <div className="admin-top-head">
-                  <h2 className="admin-title">
-                    <Shield size={18} />
-                    {t('adminTitle')}
-                  </h2>
-                  <button
-                    type="button"
-                    className="btn-ghost btn-compact admin-refresh-btn"
-                    onClick={() => void loadAdminOverview(true)}
-                    disabled={adminOverviewLoading}
-                  >
-                    <RotateCcw size={15} className={adminOverviewLoading ? 'spin' : ''} />
-                    <span className="admin-refresh-label">{t('adminOverview')}</span>
-                  </button>
-                </div>
-
-                {adminOverview ? (
-                  <div className="admin-metrics">
-                    <div className="admin-metric admin-metric--users">
-                      <div className="admin-metric-icon"><Users size={18} strokeWidth={2.2} /></div>
-                      <span>{t('adminTotalUsers')}</span>
-                      <strong>{adminOverview.totals.users}</strong>
-                    </div>
-                    <div className="admin-metric admin-metric--active">
-                      <div className="admin-metric-icon"><Zap size={18} strokeWidth={2.2} /></div>
-                      <span>{t('adminActiveToday')}</span>
-                      <strong>{adminOverview.activeToday}</strong>
-                    </div>
-                    <div className="admin-metric admin-metric--new">
-                      <div className="admin-metric-icon"><UserPlus size={18} strokeWidth={2.2} /></div>
-                      <span>{t('adminNew7Days')}</span>
-                      <strong>{adminOverview.newLast7Days}</strong>
-                    </div>
-                    <div className="admin-metric admin-metric--words">
-                      <div className="admin-metric-icon"><Book size={18} strokeWidth={2.2} /></div>
-                      <span>{t('adminTotalWords')}</span>
-                      <strong>{adminOverview.totals.words}</strong>
-                    </div>
-                    <div className="admin-metric admin-metric--notify">
-                      <div className="admin-metric-icon"><Bell size={18} strokeWidth={2.2} /></div>
-                      <span>{t('adminNotificationsToday')}</span>
-                      <strong>{adminOverview.totals.notificationsSentToday}</strong>
-                    </div>
-                  </div>
-                ) : (
-                  <div className={`admin-state ${adminOverviewError ? 'admin-state--error' : 'admin-state--loading'}`}>
-                    {adminOverviewError ? adminOverviewError : t('adminOverviewLoading')}
-                  </div>
-                )}
-              </div>
-
-              <div className="admin-main-grid">
-                <div className="panel admin-block admin-block--lookup">
-                  <h2><Search size={18} /> {t('adminLookupTitle')}</h2>
-                  <div className="admin-search">
-                    <input
-                      type="text"
-                      placeholder="ID / @username / name"
-                      value={adminQuery}
-                      onChange={(e) => {
-                        setAdminQuery(e.target.value);
-                        if (adminNotFound) setAdminNotFound(false);
-                        if (adminLookupError) setAdminLookupError('');
-                        if (adminUsersError) setAdminUsersError('');
-                      }}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') {
-                          e.preventDefault();
-                          void loadAdminUser();
-                        }
-                      }}
-                    />
-                    <div className="admin-search-actions">
-                      <button
-                        type="button"
-                        className="btn-primary btn-compact"
-                        onClick={() => void loadAdminUser()}
-                        disabled={adminLookupLoading || !adminQuery.trim()}
-                      >
-                        {adminLookupLoading ? t('adminLookupLoading') : t('adminSearchAction')}
-                      </button>
-                      <button
-                        type="button"
-                        className="btn-ghost btn-compact"
-                        onClick={clearAdminSearch}
-                        disabled={!adminQuery && !adminUser}
-                      >
-                        {t('adminSearchClear')}
-                      </button>
-                    </div>
-                  </div>
-                  {adminLookupLoading && (
-                    <div className="admin-state admin-state--loading">{t('adminLookupLoading')}</div>
-                  )}
-                  {adminLookupError && (
-                    <div className="admin-state admin-state--error">{adminLookupError || t('adminLookupError')}</div>
-                  )}
-                  {adminUsersError && (
-                    <div className="admin-state admin-state--error">{adminUsersError || t('adminLookupError')}</div>
-                  )}
-                  {adminNotFound && (
-                    <div className="admin-state admin-state--error">{t('adminNotFound')}</div>
-                  )}
-
-                  {adminUser && (
-                    <div className="admin-user-card admin-user-card--clean">
-                      <div className="admin-user-header">
-                        <div className="admin-user-left">
-                          <div className="admin-user-label">{t('adminUserDetails')}</div>
-                          {formatAdminCardPrimaryName(adminUser) && (
-                            <div className="admin-user-label" style={{ fontSize: 18, color: 'var(--text-main)' }}>
-                              {formatAdminCardPrimaryName(adminUser)}
-                            </div>
-                          )}
-                          {adminUser.tgUsername && (
-                            <div className="admin-user-label" style={{ textTransform: 'none', letterSpacing: 0, fontSize: 13 }}>
-                              @{adminUser.tgUsername}
-                            </div>
-                          )}
-                          <div className="admin-user-id-row">
-                            <div className="admin-user-id">{adminUser.id}</div>
-                          </div>
-                        </div>
-                        <div className="admin-user-date">
-                          <span>{t('adminFieldCreated')}</span>
-                          <strong>{formatDateTime(adminUser.createdAt)}</strong>
-                        </div>
-                      </div>
-
-                      <div className="admin-user-grid">
-                        <div className="admin-user-item">
-                          <span>{t('adminFieldWords')}</span>
-                          <strong>{adminUser.wordsCount}</strong>
-                        </div>
-                        <div className="admin-user-item">
-                          <span>{t('adminFieldLearned')}</span>
-                          <strong>{adminUser.learnedCount}</strong>
-                        </div>
-                        <div className="admin-user-item">
-                          <span>{t('adminFieldPostponed')}</span>
-                          <strong>{adminUser.postponedCount}</strong>
-                        </div>
-                      </div>
-                    </div>
-                  )}
-
-                  <div style={{ marginTop: 14 }}>
-                    <div className="admin-user-label">{adminUsersTitle}</div>
-                    {adminUsersLoading ? (
-                      <div className="admin-state admin-state--loading">{t('adminLookupLoading')}</div>
-                    ) : adminUsers.length > 0 ? (
-                      <>
-                        <div className="admin-recent-list-clean">
-                          {adminUsers.map((item) => (
-                            <button
-                              key={item.id}
-                              type="button"
-                              className="admin-recent-row-clean"
-                              onClick={() => {
-                                setAdminQuery(item.id);
-                                void openAdminUser(item.id);
-                              }}
-                            >
-                              <div className="admin-recent-col">
-                                <span>Name</span>
-                                <strong>{formatAdminName(item)}</strong>
-                              </div>
-                              <div className="admin-recent-col">
-                                <span>@</span>
-                                <strong>{item.tgUsername ? `@${item.tgUsername}` : '-'}</strong>
-                              </div>
-                              <div className="admin-recent-col admin-recent-col--id">
-                                <span>{t('adminFieldId')}</span>
-                                <strong>{item.id}</strong>
-                              </div>
-                              <div className="admin-recent-col admin-recent-col--date">
-                                <span>{t('adminFieldCreated')}</span>
-                                <strong>{formatDateOnly(item.createdAt)}</strong>
-                              </div>
-                            </button>
-                          ))}
-                        </div>
-                        {adminUsersHasMore && (
-                          <button
-                            type="button"
-                            className="btn-ghost btn-compact"
-                            style={{ marginTop: 10, width: '100%' }}
-                            disabled={adminUsersLoading}
-                            onClick={() => void loadMoreAdminUsers()}
-                          >
-                            {lang === 'uz' ? "Yana ko'rsatish" : 'Показать ещё'}
-                          </button>
-                        )}
-                      </>
-                    ) : (
-                      <div className="admin-state admin-state--loading">{t('adminRecentEmpty')}</div>
-                    )}
-                  </div>
-                </div>
-
-                <div className="panel admin-block admin-block--broadcast">
-                  <h2><Bell size={18} /> {t('adminBroadcastTitle')}</h2>
-                  <div className="admin-message">
-                    <textarea
-                      rows={4}
-                      placeholder={t('adminBroadcastPlaceholder')}
-                      value={adminBroadcastMessage}
-                      onChange={(e) => {
-                        setAdminBroadcastMessage(e.target.value);
-                        if (adminBroadcastError) setAdminBroadcastError('');
-                      }}
-                    />
-                    <div className={`admin-counter ${broadcastOverLimit ? 'is-warn' : ''}`}>
-                      {broadcastCounter}
-                    </div>
-                    <div className="admin-message-row">
-                      <label>{t('adminBroadcastPhotoLabel')}</label>
-                      <input
-                        type="text"
-                        placeholder="https://example.com/photo.jpg"
-                        value={adminBroadcastPhoto}
-                        onChange={(e) => {
-                          setAdminBroadcastPhoto(e.target.value);
-                          if (adminBroadcastError) setAdminBroadcastError('');
-                        }}
-                      />
-                      <small>{t('adminBroadcastPhotoHint')}</small>
-                    </div>
-                    <button
-                      type="button"
-                      className="btn-primary btn-compact btn-admin-send"
-                      onClick={() => void sendAdminBroadcast()}
-                      disabled={adminBroadcastLoading || broadcastOverLimit || (!adminBroadcastMessage.trim() && !adminBroadcastPhoto.trim())}
-                    >
-                      {adminBroadcastLoading ? t('adminBroadcastSending') : t('adminBroadcastSend')}
-                    </button>
-                  </div>
-                  {adminBroadcastNotice && (
-                    <div className="admin-message-note">{adminBroadcastNotice}</div>
-                  )}
-                  {adminBroadcastError && (
-                    <div className="admin-state admin-state--error">{adminBroadcastError}</div>
-                  )}
-                </div>
-              </div>
-
-            </div>
-          </div>
+            <AdminSection
+              t={t}
+              lang={lang}
+              adminOverview={adminOverview}
+              adminOverviewLoading={adminOverviewLoading}
+              adminOverviewError={adminOverviewError}
+              adminQuery={adminQuery}
+              setAdminQuery={setAdminQuery}
+              adminNotFound={adminNotFound}
+              setAdminNotFound={setAdminNotFound}
+              adminLookupError={adminLookupError}
+              setAdminLookupError={setAdminLookupError}
+              adminUsersError={adminUsersError}
+              setAdminUsersError={setAdminUsersError}
+              adminLookupLoading={adminLookupLoading}
+              adminUsersLoading={adminUsersLoading}
+              adminUsers={adminUsers}
+              adminUsersHasMore={adminUsersHasMore}
+              adminUser={adminUser}
+              adminUsersTitle={adminUsersTitle}
+              adminBroadcastMessage={adminBroadcastMessage}
+              setAdminBroadcastMessage={setAdminBroadcastMessage}
+              adminBroadcastPhoto={adminBroadcastPhoto}
+              setAdminBroadcastPhoto={setAdminBroadcastPhoto}
+              adminBroadcastLoading={adminBroadcastLoading}
+              adminBroadcastNotice={adminBroadcastNotice}
+              adminBroadcastError={adminBroadcastError}
+              setAdminBroadcastError={setAdminBroadcastError}
+              broadcastOverLimit={broadcastOverLimit}
+              broadcastCounter={broadcastCounter}
+              onRefreshOverview={() => { void loadAdminOverview(true); }}
+              onLoadAdminUser={() => { void loadAdminUser(); }}
+              onClearAdminSearch={clearAdminSearch}
+              onOpenAdminUser={(id) => { void openAdminUser(id); }}
+              onLoadMoreAdminUsers={() => { void loadMoreAdminUsers(); }}
+              onSendAdminBroadcast={() => { void sendAdminBroadcast(); }}
+              formatAdminCardPrimaryName={formatAdminCardPrimaryName}
+              formatAdminName={formatAdminName}
+              formatDateTime={formatDateTime}
+              formatDateOnly={formatDateOnly}
+            />
+          </Suspense>
         )}
       </>
 
@@ -1499,3 +1183,4 @@ const App = () => {
 };
 
 export default App;
+

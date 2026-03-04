@@ -59,6 +59,7 @@ const buildPrompt = (
     return [
         `Generate exactly ${count} simple, short English sentences (5-8 words each) using the word "${wordEn}" in the meaning "${translation}".`,
         `For each sentence, provide the ${langLabel} translation.`,
+        `The ${langLabel} sentence MUST include the exact phrase "${translation}" (same spelling, case may differ).`,
         'Use everyday vocabulary. No idioms, no complex grammar.',
         ...(avoidBlock ? [avoidBlock] : []),
         'Return ONLY a JSON array with no markdown or code fences.',
@@ -89,7 +90,9 @@ const parseGeminiText = (data: GeminiResponse | null): string | null => {
     return parts.map((p) => p.text ?? '').join(' ').trim() || null;
 };
 
-const isValidSentence = (item: unknown, wordEn: string): item is ExampleSentence => {
+const normalizeComparable = (value: string): string => value.toLowerCase().replace(/\s+/g, ' ').trim();
+
+const isValidSentence = (item: unknown, wordEn: string, translation: string): item is ExampleSentence => {
     if (!item || typeof item !== 'object') return false;
     const obj = item as Record<string, unknown>;
     if (typeof obj.en !== 'string' || typeof obj.native !== 'string') return false;
@@ -99,7 +102,11 @@ const isValidSentence = (item: unknown, wordEn: string): item is ExampleSentence
     // The word must appear in the English sentence (case-insensitive)
     const lower = obj.en.toLowerCase();
     const wordLower = wordEn.toLowerCase();
-    return lower.includes(wordLower);
+    const nativeLower = normalizeComparable(obj.native);
+    const targetLower = normalizeComparable(translation);
+    if (!targetLower) return lower.includes(wordLower);
+
+    return lower.includes(wordLower) && nativeLower.includes(targetLower);
 };
 
 // ---------------------------------------------------------------------------
@@ -144,7 +151,7 @@ export const generateSentences = async (
     const arr = extractJsonArray(rawText);
     if (!arr) return null;
 
-    const valid = arr.filter((item) => isValidSentence(item, wordEn)) as ExampleSentence[];
+    const valid = arr.filter((item) => isValidSentence(item, wordEn, translation)) as ExampleSentence[];
     return valid.length > 0 ? valid.slice(0, requestedCount) : null;
 };
 

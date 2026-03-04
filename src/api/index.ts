@@ -115,8 +115,7 @@ app.use(express.json());
 
 const botToken = process.env.BOT_TOKEN ?? '';
 const maxAgeSeconds = parseInt(process.env.INIT_DATA_MAX_AGE_SECONDS ?? '86400', 10);
-const allowDev = process.env.NODE_ENV === 'development' || process.env.ALLOW_DEV_AUTH === 'true';
-const devUserId = process.env.DEV_USER_ID;
+const allowDev = process.env.ALLOW_DEV_AUTH === 'true' && process.env.NODE_ENV !== 'production';
 const adminTelegramId = (() => {
   const raw = (process.env.ADMIN_TELEGRAM_ID ?? '467595754').trim();
   try {
@@ -135,7 +134,7 @@ app.use('/api', async (req, res, next) => {
   const initData = req.header('x-telegram-init-data') ?? '';
   if (!initData) {
     if (allowDev) {
-      const devIdRaw = req.header('x-dev-user-id') ?? devUserId;
+      const devIdRaw = req.header('x-dev-user-id');
       if (devIdRaw) {
         const devId = Number(devIdRaw);
         if (Number.isFinite(devId) && devId > 0) {

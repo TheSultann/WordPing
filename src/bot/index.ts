@@ -332,11 +332,7 @@ bot.start(async (ctx) => {
   }
   await ensureSession(user.id);
   await setState(user.id, 'IDLE', { payload: { onboarding: { step: 'lang' } } });
-  const chooseLangRu = t('ru', 'chooseLang');
-  const chooseLangUz = t('uz', 'chooseLang');
-  const chooseLangText = chooseLangRu === chooseLangUz
-    ? chooseLangRu
-    : `${chooseLangRu}\n\n${chooseLangUz}`;
+  const chooseLangText = t('ru', 'chooseLang');
   await ctx.reply(chooseLangText, { parse_mode: 'HTML', ...languageKeyboard });
 });
 
@@ -397,7 +393,7 @@ bot.hears(NEWS_DIGEST_BUTTONS, async (ctx) => {
   const user = await ensureUser(ctx.from.id, toTelegramProfile(ctx.from));
   const lang = ((user.language as Lang) || 'ru');
   try {
-    const digest = await buildUserNewsDigest(user.id, 3);
+    const digest = await buildUserNewsDigest(user.id);
 
     if (!digest.length) {
       await ctx.reply(NEWS_DIGEST_FALLBACK_TEXT_BY_LANG[lang], {

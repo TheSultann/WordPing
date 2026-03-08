@@ -41,11 +41,14 @@ const sliceAroundTerm = (value: string, term: string, maxChars: number): string 
 
 const hasHighlightedWord = (value: string): boolean => /<b>.*?<\/b>/i.test(value);
 
-export const buildUserNewsDigest = async (userId: bigint, limit = 3): Promise<NewsDigestItem[]> => {
-  const limitCount = Math.max(1, limit);
-  const fetchCount = Math.min(30, Math.max(limitCount * 6, limitCount));
+export const buildUserNewsDigest = async (
+  userId: bigint,
+  limit?: number | null
+): Promise<NewsDigestItem[]> => {
+  const limitCount = typeof limit === 'number' && Number.isFinite(limit) && limit > 0
+    ? Math.floor(limit)
+    : null;
 
-  // Fetch a larger random pool; we may skip rows that do not contain a visible match.
   const selectedRows = await prisma.$queryRaw<{
     id: number;
     wordEn: string;
@@ -64,8 +67,7 @@ export const buildUserNewsDigest = async (userId: bigint, limit = 3): Promise<Ne
         SELECT 1 FROM "Review" 
         WHERE "Review"."wordId" = "Word".id AND "Review".stage >= ${NEWS_STAGE_THRESHOLD}
       )
-    ORDER BY random()
-    LIMIT ${fetchCount}
+    ORDER BY "newsExamplePreparedAt" DESC NULLS LAST, id DESC
   `;
 
   await prisma.user.updateMany({
@@ -76,7 +78,7 @@ export const buildUserNewsDigest = async (userId: bigint, limit = 3): Promise<Ne
   const digest: NewsDigestItem[] = [];
 
   for (const word of selectedRows) {
-    if (digest.length >= limitCount) break;
+    if (limitCount !== null && digest.length >= limitCount) break;
 
     const matchedWord = normalizeSpaces(word.newsExampleMatchedWord ?? '');
     const fallbackWord = normalizeSpaces(word.wordEn);

@@ -37,6 +37,7 @@ import {
   DEFAULT_QUIET_END,
   MIN_NOTIFICATION_INTERVAL,
 } from '../services/userService';
+import { blankTargetInSentence, highlightTargetInSentence } from '../utils/reviewCardText';
 
 const token = process.env.BOT_TOKEN;
 if (!token) {
@@ -148,8 +149,6 @@ const registerNotification = async (user: any) => {
     },
   });
 };
-
-const escapeRegex = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 const buildMaskedHint = (value: string, revealIndexes: number[]) => {
   const chars = Array.from(value);
@@ -333,16 +332,9 @@ export const processUser = async (user: any) => {
     const isBlankStage = review.stage >= 7;
     if (direction === 'EN_TO_RU') {
       // EN -> native: work from English sentence context.
-      let enLine: string;
-      if (!isBlankStage) {
-        enLine = escapeHtml(sentence.en).replace(
-          new RegExp(`(${escapeRegex(wordEn)})`, 'gi'),
-          '<u><b>$1</b></u>'
-        );
-      } else {
-        const regex = new RegExp(escapeRegex(wordEn), 'gi');
-        enLine = escapeHtml(sentence.en.replace(regex, '___'));
-      }
+      const enLine = isBlankStage
+        ? blankTargetInSentence(sentence.en, wordEn)
+        : highlightTargetInSentence(sentence.en, wordEn);
       const targetKey = lang === 'uz' ? 'worker.answerTarget.uzbek' : 'worker.answerTarget.russian';
       const sentenceBlock = `🗣 ${enLine}`;
       cardText = `${t(lang, 'worker.rememberWord')}\n\n${sentenceBlock}\n${t(lang, targetKey)}`;
@@ -350,11 +342,8 @@ export const processUser = async (user: any) => {
       // Native -> EN: show native sentence only, never leak English answer.
       const nativeTarget = review.word.translationRu;
       const nativeLine = isBlankStage
-        ? escapeHtml(sentence.native.replace(new RegExp(escapeRegex(nativeTarget), 'gi'), '___'))
-        : escapeHtml(sentence.native).replace(
-          new RegExp(`(${escapeRegex(nativeTarget)})`, 'gi'),
-          '<u><b>$1</b></u>'
-        );
+        ? blankTargetInSentence(sentence.native, nativeTarget)
+        : highlightTargetInSentence(sentence.native, nativeTarget);
       const sentenceBlock = `🗣 ${nativeLine}`;
       cardText = `${t(lang, 'worker.rememberWord')}\n\n${sentenceBlock}\n${t(lang, 'worker.answerTarget.english')}`;
     }

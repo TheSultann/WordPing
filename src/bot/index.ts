@@ -28,6 +28,7 @@ import { checkAutoTranslateQuota, commitAutoTranslateQuota } from '../services/t
 import { CardDirection, Prisma, ReviewResult } from '../generated/prisma/client';
 import { checkAnswer } from '../services/answerChecker';
 import { Rating } from '../services/reviewScheduler';
+import { buildUserNewsDigest, type NewsDigestItem } from '../services/newsFallbackService';
 import { minutesToTimeString } from '../utils/time';
 import { normalizeWhitespace } from '../utils/text';
 import {
@@ -37,6 +38,7 @@ import {
   MIN_NOTIFICATIONS_PER_DAY,
   MAX_NOTIFICATION_INTERVAL,
 } from '../services/userService';
+import { blankTargetInSentence, highlightTargetInSentence } from '../utils/reviewCardText';
 import { t, hasLang, Lang } from '../i18n';
 
 const token = process.env.BOT_TOKEN;
@@ -59,18 +61,98 @@ const confirmKeyboard = (lang: Lang) => Markup.inlineKeyboard([
   [Markup.button.callback(t(lang, 'btn.cancel'), 'add_cancel')],
 ]);
 
-const webAppUrl = process.env.WEBAPP_URL;
-const webAppLabel = (lang: Lang) => (lang === 'uz' ? 'Ilova' : 'Приложение');
-
-const mainReplyKeyboard = (lang: Lang) => {
-  if (webAppUrl) {
-    return Markup.keyboard([
-      [Markup.button.webApp(webAppLabel(lang), webAppUrl)]
-    ]).resize().persistent(true);
+const rawWebAppUrl = (process.env.WEBAPP_URL ?? '').trim();
+const parseHttpsUrl = (value: string): string | undefined => {
+  if (!value) return undefined;
+  try {
+    const url = new URL(value);
+    return url.protocol === 'https:' ? url.toString() : undefined;
+  } catch {
+    return undefined;
   }
-  return Markup.keyboard([[t(lang, 'btn.settings'), t(lang, 'btn.stats')]]).resize().persistent(true);
+};
+const webAppUrl = parseHttpsUrl(rawWebAppUrl);
+const webAppUnavailableText = rawWebAppUrl
+  ? 'WEBAPP_URL must be HTTPS (Telegram does not allow http://).'
+  : 'WEBAPP_URL is not set';
+if (rawWebAppUrl && !webAppUrl) {
+  console.warn('[bot] WEBAPP_URL ignored because it is not HTTPS:', rawWebAppUrl);
+}
+const webAppLabel = (lang: Lang) => (lang === 'uz' ? 'Ilova' : 'Приложение');
+const NEWS_DIGEST_BUTTON_BY_LANG: Record<Lang, string> = {
+  ru: '\u{1F4F0} \u041F\u043E\u0447\u0438\u0442\u0430\u0442\u044C \u043D\u043E\u0432\u043E\u0441\u0442\u0438',
+  uz: '\u{1F4F0} Yangiliklarni o\u2018qish',
+};
+const NEWS_DIGEST_BUTTONS = Object.values(NEWS_DIGEST_BUTTON_BY_LANG);
+const NEWS_DIGEST_CARD_TITLE_BY_LANG: Record<Lang, string> = {
+  ru: '\u{1F4F0} \u041D\u043E\u0432\u043E\u0441\u0442\u044C \u0434\u043D\u044F',
+  uz: '\u{1F4F0} Kun yangiligi',
+};
+const NEWS_READ_FULL_LABEL_BY_LANG: Record<Lang, string> = {
+  ru: '\u0427\u0438\u0442\u0430\u0442\u044C \u043E\u0440\u0438\u0433\u0438\u043D\u0430\u043B',
+  uz: 'To\u2018liq o\u2018qish',
+};
+const NEWS_SOURCE_LABEL_BY_LANG: Record<Lang, string> = {
+  ru: '\u0418\u0441\u0442\u043E\u0447\u043D\u0438\u043A',
+  uz: 'Manba',
+};
+const NEWS_DIGEST_FALLBACK_TEXT_BY_LANG: Record<Lang, string> = {
+  ru: '\u{1F4F0} \u041F\u043E\u043A\u0430 \u043D\u0435\u0442 \u0433\u043E\u0442\u043E\u0432\u044B\u0445 \u043D\u043E\u0432\u043E\u0441\u0442\u043D\u044B\u0445 \u043F\u0440\u0438\u043C\u0435\u0440\u043E\u0432. \u041F\u043E\u043F\u0440\u043E\u0431\u0443\u0439\u0442\u0435 \u0447\u0443\u0442\u044C \u043F\u043E\u0437\u0436\u0435.',
+  uz: '\u{1F4F0} Hozircha tayyor yangilik namunalar yo\u2018q. Birozdan keyin urinib ko\u2018ring.',
+};
+const NEWS_DIGEST_STALE_TEXT_BY_LANG: Record<Lang, string> = {
+  ru: '\u0414\u0430\u0439\u0434\u0436\u0435\u0441\u0442 \u0443\u0441\u0442\u0430\u0440\u0435\u043B, \u043E\u0442\u043A\u0440\u043E\u0439\u0442\u0435 \u043D\u043E\u0432\u043E\u0441\u0442\u0438 \u0441\u043D\u043E\u0432\u0430',
+  uz: 'Dayjest eskirdi, yangiliklarni qayta oching',
+};
+const NEWS_NAV_PREV_CALLBACK = 'newsnav:prev';
+const NEWS_NAV_NEXT_CALLBACK = 'newsnav:next';
+const NEWS_NAV_NOOP_CALLBACK = 'newsnav:noop';
+const NEWS_NAV_PREV_LABEL_BY_LANG: Record<Lang, string> = {
+  ru: '⬅️ Назад',
+  uz: '⬅️ Orqaga',
+};
+const NEWS_NAV_NEXT_LABEL_BY_LANG: Record<Lang, string> = {
+  ru: 'Вперёд ➡️',
+  uz: 'Oldinga ➡️',
 };
 
+type NewsDigestNavItem = Pick<NewsDigestItem, 'wordId' | 'wordEn' | 'translation' | 'highlightedText' | 'sourceUrl' | 'sourceTitle'>;
+
+const isNewsDigestNavItem = (value: unknown): value is NewsDigestNavItem => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const item = value as Record<string, unknown>;
+  return (
+    typeof item.wordId === 'number' &&
+    typeof item.wordEn === 'string' &&
+    typeof item.highlightedText === 'string' &&
+    (item.translation === null || typeof item.translation === 'string') &&
+    (item.sourceUrl === null || typeof item.sourceUrl === 'string') &&
+    (item.sourceTitle === undefined || item.sourceTitle === null || typeof item.sourceTitle === 'string')
+  );
+};
+
+const newsDigestInlineKeyboard = (lang: Lang, index: number, total: number) =>
+  Markup.inlineKeyboard([
+    [
+      Markup.button.callback(NEWS_NAV_PREV_LABEL_BY_LANG[lang], NEWS_NAV_PREV_CALLBACK),
+      Markup.button.callback(`${Math.max(1, index + 1)} / ${Math.max(1, total)}`, NEWS_NAV_NOOP_CALLBACK),
+      Markup.button.callback(NEWS_NAV_NEXT_LABEL_BY_LANG[lang], NEWS_NAV_NEXT_CALLBACK),
+    ],
+  ]);
+
+const renderNewsDigestCard = (lang: Lang, item: NewsDigestNavItem): string => {
+  const translationPart = item.translation?.trim() ? ` - ${escapeHtml(item.translation.trim())}` : '';
+  const context = item.highlightedText;
+  const sourceLine = item.sourceUrl
+    ? `\n\n🔗 <a href="${escapeHtml(item.sourceUrl)}">${escapeHtml(NEWS_READ_FULL_LABEL_BY_LANG[lang])}</a>`
+    : (item.sourceTitle?.trim()
+      ? `\n\n🔎 ${escapeHtml(NEWS_SOURCE_LABEL_BY_LANG[lang])}: ${escapeHtml(item.sourceTitle.trim())}`
+      : '');
+  return `<b>${NEWS_DIGEST_CARD_TITLE_BY_LANG[lang]}</b>\n\n💡 <b>${escapeHtml(item.wordEn)}</b>${translationPart}\n\n${context}${sourceLine}`;
+};
+
+const mainReplyKeyboard = (lang: Lang) =>
+  Markup.keyboard([[NEWS_DIGEST_BUTTON_BY_LANG[lang]]]).resize().persistent(true);
 const openWebAppKeyboard = (lang: Lang) =>
   webAppUrl
     ? Markup.inlineKeyboard([[Markup.button.webApp(webAppLabel(lang), webAppUrl)]])
@@ -88,10 +170,10 @@ const toTelegramProfile = (from?: Context['from']): TelegramProfile | undefined 
 
 
 const flagForDetectedLang = (detected: 'ru' | 'uz' | 'en', ambiguous = false) => {
-  if (ambiguous) return '🌐';
-  if (detected === 'ru') return '🇷🇺';
-  if (detected === 'uz') return '🇺🇿';
-  return '🇺🇸';
+  if (ambiguous) return '\u{1F310}';
+  if (detected === 'ru') return '\u{1F1F7}\u{1F1FA}';
+  if (detected === 'uz') return '\u{1F1FA}\u{1F1FF}';
+  return '\u{1F1FA}\u{1F1F8}';
 };
 
 const formatPairLine = (
@@ -263,7 +345,7 @@ bot.command('app', async (ctx) => {
   const user = await ensureUser(ctx.from.id, toTelegramProfile(ctx.from));
   const lang = (user.language as Lang) || 'ru';
   if (!webAppUrl) {
-    await ctx.reply('WEBAPP_URL is not set', { parse_mode: 'HTML' });
+    await ctx.reply(webAppUnavailableText, { parse_mode: 'HTML' });
     return;
   }
   await ctx.reply(lang === 'uz' ? 'Ilovani oching' : 'Открой приложение', {
@@ -285,21 +367,7 @@ bot.command('settings', async (ctx) => {
   const user = await ensureUser(ctx.from.id, toTelegramProfile(ctx.from));
   const lang = (user.language as Lang) || 'ru';
   if (!webAppUrl) {
-    await ctx.reply('WEBAPP_URL is not set', { parse_mode: 'HTML' });
-    return;
-  }
-  await ctx.reply(lang === 'uz' ? 'Sozlamalar ilovada' : 'Настройки в приложении', {
-    parse_mode: 'HTML',
-    ...openWebAppKeyboard(lang),
-  });
-});
-
-bot.hears([t('ru', 'btn.settings'), t('uz', 'btn.settings')], async (ctx) => {
-  if (!ctx.from) return;
-  const user = await ensureUser(ctx.from.id, toTelegramProfile(ctx.from));
-  const lang = (user.language as Lang) || 'ru';
-  if (!webAppUrl) {
-    await ctx.reply('WEBAPP_URL is not set', { parse_mode: 'HTML' });
+    await ctx.reply(webAppUnavailableText, { parse_mode: 'HTML' });
     return;
   }
   await ctx.reply(lang === 'uz' ? 'Sozlamalar ilovada' : 'Настройки в приложении', {
@@ -313,7 +381,7 @@ bot.command('stats', async (ctx) => {
   const user = await ensureUser(ctx.from.id, toTelegramProfile(ctx.from));
   const lang = (user.language as Lang) || 'ru';
   if (!webAppUrl) {
-    await ctx.reply('WEBAPP_URL is not set', { parse_mode: 'HTML' });
+    await ctx.reply(webAppUnavailableText, { parse_mode: 'HTML' });
     return;
   }
   await ctx.reply(lang === 'uz' ? 'Statistika ilovada' : 'Статистика в приложении', {
@@ -322,18 +390,63 @@ bot.command('stats', async (ctx) => {
   });
 });
 
-bot.hears([t('ru', 'btn.stats'), t('uz', 'btn.stats')], async (ctx) => {
+
+bot.hears(NEWS_DIGEST_BUTTONS, async (ctx) => {
   if (!ctx.from) return;
+
   const user = await ensureUser(ctx.from.id, toTelegramProfile(ctx.from));
-  const lang = (user.language as Lang) || 'ru';
-  if (!webAppUrl) {
-    await ctx.reply('WEBAPP_URL is not set', { parse_mode: 'HTML' });
-    return;
+  const lang = ((user.language as Lang) || 'ru');
+  try {
+    const digest = await buildUserNewsDigest(user.id, 3);
+
+    if (!digest.length) {
+      await ctx.reply(NEWS_DIGEST_FALLBACK_TEXT_BY_LANG[lang], {
+        parse_mode: 'HTML',
+        ...mainReplyKeyboard(lang),
+      });
+      return;
+    }
+
+    const session = await ensureSession(BigInt(user.id));
+    const payloadBase = (session.payload && typeof session.payload === 'object' && !Array.isArray(session.payload))
+      ? (session.payload as Record<string, unknown>)
+      : {};
+    const digestItems: NewsDigestNavItem[] = digest.map((item) => ({
+      wordId: item.wordId,
+      wordEn: item.wordEn,
+      translation: item.translation,
+      highlightedText: item.highlightedText,
+      sourceUrl: item.sourceUrl,
+      sourceTitle: item.sourceTitle,
+    }));
+    await prisma.userSession.update({
+      where: { userId: BigInt(user.id) },
+      data: {
+        payload: {
+          ...payloadBase,
+          newsDigest: {
+            items: digestItems,
+            index: 0,
+            updatedAt: new Date().toISOString(),
+          },
+        } as Prisma.InputJsonValue,
+      },
+    });
+
+    const text = renderNewsDigestCard(lang, digestItems[0]!);
+
+    await ctx.reply(text, {
+      parse_mode: 'HTML',
+      link_preview_options: { is_disabled: true },
+      ...newsDigestInlineKeyboard(lang, 0, digestItems.length),
+    });
+  } catch (error) {
+    console.error('[bot] news digest failed', { userId: user.id, error });
+    await ctx.reply(NEWS_DIGEST_FALLBACK_TEXT_BY_LANG[lang], {
+      parse_mode: 'HTML',
+      ...mainReplyKeyboard(lang),
+    });
   }
-  await ctx.reply(lang === 'uz' ? 'Statistika ilovada' : 'Статистика в приложении', {
-    parse_mode: 'HTML',
-    ...openWebAppKeyboard(lang),
-  });
 });
 
 bot.on('text', async (ctx) => {
@@ -559,15 +672,16 @@ bot.on('text', async (ctx) => {
       await setNotificationInterval(userId, value);
       await resetState(BigInt(userId));
       if (inOnboarding) {
-        // Final step of onboarding: Show success, show instructions, reveal keyboard
-        await ctx.reply(t(effectiveLang, 'onboarding.finished', { value }), { parse_mode: 'HTML' });
+        // Final step of onboarding: Show success and reveal keyboard
+        await ctx.reply(t(effectiveLang, 'onboarding.finished', { value }), {
+          parse_mode: 'HTML',
+          ...mainReplyKeyboard(effectiveLang),
+        });
         if (webAppUrl) {
           await ctx.reply(
             effectiveLang === 'uz' ? 'Sozlamalar va statistika ilovada' : 'Настройки и статистика в приложении',
             { parse_mode: 'HTML', ...openWebAppKeyboard(effectiveLang) }
           );
-        } else {
-          await ctx.reply(t(effectiveLang, 'onboarding.menuTip'), { parse_mode: 'HTML', ...mainReplyKeyboard(effectiveLang) });
         }
         // Do NOT send settings menu here
       } else {
@@ -744,7 +858,7 @@ bot.on('text', async (ctx) => {
       break;
     }
     default:
-      if (text.startsWith('/')) return; // игнорируем другие команды
+      if (text.startsWith('/')) return; // РёРіРЅРѕСЂРёСЂСѓРµРј РґСЂСѓРіРёРµ РєРѕРјР°РЅРґС‹
       await handleAddFlow(text);
       break;
   }
@@ -782,6 +896,60 @@ bot.on('callback_query', async (ctx) => {
       }),
       { parse_mode: 'HTML' }
     );
+    return;
+  }
+
+  if (data === NEWS_NAV_PREV_CALLBACK || data === NEWS_NAV_NEXT_CALLBACK || data === NEWS_NAV_NOOP_CALLBACK) {
+    const user = await ensureUser(userId, toTelegramProfile(ctx.from));
+    const lang = (user.language as Lang) || 'ru';
+
+    const payload = (session.payload && typeof session.payload === 'object' && !Array.isArray(session.payload))
+      ? (session.payload as Record<string, unknown>)
+      : null;
+    const digestPayload = (payload?.newsDigest && typeof payload.newsDigest === 'object' && !Array.isArray(payload.newsDigest))
+      ? (payload.newsDigest as Record<string, unknown>)
+      : null;
+    const rawItems = Array.isArray(digestPayload?.items) ? digestPayload.items : [];
+    const items = rawItems.filter(isNewsDigestNavItem);
+
+    if (!items.length) {
+      await ctx.answerCbQuery(NEWS_DIGEST_STALE_TEXT_BY_LANG[lang]);
+      return;
+    }
+
+    const currentIndex = (typeof digestPayload?.index === 'number' && Number.isFinite(digestPayload.index))
+      ? Math.max(0, Math.min(items.length - 1, digestPayload.index))
+      : 0;
+
+    if (data === NEWS_NAV_NOOP_CALLBACK) {
+      await ctx.answerCbQuery(`${currentIndex + 1}/${items.length}`);
+      return;
+    }
+
+    const step = data === NEWS_NAV_NEXT_CALLBACK ? 1 : -1;
+    const nextIndex = (currentIndex + step + items.length) % items.length;
+    const payloadBase = payload ?? {};
+
+    await prisma.userSession.update({
+      where: { userId: BigInt(userId) },
+      data: {
+        payload: {
+          ...payloadBase,
+          newsDigest: {
+            items,
+            index: nextIndex,
+            updatedAt: new Date().toISOString(),
+          },
+        } as Prisma.InputJsonValue,
+      },
+    });
+
+    await ctx.editMessageText(renderNewsDigestCard(lang, items[nextIndex]!), {
+      parse_mode: 'HTML',
+      link_preview_options: { is_disabled: true },
+      ...newsDigestInlineKeyboard(lang, nextIndex, items.length),
+    });
+    await ctx.answerCbQuery(`${nextIndex + 1}/${items.length}`);
     return;
   }
 
@@ -1052,7 +1220,7 @@ bot.on('callback_query', async (ctx) => {
 
     const nextSentence = getSentenceForReview(review.word);
     if (!nextSentence) {
-      // No sentences left — fallback, worker will handle
+      // No sentences left - fallback, worker will handle
       payload.swapData = null;
       await prisma.userSession.update({
         where: { userId: BigInt(userId) },
@@ -1063,32 +1231,22 @@ bot.on('callback_query', async (ctx) => {
     }
 
     // Build new card text (replicate worker logic)
-    const escRegex = (v: string) => v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const direction = session.direction!;
     const wordEn = review.word.wordEn;
     const isBlankStage = review.stage >= 7;
     let cardText: string;
 
     if (direction === 'EN_TO_RU') {
-      let enLine: string;
-      if (!isBlankStage) {
-        enLine = escapeHtml(nextSentence.sentence.en).replace(
-          new RegExp(`(${escRegex(wordEn)})`, 'gi'),
-          '<u><b>$1</b></u>'
-        );
-      } else {
-        enLine = escapeHtml(nextSentence.sentence.en.replace(new RegExp(escRegex(wordEn), 'gi'), '___'));
-      }
+      const enLine = isBlankStage
+        ? blankTargetInSentence(nextSentence.sentence.en, wordEn)
+        : highlightTargetInSentence(nextSentence.sentence.en, wordEn);
       const targetKey = lang === 'uz' ? 'worker.answerTarget.uzbek' : 'worker.answerTarget.russian';
       cardText = `${t(lang, 'worker.rememberWord')}\n\n🗣 ${enLine}\n${t(lang, targetKey)}`;
     } else {
       const nativeTarget = review.word.translationRu;
       const nativeLine = isBlankStage
-        ? escapeHtml(nextSentence.sentence.native.replace(new RegExp(escRegex(nativeTarget), 'gi'), '___'))
-        : escapeHtml(nextSentence.sentence.native).replace(
-          new RegExp(`(${escRegex(nativeTarget)})`, 'gi'),
-          '<u><b>$1</b></u>'
-        );
+        ? blankTargetInSentence(nextSentence.sentence.native, nativeTarget)
+        : highlightTargetInSentence(nextSentence.sentence.native, nativeTarget);
       cardText = `${t(lang, 'worker.rememberWord')}\n\n🗣 ${nativeLine}\n${t(lang, 'worker.answerTarget.english')}`;
     }
 

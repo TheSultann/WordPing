@@ -23,10 +23,7 @@ const ru = {
   'onboarding.intervalSaved': '✅ <b>Отлично!</b> Интервал: {value} мин.',
   'onboarding.settingsTip': '⚙️ Остальное настроишь потом в меню.',
   'onboarding.finished': '✅ <b>Готово!</b> Интервал: {value} мин.\n\nОтправь первое слово на английском 👇',
-  'onboarding.menuTip': '⚙️ <b>Меню настроек</b> появилось внизу.',
 
-  'btn.settings': '⚙️ Настройки',
-  'btn.stats': '📊 Прогресс',
   'btn.back': '⬅️ Назад',
   'btn.next': 'Понятно, погнали! 🚀',
   'btn.interval': '⏱ Интервал',

@@ -42,6 +42,27 @@ enum SessionState {
   SETTINGS_WAIT_GOAL
 }
 
+enum NewsExampleTier {
+  CACHE
+  NEWSDATA
+  GDELT
+  GUARDIAN
+  AI
+}
+
+enum NewsResolveJobStatus {
+  PENDING
+  PROCESSING
+  DONE
+  FAILED
+}
+
+enum NewsProvider {
+  NEWSDATA
+  GDELT
+  GUARDIAN
+}
+
 model User {
   id                   BigInt        @id
   tgUsername           String?       @db.VarChar(64)
@@ -82,6 +103,7 @@ model User {
   dailyUsages          UserDailyUsage[]
   session              UserSession?
   language             String        @default("ru")
+  newsDigestLastOpenedAt DateTime?
 
   @@index([referredById])
   @@index([referredById, referralQualifiedAt])
@@ -96,11 +118,20 @@ model Word {
   translationRu     String    @db.VarChar(256)
   exampleSentences  Json?     @db.JsonB
   sentenceIndex     Int       @default(0)
+  newsExampleText         String?          @db.VarChar(2048)
+  newsExampleTier         NewsExampleTier?
+  newsExampleSourceUrl    String?          @db.VarChar(1024)
+  newsExampleSourceTitle  String?          @db.VarChar(512)
+  newsExamplePreparedAt   DateTime?
+  newsExampleMatchedWord  String?          @db.VarChar(256)
+  newsExampleNeedsRefresh Boolean          @default(false)
   createdAt         DateTime  @default(now())
   user              User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   reviews           Review[]
+  newsResolveJob    NewsResolveJob?
 
   @@index([userId])
+  @@index([newsExamplePreparedAt])
   @@unique([userId, wordEn])
 }
 
@@ -156,4 +187,52 @@ model UserDailyUsage {
 
   @@unique([userId, dayStart])
   @@index([dayStart])
+}
+
+model NewsCache {
+  id          Int      @id @default(autoincrement())
+  source      String   @db.VarChar(128)
+  title       String   @db.VarChar(512)
+  url         String   @unique @db.VarChar(1024)
+  snippet     String   @db.VarChar(2048)
+  bodyText    String?  @db.Text
+  language    String?  @db.VarChar(16)
+  publishedAt DateTime?
+  fetchedAt   DateTime @default(now())
+  expiresAt   DateTime?
+  contentHash String   @unique @db.VarChar(64)
+
+  @@index([publishedAt])
+  @@index([expiresAt])
+  @@index([language, publishedAt])
+}
+
+model NewsResolveJob {
+  id          Int                  @id @default(autoincrement())
+  wordId      Int                  @unique
+  status      NewsResolveJobStatus @default(PENDING)
+  attempts    Int                  @default(0)
+  lastError   String?              @db.VarChar(512)
+  scheduledAt DateTime             @default(now())
+  lockedAt    DateTime?
+  createdAt   DateTime             @default(now())
+  updatedAt   DateTime             @updatedAt
+  word        Word                 @relation(fields: [wordId], references: [id], onDelete: Cascade)
+
+  @@index([status, scheduledAt])
+}
+
+model NewsProviderState {
+  provider      NewsProvider @id
+  dayStartUtc   DateTime
+  requestsToday Int          @default(0)
+  lastRequestAt DateTime?
+  cooldownUntil DateTime?
+  lastStatusCode Int?
+  lastError     String?      @db.VarChar(512)
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+
+  @@index([cooldownUntil])
+  @@index([dayStartUtc])
 }

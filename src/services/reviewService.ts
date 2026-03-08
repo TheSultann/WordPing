@@ -4,6 +4,7 @@ import { prisma } from '../db/client';
 import { initialReviewSchedule, Rating, scheduleNextReview, scheduleSkipped } from './reviewScheduler';
 import { nowUtc, startOfUserDay } from '../utils/time';
 import { trimEnv } from '../utils/env';
+import { queueWordNewsResolve } from './newsFallbackService';
 
 export class DuplicateWordError extends Error {
   constructor(message = 'Duplicate word') {
@@ -209,7 +210,7 @@ export const applyRating = async (
     rating === 'HARD'
       ? prevHardStreak + 1
       : 0;
-  return prisma.review.update({
+  const updated = await prisma.review.update({
     where: { id: review.id },
     data: {
       stage: schedule.stage,
@@ -222,6 +223,14 @@ export const applyRating = async (
       hardStreak,
     },
   });
+
+  if (review.stage < 4 && updated.stage >= 4) {
+    queueWordNewsResolve(review.wordId).catch((error) => {
+      console.error('Failed to queue news resolve job', { wordId: review.wordId, error });
+    });
+  }
+
+  return updated;
 };
 
 export const markSkipped = async (review: Review) => {

@@ -11,10 +11,11 @@
    - `npx prisma generate`
 5. Прогоняй миграции:
    - `npx prisma migrate deploy` (или `npx prisma migrate dev --name init`)
-6. Запусти бота и воркер в двух процессах:
+6. Запусти процессы:
    - `npm run dev:bot`
    - `npm run dev:worker`
-   Для продакшена: `npm run build` + `npm run start:bot` и `npm run start:worker`.
+   - `npm run dev:news-worker`
+   Для продакшена: `npm run build` + `npm run start:bot`, `npm run start:worker`, `npm run start:news-worker`.
 
 ## Что делает
 - /add — добавление слова (бот определяет язык ввода и предлагает автоперевод; при сомнительном результате просит ввести перевод вручную).
@@ -40,10 +41,58 @@
 - **Кнопка 🔄**: Если сгенерированный пример оказался неудачным, прямо из карточки можно нажать 🔄 (заменит на другой пример, лимит: 1 раз в сутки для каждого слова).
 - **Фоновая генерация**: Примеры создаются асинхронно при сохранении слова. Незаполненные примеры добираются автоматически фоновым cron-процессом `worker` каждые 30 минут.
 
+## 📰 Новости: как работает от и до
+### Что видит пользователь
+1. В главном меню есть кнопка `📰 Почитать новости`.
+2. По нажатию бот не ходит во внешние API, а читает только готовые данные из БД.
+3. Бот отправляет до 3 карточек (слова пользователя, где есть готовый новостной пример и `stage >= 4`).
+4. Слово подсвечивается жирным/подчёркнутым, для внешних источников показывается кнопка `🔗 Читать оригинал`.
+5. Если исходная ссылка уже мертва (`404/410`), бот показывает `sourceTitle` без ссылки и автоматически ставит слово на refresh.
+6. Если готовых примеров нет: бот пишет `📰 Пока нет готовых новостных примеров. Попробуйте чуть позже.`
+
+### Почему ответ быстрый
+- Все тяжелые запросы идут только в `news-worker`.
+- Кнопка в боте делает только чтение из БД (precomputed данные).
+
+### Когда слово попадает в новости
+- Новостная подготовка включается для слов, у которых хотя бы одно направление повторения достигло `stage >= 4`.
+- Для таких слов создается/обновляется задача в `NewsResolveJob`.
+
+### Фоновая цепочка fallback
+Порядок поиска примера:
+1. `Tier1: RSS cache (NewsCache)`  
+   Поиск по локальному кэшу (title/snippet/bodyText) с формами слова и скорингом.
+2. `Tier2: NewsData.io`  
+   Сначала `Uzbekistan + en`, если пусто — `global + en`.
+3. `Tier3: GDELT`  
+   Ограниченный fallback с rate-limit и cooldown.
+4. `Tier4: Guardian`  
+   Используется только при валидном `GUARDIAN_API_KEY`.
+
+### Ограничения и защита от лимитов
+- `NewsData`: дневной бюджет запросов, хранится в БД (`NewsProviderState`).
+- `GDELT`: минимум интервал между запросами + cooldown при `429`.
+- `Guardian`: если ключ пустой или `test`, запросы пропускаются.
+- Состояние провайдеров и лимитов хранится в `NewsProviderState`.
+
+### Cron в news-worker
+- `0 * * * *` — обновить RSS-кэш.
+- `0 * * * *` — поставить задачи в очередь (и rearm exhausted jobs).
+- `*/5 * * * *` — резолвить pending jobs.
+- `15 2 * * *` — пометить устаревшие примеры на refresh.
+- `0 * * * *` — снять hourly metrics snapshot.
+- `45 * * * *` — проверить живость `newsExampleSourceUrl` (битые `404/410` пометить на refresh и переочередить).
+- `20 3 * * *` — очистка старого кэша/задач.
+
+### Важное правило архитектуры
+- `src/scheduler/worker.ts` (основной UVD cron) не делает внешние запросы новостей.
+- Внешние news API вызываются только из `src/scheduler/newsWorker.ts` через `newsFallbackService`.
+
 ## Структура
 - src/bot — обработчики команд и FSM.
-- src/scheduler — крон-воркер (каждую минуту рассылает задания и напоминания).
-- src/services — логика SRS, проверки ответов, работа с пользователями/сессиями.
+- src/scheduler/worker.ts — основной UVD воркер (карточки/напоминания).
+- src/scheduler/newsWorker.ts — отдельный news воркер (RSS + news fallback).
+- src/services — логика SRS, проверки ответов, пользователи/сессии, news fallback.
 - src/db — Prisma client.
 - prisma/ — схема и миграции (prisma/migrations/0001_init).
 
@@ -55,9 +104,11 @@
 - `npm run migrate:dev` — prisma migrate dev.
 - `npm run migrate:deploy` — применить миграции в проде.
 - `npm run prisma:generate` — пересоздать клиент.
+- `npm run dev:news-worker` — локально запустить news worker.
+- `npm run start:news-worker` — прод запуск news worker (из `dist`).
 - Путь проекта на AWS-сервере (текущий): `~/apps/WordPing`.
 
-Логи пишутся в stdout/stderr (Telegraf и воркер).
+Логи пишутся в stdout/stderr (bot, worker, news-worker, api).
 
 ## Обновление сервера (prod)
 Порядок обновления:
@@ -76,10 +127,12 @@
 7. Собрать проект:
    - `npm run build`
 8. Перезапустить процессы:
-   - `pm2 restart wordping-api wordping-bot wordping-worker --update-env`
+   - `pm2 restart wordping-api wordping-bot wordping-worker wordping-news-worker --update-env`
+   - Если у тебя другие имена процессов в PM2, подставь свои.
 9. Очистить и проверить логи:
    - `pm2 flush`
    - `pm2 logs wordping-worker --lines 60`
+   - `pm2 logs wordping-news-worker --lines 60`
    - `pm2 logs wordping-bot --lines 40`
    - `pm2 logs wordping-api --lines 40`
 
@@ -92,9 +145,10 @@ npm ci
 npx prisma migrate deploy
 npx prisma generate
 npm run build
-pm2 restart wordping-api wordping-bot wordping-worker --update-env
+pm2 restart wordping-api wordping-bot wordping-worker wordping-news-worker --update-env
 pm2 flush
 pm2 logs wordping-worker --lines 60
+pm2 logs wordping-news-worker --lines 60
 ```
 
 ## Если `git pull` задаёт вопросы
@@ -174,6 +228,53 @@ pm2 logs wordping-worker --lines 60
   - `uz -> en -> ru`
   - `ru -> en -> uz`
 - Повторные запросы берутся из in-memory кеша.
+
+## Новости: ENV переменные
+Основные:
+- `NEWS_RSS_FEEDS` — RSS источники через запятую.
+- `NEWS_RSS_PRIMARY_DOMAINS` — домены приоритетных источников.
+- `NEWS_CACHE_TTL_DAYS` — TTL новостей в кэше.
+- `NEWS_RSS_TIMEOUT_MS` — timeout загрузки одного RSS feed.
+- `NEWS_RSS_MAX_ITEMS_PER_FEED` — максимум элементов на один feed за проход.
+- `NEWS_RSS_MATCH_MIN_SCORE` — минимальный score матчинга слова в RSS-кэше.
+- `NEWS_RSS_TOKEN_COVERAGE_MIN` — минимальное покрытие токенов для multi-word матчинга.
+- `NEWS_RSS_REFRESH_CRON`, `NEWS_ENQUEUE_CRON`, `NEWS_RESOLVE_CRON`, `NEWS_PRUNE_CRON` — cron расписание news-worker.
+- `NEWS_MARK_OLD_CRON` — daily cron для пометки устаревших news-примеров (`newsExampleNeedsRefresh=true`).
+- `NEWS_METRICS_CRON` — hourly cron для snapshot-метрик очереди/кэша.
+- `NEWS_SOURCE_LINK_CHECK_CRON` — cron для проверки живости `newsExampleSourceUrl`.
+- `NEWS_SOURCE_LINK_CHECK_BATCH` — сколько ссылок проверять за один проход.
+- `NEWS_SOURCE_LINK_TIMEOUT_MS` — timeout проверки одной ссылки.
+- `NEWS_STALE_DAYS` — через сколько дней считать пример устаревшим (по умолчанию `2`).
+- `NEWS_NOT_FOUND_RETRY_STEPS_MINUTES` — ступени ретрая для `news_not_found` в минутах (например `30,120,360,720,1440`).
+- `NEWS_NOT_FOUND_RETRY_HOURS` — legacy fallback, если `NEWS_NOT_FOUND_RETRY_STEPS_MINUTES` не задан.
+- `NEWS_MAX_JOB_ATTEMPTS` — лимит попыток на один job до перехода в exhausted-state.
+- `NEWS_EXHAUSTED_RETRY_HOURS` — через сколько часов exhausted-job автоматически rearm в `PENDING`.
+- `NEWS_RETRY_BASE_MINUTES` и `NEWS_RETRY_MAX_MINUTES` — базовый и максимальный backoff для transient ошибок.
+- `NEWS_JOB_RETENTION_DAYS` — сколько дней хранить `DONE/FAILED` jobs до prune.
+
+NewsData:
+- `NEWSDATA_API_KEY`
+- `NEWSDATA_API_URL` (по умолчанию `https://newsdata.io/api/1/latest`)
+- `NEWS_NEWDATA_TIMEOUT_MS`
+- `NEWS_NEWDATA_DAILY_LIMIT`
+- `NEWS_NEWDATA_DAILY_BUDGET`
+- `NEWS_NEWDATA_WORD_RETRY_HOURS`
+
+GDELT:
+- `GDELT_API_URL`
+- `GDELT_QUERY_SCOPE`
+- `NEWS_GDELT_TIMEOUT_MS`
+- `NEWS_GDELT_MAX_RECORDS`
+- `NEWS_GDELT_MIN_INTERVAL_SECONDS`
+- `NEWS_GDELT_COOLDOWN_MINUTES`
+- `NEWS_GDELT_WORD_RETRY_HOURS`
+
+Guardian:
+- `GUARDIAN_API_URL`
+- `GUARDIAN_API_KEY`
+- `NEWS_GUARDIAN_TIMEOUT_MS`
+- `NEWS_GUARDIAN_PAGE_SIZE`
+- `NEWS_GUARDIAN_SKIP_WITHOUT_KEY`
 
 ## Тесты
 Юнит + интеграционные тесты:

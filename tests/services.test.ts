@@ -184,6 +184,25 @@ describe('service integration', () => {
     expect(afterRuToEn?.intervalMinutes).toBe(beforeRuToEn?.intervalMinutes);
   });
 
+  it('applyRating enqueues news resolve job when stage crosses 4+', async () => {
+    await ensureUser(Number(userId));
+    const { wordId } = await addWordForUser(userId, 'headline', 'заголовок');
+    const review = await prisma.review.findFirst({
+      where: { wordId, direction: 'EN_TO_RU' },
+    });
+    expect(review).toBeTruthy();
+
+    const first = await applyRating(review!, 'EASY', 'CORRECT', 'EN_TO_RU', 'headline');
+    expect(first.stage).toBe(2);
+
+    const second = await applyRating(first, 'EASY', 'CORRECT', 'EN_TO_RU', 'headline');
+    expect(second.stage).toBe(4);
+
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    const job = await prisma.newsResolveJob.findUnique({ where: { wordId } });
+    expect(job?.status).toBe('PENDING');
+  });
+
   it('recordCompletion increments streak after 3 completions', async () => {
     await prisma.user.create({ data: { id: userId } });
     const first = await prisma.user.findUnique({ where: { id: userId } });

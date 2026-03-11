@@ -6,6 +6,17 @@ export interface SessionPayload {
   lang?: string | null;
   correct?: boolean;
   wordEn?: string;
+  translationRu?: string;
+  cardBaseText?: string;
+  hintTarget?: string;
+  hintPresses?: number;
+  hintReviewId?: number;
+  swapData?: string | null;
+  hintInline?: boolean;
+  manualField?: string;
+  sourceNative?: string;
+  swaps?: Record<string, string>;
+  newsDigest?: Record<string, unknown>;
   onboarding?: { lang?: string; step?: string } | null;
   [key: string]: unknown;
 }

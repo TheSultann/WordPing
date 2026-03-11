@@ -1,5 +1,6 @@
-﻿import 'dotenv/config';
+import 'dotenv/config';
 import { escapeHtml } from '../utils/html';
+import { buildMaskedHint } from '../utils/hint';
 import { t, Lang } from '../i18n';
 import cron from 'node-cron';
 import { Telegraf } from 'telegraf';
@@ -24,7 +25,7 @@ import {
   SENTENCES_PER_WORD,
   MIN_SENTENCES_FOR_SWAP,
 } from '../services/sentenceService';
-import { CardDirection, Prisma, ReviewResult } from '../generated/prisma/client';
+import { CardDirection, Prisma, ReviewResult, User } from '../generated/prisma/client';
 import { isWithinWindow, nowUtc, startOfUserDay, userNow } from '../utils/time';
 import dayjs from 'dayjs';
 import {
@@ -123,12 +124,12 @@ export const __setBlockedUserCooldownForTest = (userId: bigint | number, untilMs
 
 export const __getBlockedUserCooldownSizeForTest = () => blockedUserCooldownUntil.size;
 
-const hasDailyNotificationCapacity = (user: any) => {
+const hasDailyNotificationCapacity = (user: User) => {
   const limit = user.maxNotificationsPerDay ?? DEFAULT_MAX_NOTIFICATIONS;
   return (user.notificationsSentToday ?? 0) < limit;
 };
 
-const hasNotificationIntervalElapsed = (user: any, now: dayjs.Dayjs) => {
+const hasNotificationIntervalElapsed = (user: User, now: dayjs.Dayjs) => {
   const interval = Math.max(user.notificationIntervalMinutes ?? DEFAULT_NOTIFICATION_INTERVAL, MIN_NOTIFICATION_INTERVAL);
   if (user.lastNotificationAt) {
     const last = dayjs(user.lastNotificationAt);
@@ -137,7 +138,7 @@ const hasNotificationIntervalElapsed = (user: any, now: dayjs.Dayjs) => {
   return true;
 };
 
-const registerNotification = async (user: any) => {
+const registerNotification = async (user: User) => {
   const tz = user.timezone;
   const today = startOfUserDay(tz, userNow(tz)).toDate();
   await prisma.user.update({
@@ -150,25 +151,9 @@ const registerNotification = async (user: any) => {
   });
 };
 
-const buildMaskedHint = (value: string, revealIndexes: number[]) => {
-  const chars = Array.from(value);
-  if (!chars.length) return null;
+// buildMaskedHint imported from utils/hint.ts
 
-  const reveal = new Set<number>();
-  for (const index of revealIndexes) {
-    if (index >= 0 && index < chars.length) reveal.add(index);
-  }
-
-  return chars
-    .map((char, index) => {
-      if (reveal.has(index)) return char;
-      if (/\s|['’`-]/.test(char)) return char;
-      return '_';
-    })
-    .join('');
-};
-
-export const handleReminders = async (user: any, session: SessionLike, canNotify: boolean) => {
+export const handleReminders = async (user: User, session: SessionLike, canNotify: boolean) => {
   if (!session.sentAt || !session.reviewId) return;
   const sentAt = dayjs(session.sentAt);
   const now = nowUtc();
@@ -217,7 +202,7 @@ export const handleReminders = async (user: any, session: SessionLike, canNotify
   }
 };
 
-export const handlePendingGrade = async (user: any, session: SessionLike) => {
+export const handlePendingGrade = async (user: User, session: SessionLike) => {
   const now = nowUtc();
   if (!session.sentAt) {
     await setState(BigInt(user.id), 'WAITING_GRADE', {
@@ -272,7 +257,7 @@ export const handlePendingGrade = async (user: any, session: SessionLike) => {
   await recordCompletion(freshUser, wasCorrect);
 };
 
-export const processUser = async (user: any) => {
+export const processUser = async (user: User) => {
   const normalizedUser = await resetNotificationCountersIfNeeded(user);
   const session = await ensureSession(normalizedUser.id);
   const blockedCooldownActive = isBlockedUserCooldownActive(normalizedUser.id);

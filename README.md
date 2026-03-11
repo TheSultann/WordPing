@@ -1,7 +1,7 @@
 ﻿# WordPing — Telegram бот для интервальных повторений
 
 ## Быстрый старт
-1. Node.js 18+ и PostgreSQL.
+1. Node.js  и PostgreSQL.
 2. Установи зависимости:
    - `npm install`
 3. Скопируй .env.example в .env и задай:

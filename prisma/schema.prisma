@@ -64,45 +64,44 @@ enum NewsProvider {
 }
 
 model User {
-  id                   BigInt        @id
-  tgUsername           String?       @db.VarChar(64)
-  tgFirstName          String?       @db.VarChar(128)
-  tgLastName           String?       @db.VarChar(128)
-  tgDisplayName        String?       @db.VarChar(191)
-  lastSeenAt           DateTime?
-  createdAt            DateTime      @default(now())
-  timezone             String?       @db.VarChar(64)
-  directionMode        DirectionMode @default(MIXED)
-  notificationsEnabled Boolean       @default(true)
+  id                     BigInt        @id
+  tgUsername             String?       @db.VarChar(64)
+  tgFirstName            String?       @db.VarChar(128)
+  tgLastName             String?       @db.VarChar(128)
+  tgDisplayName          String?       @db.VarChar(191)
+  lastSeenAt             DateTime?
+  createdAt              DateTime      @default(now())
+  timezone               String?       @db.VarChar(64)
+  directionMode          DirectionMode @default(MIXED)
+  notificationsEnabled   Boolean       @default(true)
   // Quiet hours window (start == end => 24/7)
-  quietHoursStartMinutes Int         @default(480) // 08:00
-  quietHoursEndMinutes   Int         @default(1380) // 23:00
+  quietHoursStartMinutes Int           @default(480) // 08:00
+  quietHoursEndMinutes   Int           @default(1380) // 23:00
 
   // Notification controls
-  maxNotificationsPerDay   Int        @default(20)
-  notificationIntervalMinutes Int     @default(30)
-  notificationsSentToday   Int        @default(0)
-  notificationsDate        DateTime?
-  lastNotificationAt       DateTime?
+  maxNotificationsPerDay      Int       @default(20)
+  notificationIntervalMinutes Int       @default(30)
+  notificationsSentToday      Int       @default(0)
+  notificationsDate           DateTime?
+  lastNotificationAt          DateTime?
 
-  streakCount          Int           @default(0)
-  lastStreakDate       DateTime?
-  doneTodayCount       Int           @default(0)
-  correctTodayCount    Int           @default(0)
-  lastDoneDate         DateTime?
-
+  streakCount       Int       @default(0)
+  lastStreakDate    DateTime?
+  doneTodayCount    Int       @default(0)
+  correctTodayCount Int       @default(0)
+  lastDoneDate      DateTime?
 
   // Referrals
-  referredById         BigInt?
-  referralQualifiedAt  DateTime?
-  referredBy           User?         @relation("UserReferrals", fields: [referredById], references: [id], onDelete: SetNull)
-  referrals            User[]        @relation("UserReferrals")
+  referredById        BigInt?
+  referralQualifiedAt DateTime?
+  referredBy          User?     @relation("UserReferrals", fields: [referredById], references: [id], onDelete: SetNull)
+  referrals           User[]    @relation("UserReferrals")
 
-  words                Word[]
-  reviews              Review[]
-  dailyUsages          UserDailyUsage[]
-  session              UserSession?
-  language             String        @default("ru")
+  words                  Word[]
+  reviews                Review[]
+  dailyUsages            UserDailyUsage[]
+  session                UserSession?
+  language               String           @default("ru")
   newsDigestLastOpenedAt DateTime?
 
   @@index([referredById])
@@ -112,12 +111,12 @@ model User {
 }
 
 model Word {
-  id                Int       @id @default(autoincrement())
-  userId            BigInt
-  wordEn            String    @db.VarChar(256)
-  translationRu     String    @db.VarChar(256)
-  exampleSentences  Json?     @db.JsonB
-  sentenceIndex     Int       @default(0)
+  id                      Int              @id @default(autoincrement())
+  userId                  BigInt
+  wordEn                  String           @db.VarChar(256)
+  translationRu           String           @db.VarChar(256)
+  exampleSentences        Json?            @db.JsonB
+  sentenceIndex           Int              @default(0)
   newsExampleText         String?          @db.VarChar(2048)
   newsExampleTier         NewsExampleTier?
   newsExampleSourceUrl    String?          @db.VarChar(1024)
@@ -125,34 +124,33 @@ model Word {
   newsExamplePreparedAt   DateTime?
   newsExampleMatchedWord  String?          @db.VarChar(256)
   newsExampleNeedsRefresh Boolean          @default(false)
-  createdAt         DateTime  @default(now())
-  user              User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  reviews           Review[]
-  newsResolveJob    NewsResolveJob?
+  createdAt               DateTime         @default(now())
+  user                    User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  reviews                 Review[]
+  newsResolveJob          NewsResolveJob?
 
+  @@unique([userId, wordEn])
   @@index([userId])
   @@index([newsExamplePreparedAt])
-  @@unique([userId, wordEn])
 }
 
 model Review {
-  id             Int           @id @default(autoincrement())
-  userId         BigInt
-  wordId         Int
-  direction      CardDirection
-  hardStreak     Int           @default(0)
-  lastReviewAt   DateTime?
-  nextReviewAt   DateTime?
-  stage          Int           @default(0)
-  intervalMinutes Int          @default(0)
-  easeFactor     Float?        @default(2.3)
-  lastDirection  CardDirection?
-  lastAnswerText String?
-  lastResult     ReviewResult?
-  createdAt      DateTime      @default(now())
-  updatedAt      DateTime      @updatedAt
-  user           User          @relation(fields: [userId], references: [id], onDelete: Cascade)
-  word           Word          @relation(fields: [wordId], references: [id], onDelete: Cascade)
+  id              Int            @id @default(autoincrement())
+  userId          BigInt
+  wordId          Int
+  direction       CardDirection
+  hardStreak      Int            @default(0)
+  lastReviewAt    DateTime?
+  nextReviewAt    DateTime?
+  stage           Int            @default(0)
+  intervalMinutes Int            @default(0)
+  lastDirection   CardDirection?
+  lastAnswerText  String?
+  lastResult      ReviewResult?
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+  user            User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  word            Word           @relation(fields: [wordId], references: [id], onDelete: Cascade)
 
   @@unique([wordId, direction])
   @@index([userId, direction, nextReviewAt])
@@ -160,18 +158,18 @@ model Review {
 }
 
 model UserSession {
-  userId       BigInt       @id
-  state        SessionState @default(IDLE)
+  userId       BigInt         @id
+  state        SessionState   @default(IDLE)
   reviewId     Int?
   wordId       Int?
   direction    CardDirection?
   sentAt       DateTime?
-  reminderStep Int          @default(0)
+  reminderStep Int            @default(0)
   answerText   String?
   payload      Json?
-  createdAt    DateTime     @default(now())
-  updatedAt    DateTime     @updatedAt
-  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+  user         User           @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([state])
 }
@@ -190,17 +188,17 @@ model UserDailyUsage {
 }
 
 model NewsCache {
-  id          Int      @id @default(autoincrement())
-  source      String   @db.VarChar(128)
-  title       String   @db.VarChar(512)
-  url         String   @unique @db.VarChar(1024)
-  snippet     String   @db.VarChar(2048)
-  bodyText    String?  @db.Text
-  language    String?  @db.VarChar(16)
+  id          Int       @id @default(autoincrement())
+  source      String    @db.VarChar(128)
+  title       String    @db.VarChar(512)
+  url         String    @unique @db.VarChar(1024)
+  snippet     String    @db.VarChar(2048)
+  bodyText    String?   @db.Text
+  language    String?   @db.VarChar(16)
   publishedAt DateTime?
-  fetchedAt   DateTime @default(now())
+  fetchedAt   DateTime  @default(now())
   expiresAt   DateTime?
-  contentHash String   @unique @db.VarChar(64)
+  contentHash String    @unique @db.VarChar(64)
 
   @@index([publishedAt])
   @@index([expiresAt])
@@ -223,15 +221,15 @@ model NewsResolveJob {
 }
 
 model NewsProviderState {
-  provider      NewsProvider @id
-  dayStartUtc   DateTime
-  requestsToday Int          @default(0)
-  lastRequestAt DateTime?
-  cooldownUntil DateTime?
+  provider       NewsProvider @id
+  dayStartUtc    DateTime
+  requestsToday  Int          @default(0)
+  lastRequestAt  DateTime?
+  cooldownUntil  DateTime?
   lastStatusCode Int?
-  lastError     String?      @db.VarChar(512)
-  createdAt     DateTime     @default(now())
-  updatedAt     DateTime     @updatedAt
+  lastError      String?      @db.VarChar(512)
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
 
   @@index([cooldownUntil])
   @@index([dayStartUtc])

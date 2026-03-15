@@ -279,6 +279,10 @@ export const processUser = async (user: User) => {
     return;
   }
 
+  if (session.state === 'QUIZ_ACTIVE') {
+    return;
+  }
+
   if (!normalizedUser.notificationsEnabled) return;
   if (!allowed) return;
   if (blockedCooldownActive) return;

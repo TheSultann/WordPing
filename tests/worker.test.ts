@@ -274,6 +274,51 @@ describe('worker integration', () => {
     expect(telegram.sendMessage).not.toHaveBeenCalled();
   });
 
+  it('does not send when session is QUIZ_ACTIVE', async () => {
+    vi.spyOn(telegram, 'sendMessage').mockResolvedValue({} as any);
+
+    await prisma.user.create({
+      data: {
+        id: userId,
+        notificationsEnabled: true,
+        quietHoursStartMinutes: 0,
+        quietHoursEndMinutes: 0,
+        timezone: 'UTC',
+        notificationIntervalMinutes: 5,
+        maxNotificationsPerDay: 100,
+      },
+    });
+
+    await prisma.word.create({
+      data: {
+        userId,
+        wordEn: 'quiz-pause',
+        translationRu: 'quiz-pause-native',
+        reviews: {
+          create: {
+            direction: 'EN_TO_RU',
+            userId,
+            stage: 3,
+            intervalMinutes: 30,
+            nextReviewAt: new Date(Date.now() - 1000),
+          },
+        },
+      },
+    });
+
+    await prisma.userSession.create({
+      data: {
+        userId,
+        state: 'QUIZ_ACTIVE',
+      },
+    });
+
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+    await processUser(user);
+
+    expect(telegram.sendMessage).not.toHaveBeenCalled();
+  });
+
   it('auto-closes WAITING_GRADE after 20 minutes with GOOD for correct answer', async () => {
     vi.spyOn(telegram, 'sendMessage').mockResolvedValue({} as any);
 

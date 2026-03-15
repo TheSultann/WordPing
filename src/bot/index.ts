@@ -1,4 +1,4 @@
-import 'dotenv/config';
+﻿import 'dotenv/config';
 import { escapeHtml } from '../utils/html';
 import { Context, Markup, Telegraf } from 'telegraf';
 import {
@@ -25,10 +25,21 @@ import {
 import { addWordForUser, applyRating, loadReviewWithWord, DailyWordLimitError, DuplicateWordError } from '../services/reviewService';
 import { generateSentences, saveSentences, removeSentenceAtIndex, getSentenceForReview, getSentenceCount, MIN_SENTENCES_FOR_SWAP } from '../services/sentenceService';
 import { checkAutoTranslateQuota, commitAutoTranslateQuota } from '../services/translationQuota';
-import { CardDirection, Prisma, ReviewResult } from '../generated/prisma/client';
+import { CardDirection, Prisma, QuizRunStatus, ReviewResult } from '../generated/prisma/client';
 import { checkAnswer } from '../services/answerChecker';
 import { Rating } from '../services/reviewScheduler';
 import { buildUserNewsDigest, type NewsDigestItem } from '../services/newsFallbackService';
+import {
+  QUIZ_DAILY_LIMIT,
+  QUIZ_TIME_LIMIT_SECONDS,
+  finishQuiz,
+  getCurrentQuestion,
+  startOrResumeQuiz,
+  submitAnswer,
+  type QuizQuestionView,
+  type SubmitQuizAnswerResult,
+  type QuizSummary,
+} from '../services/quizService';
 import { minutesToTimeString } from '../utils/time';
 import { normalizeWhitespace } from '../utils/text';
 import {
@@ -116,6 +127,49 @@ const NEWS_NAV_NEXT_LABEL_BY_LANG: Record<Lang, string> = {
   uz: 'Oldinga ➡️',
 };
 
+const QUIZ_BUTTON_BY_LANG: Record<Lang, string> = {
+  ru: '\u{1F9E0} Quiz',
+  uz: '\u{1F9E0} Quiz',
+};
+const QUIZ_BUTTONS = Object.values(QUIZ_BUTTON_BY_LANG);
+const QUIZ_CALLBACK_ANSWER_PREFIX = 'quiz:answer:';
+const QUIZ_CALLBACK_SKIP_PREFIX = 'quiz:skip:';
+const QUIZ_CALLBACK_NEXT_PREFIX = 'quiz:next:';
+const QUIZ_CALLBACK_EXIT_PREFIX = 'quiz:exit:';
+
+type QuizRunSnapshot = {
+  id: number;
+  status: QuizRunStatus;
+  totalQuestions: number;
+  currentIndex: number;
+  correctCount: number;
+  wrongCount: number;
+  skippedCount: number;
+  startedAt: Date;
+  durationSeconds: number | null;
+};
+
+const parsePositiveInt = (value: string | undefined): number | null => {
+  if (!value) return null;
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return null;
+  return parsed;
+};
+
+const parseNonNegativeInt = (value: string | undefined): number | null => {
+  if (!value) return null;
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed) || parsed < 0) return null;
+  return parsed;
+};
+
+const quizAnswerCallback = (runId: number, questionId: number, optionIndex: number) =>
+  `${QUIZ_CALLBACK_ANSWER_PREFIX}${runId}:${questionId}:${optionIndex}`;
+const quizSkipCallback = (runId: number, questionId: number) =>
+  `${QUIZ_CALLBACK_SKIP_PREFIX}${runId}:${questionId}`;
+const quizNextCallback = (runId: number) => `${QUIZ_CALLBACK_NEXT_PREFIX}${runId}`;
+const quizExitCallback = (runId: number) => `${QUIZ_CALLBACK_EXIT_PREFIX}${runId}`;
+
 type NewsDigestNavItem = Pick<NewsDigestItem, 'wordId' | 'wordEn' | 'translation' | 'highlightedText' | 'sourceUrl' | 'sourceTitle'>;
 
 const isNewsDigestNavItem = (value: unknown): value is NewsDigestNavItem => {
@@ -151,8 +205,203 @@ const renderNewsDigestCard = (lang: Lang, item: NewsDigestNavItem): string => {
   return `<b>${NEWS_DIGEST_CARD_TITLE_BY_LANG[lang]}</b>\n\n💡 <b>${escapeHtml(item.wordEn)}</b>${translationPart}\n\n${context}${sourceLine}`;
 };
 
+
+const quizTaskLabel = (lang: Lang, question: QuizQuestionView): string => {
+  if (question.mode === 'TRUE_FALSE') {
+    return lang === 'uz' ? 'Moslik to‘g‘rimi?' : 'Верно ли соответствие?';
+  }
+  if (question.mode === 'FILL_GAP') {
+    return lang === 'uz' ? 'Bo‘sh joyni to‘ldiring:' : 'Заполни пропуск:';
+  }
+  if (question.direction === 'EN_TO_RU') {
+    return lang === 'uz' ? 'Tarjimani tanlang:' : 'Выбери перевод:';
+  }
+  return lang === 'uz' ? 'Inglizcha so‘zni tanlang:' : 'Выбери английское слово:';
+};
+
+const quizQuestionText = (lang: Lang, question: QuizQuestionView): string => {
+  const questionNumber = question.questionIndex + 1;
+  const progress = quizProgressBar(questionNumber - 1, question.totalQuestions);
+  const lines = [
+    `🧠 <b>${lang === 'uz' ? 'Savol' : 'Вопрос'} ${questionNumber}/${question.totalQuestions}</b>  ⏱ ${QUIZ_TIME_LIMIT_SECONDS}${lang === 'uz' ? 's' : 'с'}`,
+    progress,
+    '',
+    `<b>${escapeHtml(quizTaskLabel(lang, question))}</b>`,
+    `💬 <code>${escapeHtml(question.promptText)}</code>`,
+  ];
+  return lines.join('\n');
+};
+
+const quizQuestionKeyboard = (lang: Lang, question: QuizQuestionView) => {
+  const rows: Array<Array<ReturnType<typeof Markup.button.callback>>> = [];
+  if (question.mode === 'TRUE_FALSE') {
+    rows.push([
+      Markup.button.callback(lang === 'uz' ? '✅ To‘g‘ri' : '✅ Верно', quizAnswerCallback(question.runId, question.questionId, 0)),
+      Markup.button.callback(lang === 'uz' ? '❌ Noto‘g‘ri' : '❌ Неверно', quizAnswerCallback(question.runId, question.questionId, 1)),
+    ]);
+  } else {
+    const options = question.options ?? [];
+    for (let index = 0; index < options.length; index += 2) {
+      const left = options[index];
+      const right = options[index + 1];
+      const row: Array<ReturnType<typeof Markup.button.callback>> = [];
+      if (left) {
+        row.push(Markup.button.callback(left, quizAnswerCallback(question.runId, question.questionId, index)));
+      }
+      if (right) {
+        row.push(Markup.button.callback(right, quizAnswerCallback(question.runId, question.questionId, index + 1)));
+      }
+      if (row.length) rows.push(row);
+    }
+  }
+
+  rows.push([
+    Markup.button.callback(lang === 'uz' ? 'O‘tkazish' : 'Пропуск', quizSkipCallback(question.runId, question.questionId)),
+    Markup.button.callback(lang === 'uz' ? 'Chiqish' : 'Выйти', quizExitCallback(question.runId)),
+  ]);
+  return Markup.inlineKeyboard(rows);
+};
+
+const quizAfterAnswerKeyboard = (lang: Lang, runId: number, hasNext: boolean) => {
+  const rows: Array<Array<ReturnType<typeof Markup.button.callback>>> = [];
+  if (hasNext) {
+    rows.push([Markup.button.callback(lang === 'uz' ? 'Keyingi savol' : 'Следующий вопрос', quizNextCallback(runId))]);
+  }
+  rows.push([Markup.button.callback(lang === 'uz' ? 'Chiqish' : 'Выйти', quizExitCallback(runId))]);
+  return Markup.inlineKeyboard(rows);
+};
+
+const quizAccuracy = (correctCount: number, totalQuestions: number): number => {
+  if (!Number.isFinite(totalQuestions) || totalQuestions <= 0) return 0;
+  return Math.round((correctCount / totalQuestions) * 100);
+};
+
+const quizSummaryText = (lang: Lang, summary: QuizSummary): string => {
+  const statusText = summary.status === 'ABANDONED'
+    ? (lang === 'uz' ? 'Toxtatildi' : 'Прерван')
+    : (lang === 'uz' ? 'Yakunlandi' : 'Завершен');
+  const durationLabel = summary.durationSeconds === null ? '-' : `${summary.durationSeconds}s`;
+
+  return [
+    `<b>\u{1F9E0} Quiz ${statusText}</b>`,
+    '',
+    `${lang === 'uz' ? 'Natija' : 'Результат'}: <b>${summary.correctCount}/${summary.totalQuestions}</b>`,
+    `${lang === 'uz' ? 'Aniqlik' : 'Точность'}: <b>${summary.accuracyPercent}%</b>`,
+    `${lang === 'uz' ? 'Xato' : 'Ошибок'}: <b>${summary.wrongCount}</b>`,
+    `${lang === 'uz' ? 'Propusk' : 'Пропусков'}: <b>${summary.skippedCount}</b>`,
+    `${lang === 'uz' ? 'Davomiylik' : 'Длительность'}: <b>${durationLabel}</b>`,
+  ].join('\n');
+};
+
+const quizAnswerResultText = (lang: Lang, result: Extract<SubmitQuizAnswerResult, { ok: true }>): string => {
+  const statusLine = result.outcome === 'CORRECT'
+    ? (lang === 'uz' ? '✅ To‘g‘ri' : '✅ Верно')
+    : result.outcome === 'WRONG'
+      ? (lang === 'uz' ? `❌ Noto‘g‘ri. To‘g‘ri javob: ${escapeHtml(result.correctAnswer)}` : `❌ Неверно. Правильный ответ: ${escapeHtml(result.correctAnswer)}`)
+      : result.timedOut
+        ? (lang === 'uz' ? '⏱ Vaqt tugadi, o‘tkazildi' : '⏱ Время вышло, засчитан пропуск')
+        : (lang === 'uz' ? '⏭ O‘tkazildi' : '⏭ Пропуск');
+  const progress = result.summary
+    ? `${lang === 'uz' ? 'Jarayon' : 'Прогресс'}: <b>${result.summary.correctCount + result.summary.wrongCount + result.summary.skippedCount}/${result.summary.totalQuestions}</b>`
+    : '';
+  const accuracy = result.summary
+    ? `${lang === 'uz' ? 'Aniqlik' : 'Точность'}: <b>${result.summary.accuracyPercent}%</b>`
+    : '';
+  return ['<b>\u{1F9E0} Quiz</b>', statusLine, progress, accuracy].filter(Boolean).join('\n');
+};
+
+const quizLimitReachedText = (lang: Lang, usedToday: number): string =>
+  lang === 'uz'
+    ? `Bugungi Quiz limiti tugadi: ${QUIZ_DAILY_LIMIT}. Ishlatildi: ${usedToday}/${QUIZ_DAILY_LIMIT}.`
+    : `Дневной лимит Quiz исчерпан: ${usedToday}/${QUIZ_DAILY_LIMIT}.`;
+
+const quizInsufficientWordsText = (lang: Lang, minRequiredWords: number): string =>
+  lang === 'uz'
+    ? `Quiz uchun kamida ${minRequiredWords} ta stage>=2 soz kerak.`
+    : `Для Quiz нужно минимум ${minRequiredWords} слов со stage>=2.`;
+
+const quizBusyStateText = (lang: Lang): string =>
+  lang === 'uz'
+    ? 'Avval joriy review kartani tugating.'
+    : 'Сначала завершите текущую review-карточку.';
+
+const quizUseButtonsText = (lang: Lang): string =>
+  lang === 'uz'
+    ? 'Quiz aktiv. Javobni tugmalar bilan bering.'
+    : 'Quiz активен. Отвечайте кнопками.';
+
+const quizUnavailableText = (lang: Lang): string =>
+  lang === 'uz'
+    ? 'Quiz vaqtincha mavjud emas. Keyinroq qayta urinib koring.'
+    : 'Quiz временно недоступен. Попробуйте позже.';
+
+const quizAlreadyHandledText = (lang: Lang, stale: boolean): string => {
+  if (stale) return lang === 'uz' ? 'Bu savol allaqachon yopilgan.' : 'Этот вопрос уже закрыт.';
+  return lang === 'uz' ? 'Javob allaqachon qabul qilingan.' : 'Ответ уже принят.';
+};
+
+const isQuizSchemaMissingError = (error: unknown): boolean => {
+  if (!(error instanceof Prisma.PrismaClientKnownRequestError)) return false;
+  return error.code === 'P2021' || error.code === 'P2022';
+};
+
+const loadQuizRunSnapshot = async (userId: bigint, runId: number): Promise<QuizRunSnapshot | null> => {
+  return prisma.quizRun.findFirst({
+    where: { id: runId, userId },
+    select: {
+      id: true,
+      status: true,
+      totalQuestions: true,
+      currentIndex: true,
+      correctCount: true,
+      wrongCount: true,
+      skippedCount: true,
+      startedAt: true,
+      durationSeconds: true,
+    },
+  });
+};
+
+const toQuizSummaryFromRun = (run: QuizRunSnapshot): QuizSummary => ({
+  runId: run.id,
+  status: run.status,
+  totalQuestions: run.totalQuestions,
+  correctCount: run.correctCount,
+  wrongCount: run.wrongCount,
+  skippedCount: run.skippedCount,
+  accuracyPercent: quizAccuracy(run.correctCount, run.totalQuestions),
+  durationSeconds: run.durationSeconds,
+});
+
+const finalizeCompletedRun = async (run: QuizRunSnapshot): Promise<QuizSummary> => {
+  if (run.status !== 'ACTIVE') return toQuizSummaryFromRun(run);
+  const now = new Date();
+  const durationSeconds = Math.max(0, Math.round((now.getTime() - run.startedAt.getTime()) / 1000));
+  const updated = await prisma.quizRun.update({
+    where: { id: run.id },
+    data: {
+      status: 'COMPLETED',
+      finishedAt: now,
+      durationSeconds,
+      lastActivityAt: now,
+    },
+    select: {
+      id: true,
+      status: true,
+      totalQuestions: true,
+      currentIndex: true,
+      correctCount: true,
+      wrongCount: true,
+      skippedCount: true,
+      startedAt: true,
+      durationSeconds: true,
+    },
+  });
+  return toQuizSummaryFromRun(updated);
+};
+
 const mainReplyKeyboard = (lang: Lang) =>
-  Markup.keyboard([[NEWS_DIGEST_BUTTON_BY_LANG[lang]]]).resize().persistent(true);
+  Markup.keyboard([[NEWS_DIGEST_BUTTON_BY_LANG[lang], QUIZ_BUTTON_BY_LANG[lang]]]).resize().persistent(true);
 const openWebAppKeyboard = (lang: Lang) =>
   webAppUrl
     ? Markup.inlineKeyboard([[Markup.button.webApp(webAppLabel(lang), webAppUrl)]])
@@ -300,6 +549,18 @@ const safeReply = async (ctx: Context, text: string, extra?: any) => {
   }
 };
 
+const safeEditOrReply = async (ctx: Context, text: string, extra?: any) => {
+  if ('editMessageText' in ctx) {
+    try {
+      await (ctx as any).editMessageText(text, { parse_mode: 'HTML', ...extra });
+      return;
+    } catch {
+      // fallback to reply below
+    }
+  }
+  await safeReply(ctx, text, extra);
+};
+
 const sendSettings = async (ctx: Context, userId: number, view: SettingsView = "main", edit = false) => {
   const fresh = await ensureUser(userId, toTelegramProfile(ctx.from));
   const lang = (fresh.language as Lang) || 'ru';
@@ -332,7 +593,7 @@ bot.start(async (ctx) => {
   }
   await ensureSession(user.id);
   await setState(user.id, 'IDLE', { payload: { onboarding: { step: 'lang' } } });
-  const chooseLangText = t('ru', 'chooseLang');
+  const chooseLangText = `${t('ru', 'chooseLang')}\n${t('uz', 'chooseLang')}`;
   await ctx.reply(chooseLangText, { parse_mode: 'HTML', ...languageKeyboard });
 });
 
@@ -386,6 +647,70 @@ bot.command('stats', async (ctx) => {
   });
 });
 
+
+bot.hears(QUIZ_BUTTONS, async (ctx) => {
+  if (!ctx.from) return;
+
+  const user = await ensureUser(ctx.from.id, toTelegramProfile(ctx.from));
+  const lang = ((user.language as Lang) || 'ru');
+  try {
+    const session = await getSession(BigInt(user.id));
+
+    if (session.state === 'WAITING_ANSWER' || session.state === 'WAITING_GRADE') {
+      await ctx.reply(quizBusyStateText(lang), { parse_mode: 'HTML', ...mainReplyKeyboard(lang) });
+      return;
+    }
+
+    const result = await startOrResumeQuiz(user.id);
+    if (!result.ok) {
+      if (result.reason === 'LIMIT_REACHED') {
+        await ctx.reply(quizLimitReachedText(lang, result.usedToday), { parse_mode: 'HTML', ...mainReplyKeyboard(lang) });
+        return;
+      }
+      await ctx.reply(quizInsufficientWordsText(lang, result.minRequiredWords ?? 4), {
+        parse_mode: 'HTML',
+        ...mainReplyKeyboard(lang),
+      });
+      return;
+    }
+
+    if (!result.question && result.summary) {
+      await resetState(BigInt(user.id));
+      await ctx.reply(quizSummaryText(lang, result.summary), { parse_mode: 'HTML', ...mainReplyKeyboard(lang) });
+      return;
+    }
+
+    if (!result.question) {
+      await resetState(BigInt(user.id));
+      await ctx.reply(lang === 'uz' ? 'Quizni boshlab bolmadi. Qayta urinib koring.' : 'Не удалось запустить Quiz. Попробуйте снова.', {
+        parse_mode: 'HTML',
+        ...mainReplyKeyboard(lang),
+      });
+      return;
+    }
+
+    await setState(BigInt(user.id), 'QUIZ_ACTIVE', {
+      payload: {
+        lang,
+        quizRunId: result.runId,
+      },
+    });
+
+    await ctx.reply(quizQuestionText(lang, result.question), {
+      parse_mode: 'HTML',
+      ...quizQuestionKeyboard(lang, result.question),
+    });
+  } catch (error) {
+    console.error('[quiz] start failed', { userId: user.id, error });
+    if (isQuizSchemaMissingError(error)) {
+      await ctx.reply(quizUnavailableText(lang), { ...mainReplyKeyboard(lang) });
+      return;
+    }
+    await ctx.reply(lang === 'uz' ? 'Quiz xatosi. Qayta urinib koring.' : 'Ошибка Quiz. Попробуйте снова.', {
+      ...mainReplyKeyboard(lang),
+    });
+  }
+});
 
 bot.hears(NEWS_DIGEST_BUTTONS, async (ctx) => {
   if (!ctx.from) return;
@@ -849,12 +1174,16 @@ bot.on('text', async (ctx) => {
       await ctx.reply(t(lang, 'answer.pickGrade'), { parse_mode: 'HTML' });
       break;
     }
+    case 'QUIZ_ACTIVE': {
+      await ctx.reply(quizUseButtonsText(lang), { parse_mode: 'HTML' });
+      break;
+    }
     case 'ADDING_WORD_CONFIRM_TRANSLATION': {
       await ctx.reply(t(lang, 'add.confirmPrompt'), { parse_mode: 'HTML' });
       break;
     }
     default:
-      if (text.startsWith('/')) return; // РёРіРЅРѕСЂРёСЂСѓРµРј РґСЂСѓРіРёРµ РєРѕРјР°РЅРґС‹
+      if (text.startsWith('/')) return; // ignore other commands
       await handleAddFlow(text);
       break;
   }
@@ -893,6 +1222,152 @@ bot.on('callback_query', async (ctx) => {
       { parse_mode: 'HTML' }
     );
     return;
+  }
+
+  if (data.startsWith('quiz:')) {
+    const user = await ensureUser(userId, toTelegramProfile(ctx.from));
+    const lang = (user.language as Lang) || 'ru';
+    const parts = data.split(':');
+    const action = parts[1] ?? '';
+
+    try {
+      if (action === 'answer' || action === 'skip') {
+        const runId = parsePositiveInt(parts[2]);
+        const questionId = parsePositiveInt(parts[3]);
+        const selectedOptionIndex = action === 'answer' ? parseNonNegativeInt(parts[4]) : null;
+
+        if (!runId || !questionId || (action === 'answer' && selectedOptionIndex === null)) {
+          await ctx.answerCbQuery(lang === 'uz' ? 'Quiz callback notogri.' : 'Некорректный callback Quiz.');
+          return;
+        }
+
+        const run = await loadQuizRunSnapshot(BigInt(userId), runId);
+        if (!run) {
+          await ctx.answerCbQuery(t(lang, 'session.lost'));
+          return;
+        }
+
+        if (run.status !== 'ACTIVE') {
+          await resetState(BigInt(userId));
+          await safeEditOrReply(ctx, quizSummaryText(lang, toQuizSummaryFromRun(run)));
+          await ctx.answerCbQuery();
+          return;
+        }
+
+        const result = await submitAnswer(runId, questionId, selectedOptionIndex, null);
+        if (!result.ok) {
+          if (result.reason === 'RUN_NOT_ACTIVE') {
+            const latest = await loadQuizRunSnapshot(BigInt(userId), runId);
+            if (latest) {
+              await resetState(BigInt(userId));
+              await safeEditOrReply(ctx, quizSummaryText(lang, toQuizSummaryFromRun(latest)));
+              await ctx.answerCbQuery();
+              return;
+            }
+          }
+          await ctx.answerCbQuery(lang === 'uz' ? 'Javob qabul qilinmadi.' : 'Ответ не принят.');
+          return;
+        }
+
+        if (result.duplicate) {
+          await ctx.answerCbQuery(quizAlreadyHandledText(lang, result.stale));
+          return;
+        }
+
+        if (result.summary && result.summary.status !== 'ACTIVE') {
+          await resetState(BigInt(userId));
+          await safeEditOrReply(ctx, quizSummaryText(lang, result.summary));
+          await ctx.answerCbQuery();
+          return;
+        }
+
+        await setState(BigInt(userId), 'QUIZ_ACTIVE', {
+          payload: { lang, quizRunId: runId },
+        });
+        await safeEditOrReply(
+          ctx,
+          quizAnswerResultText(lang, result),
+          quizAfterAnswerKeyboard(lang, runId, Boolean(result.nextQuestion)),
+        );
+        await ctx.answerCbQuery();
+        return;
+      }
+
+      if (action === 'next') {
+        const runId = parsePositiveInt(parts[2]);
+        if (!runId) {
+          await ctx.answerCbQuery(lang === 'uz' ? 'Quiz callback notogri.' : 'Некорректный callback Quiz.');
+          return;
+        }
+
+        const run = await loadQuizRunSnapshot(BigInt(userId), runId);
+        if (!run) {
+          await ctx.answerCbQuery(t(lang, 'session.lost'));
+          return;
+        }
+
+        if (run.status !== 'ACTIVE') {
+          await resetState(BigInt(userId));
+          await safeEditOrReply(ctx, quizSummaryText(lang, toQuizSummaryFromRun(run)));
+          await ctx.answerCbQuery();
+          return;
+        }
+
+        if (run.currentIndex >= run.totalQuestions) {
+          const summary = await finalizeCompletedRun(run);
+          await resetState(BigInt(userId));
+          await safeEditOrReply(ctx, quizSummaryText(lang, summary));
+          await ctx.answerCbQuery();
+          return;
+        }
+
+        const question = await getCurrentQuestion(runId);
+        if (!question) {
+          await ctx.answerCbQuery(lang === 'uz' ? 'Savol topilmadi. Quizni qayta oching.' : 'Вопрос не найден. Откройте Quiz снова.');
+          return;
+        }
+
+        await setState(BigInt(userId), 'QUIZ_ACTIVE', {
+          payload: { lang, quizRunId: runId },
+        });
+        await safeEditOrReply(ctx, quizQuestionText(lang, question), quizQuestionKeyboard(lang, question));
+        await ctx.answerCbQuery();
+        return;
+      }
+
+      if (action === 'exit') {
+        const runId = parsePositiveInt(parts[2]);
+        if (!runId) {
+          await ctx.answerCbQuery(lang === 'uz' ? 'Quiz callback notogri.' : 'Некорректный callback Quiz.');
+          return;
+        }
+
+        const run = await loadQuizRunSnapshot(BigInt(userId), runId);
+        if (!run) {
+          await ctx.answerCbQuery(t(lang, 'session.lost'));
+          return;
+        }
+
+        const summary = await finishQuiz(runId);
+        await resetState(BigInt(userId));
+        await safeEditOrReply(ctx, quizSummaryText(lang, summary ?? toQuizSummaryFromRun(run)));
+        await ctx.answerCbQuery(lang === 'uz' ? 'Quiz to‘xtatildi.' : 'Квиз остановлен.');
+        return;
+      }
+
+      await ctx.answerCbQuery(lang === 'uz' ? 'Nomalum quiz action.' : 'Unknown quiz action.');
+      return;
+    } catch (error) {
+      console.error('[quiz] callback failed', { userId, data, error });
+      if (isQuizSchemaMissingError(error)) {
+        await resetState(BigInt(userId));
+        await ctx.answerCbQuery(lang === 'uz' ? 'Quiz vaqtincha mavjud emas.' : 'Quiz временно недоступен.');
+        await ctx.reply(quizUnavailableText(lang), { ...mainReplyKeyboard(lang) });
+        return;
+      }
+      await ctx.answerCbQuery(lang === 'uz' ? 'Quiz xatosi.' : 'Ошибка Quiz.');
+      return;
+    }
   }
 
   if (data === NEWS_NAV_PREV_CALLBACK || data === NEWS_NAV_NEXT_CALLBACK || data === NEWS_NAV_NOOP_CALLBACK) {
@@ -1303,4 +1778,5 @@ if (require.main === module) {
 }
 
 export { bot };
+
 

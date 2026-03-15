@@ -5,6 +5,7 @@ import { prisma } from '../db/client';
 export interface SessionPayload {
   lang?: string | null;
   correct?: boolean;
+  quizRunId?: number;
   wordEn?: string;
   translationRu?: string;
   cardBaseText?: string;

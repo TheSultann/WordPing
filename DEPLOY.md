@@ -6,6 +6,9 @@ npm ci
 npx prisma migrate deploy
 npx prisma generate
 npm run build
+npm run build:web
+sudo rsync -av --delete ~/apps/WordPing/web/dist/ /var/www/wordping/
+sudo systemctl reload nginx
 npm run pm2:start
 pm2 save
 ```
@@ -19,8 +22,24 @@ npm ci
 npx prisma migrate deploy
 npx prisma generate
 npm run build
+npm run build:web
+sudo rsync -av --delete ~/apps/WordPing/web/dist/ /var/www/wordping/
+sudo systemctl reload nginx
 npm run pm2:restart
+pm2 save
+curl http://localhost:3001/api/health
+curl -I https://wordping.duckdns.org
 ```
+
+## Mini App Static Deploy
+
+Mini App static files are served by `nginx`, not by the Node API.
+
+- Public URL: `https://wordping.duckdns.org`
+- Nginx static root: `/var/www/wordping`
+- Frontend build output: `~/apps/WordPing/web/dist`
+
+After every `npm run build:web`, sync `web/dist` into `/var/www/wordping/` and reload `nginx`, otherwise production may continue serving an old frontend build.
 
 ## Nightly Backup
 

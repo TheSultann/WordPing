@@ -25,7 +25,7 @@ const uz = {
   'onboarding.intervalSaved': '\u2705 <b>Ajoyib!</b> Yangi oraliq: {value} daqiqa.',
   'onboarding.settingsTip': '\u2699\uFE0F Qolgan sozlamalarni keyin menyudan ham ozgartira olasiz.',
   'onboarding.finished':
-    '\u2705 <b>Tayyor!</b> Oraliq: {value} daqiqa.\n\nBirinchi inglizcha sozni yuboring \u{1F447}\n\n<tg-spoiler>\u2139\uFE0F Eslatmalar qanday ishlaydi?</tg-spoiler>',
+    '\u2705 <b>Tayyor!</b> Oraliq: {value} daqiqa.\n\nBirinchi inglizcha sozni yuboring \u{1F447}\n\n{guideLink}',
 
   'btn.back': 'Orqaga',
   'btn.next': 'Tushunarli, boshladik! \u{1F680}',

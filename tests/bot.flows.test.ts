@@ -221,11 +221,18 @@ describe('bot extended flows', () => {
     const user = await prisma.user.findUnique({ where: { id: BigInt(userId) } });
     const session = await prisma.userSession.findUnique({ where: { userId: BigInt(userId) } });
     const texts = sentTexts(callApiSpy);
+    const expectedGuideLink = '<a href="https://example.test/app?tab=settings&flow=stages">ℹ️ Eslatmalar qanday ishlaydi?</a>';
 
     expect(user?.notificationIntervalMinutes).toBe(10);
     expect(session?.state).toBe('IDLE');
-    expect(texts).toContain(t('uz', 'onboarding.finished', { value: 10 }));
-    expect(texts.some((text) => text.includes('<tg-spoiler>ℹ️ Eslatmalar qanday ishlaydi?</tg-spoiler>'))).toBe(true);
+    expect(texts).toContain(t('uz', 'onboarding.finished', { value: 10, guideLink: expectedGuideLink }));
+    expect(texts.some((text) => text.includes(expectedGuideLink))).toBe(true);
+    const guideCall = callApiSpy.mock.calls
+      .filter(([method]: any[]) => method === 'sendMessage')
+      .find(([, payload]: any[]) => String(payload?.text ?? '') === t('uz', 'reviewFlowHint'));
+    expect(guideCall).toBeTruthy();
+    expect((guideCall?.[1] as any)?.reply_markup?.inline_keyboard?.[0]?.[0]?.web_app?.url)
+      .toBe('https://example.test/app?tab=settings&flow=stages');
   });
 
   it('SETTINGS_WAIT_INTERVAL saves value in regular settings flow', async () => {
@@ -1120,16 +1127,18 @@ describe('bot extended flows', () => {
 
     const firstEditPayload = await finishInitialPair(11);
     expect(String(firstEditPayload?.text ?? '')).not.toContain(t('uz', 'reviewFlowHint'));
-    expect(firstEditPayload?.reply_markup?.inline_keyboard?.[0]?.[0]?.callback_data).toBe('review_flow_hint');
+    expect(firstEditPayload?.reply_markup?.inline_keyboard?.[0]?.[0]?.callback_data).toBeUndefined();
     expect(firstEditPayload?.reply_markup?.inline_keyboard?.[0]?.[0]?.text).toContain(t('uz', 'btn.openGuide'));
     expect(firstEditPayload?.reply_markup?.inline_keyboard?.[0]?.[0]?.url).toBeUndefined();
-    expect(firstEditPayload?.reply_markup?.inline_keyboard?.[0]?.[0]?.web_app).toBeUndefined();
+    expect(firstEditPayload?.reply_markup?.inline_keyboard?.[0]?.[0]?.web_app?.url)
+      .toBe('https://example.test/app?tab=settings&flow=stages');
 
     const userAfterFirstHint = await prisma.user.findUnique({ where: { id: BigInt(userId) } });
     expect(userAfterFirstHint?.reviewFlowHintShownAt).not.toBeNull();
 
     const secondEditPayload = await finishInitialPair(12);
-    expect(secondEditPayload?.reply_markup?.inline_keyboard?.[0]?.[0]?.callback_data).toBe('review_flow_hint');
+    expect(secondEditPayload?.reply_markup?.inline_keyboard?.[0]?.[0]?.web_app?.url)
+      .toBe('https://example.test/app?tab=settings&flow=stages');
 
     const thirdEditPayload = await finishInitialPair(13);
     expect(String(thirdEditPayload?.text ?? '')).not.toContain(t('uz', 'reviewFlowHint'));

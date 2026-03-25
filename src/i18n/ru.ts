@@ -23,7 +23,7 @@ const ru = {
   'onboarding.intervalSaved': '✅ <b>Отлично!</b> Интервал: {value} мин.',
   'onboarding.settingsTip': '⚙️ Остальное настроишь потом в меню.',
   'onboarding.finished':
-    '✅ <b>Готово!</b> Интервал: {value} мин.\n\nОтправь первое слово на английском 👇\n\n<tg-spoiler>ℹ️ Как работают напоминания?</tg-spoiler>',
+    '✅ <b>Готово!</b> Интервал: {value} мин.\n\nОтправь первое слово на английском 👇\n\n{guideLink}',
 
   'btn.back': '⬅️ Назад',
   'btn.next': 'Понятно, погнали! 🚀',

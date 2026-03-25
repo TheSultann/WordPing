@@ -129,7 +129,15 @@ const openWebAppKeyboard = (lang: Lang, params?: Record<string, string>, label?:
     : Markup.inlineKeyboard([[Markup.button.url(label ?? webAppLabel(lang), url)]]);
 };
 const reviewFlowHintKeyboard = (lang: Lang) =>
-  Markup.inlineKeyboard([[Markup.button.callback(`ℹ️ ${t(lang, 'btn.openGuide')}`, REVIEW_FLOW_HINT_CALLBACK)]]);
+  openWebAppKeyboard(lang, { tab: 'settings', flow: 'stages' }, `ℹ️ ${t(lang, 'btn.openGuide')}`)
+  ?? Markup.inlineKeyboard([[Markup.button.callback(`ℹ️ ${t(lang, 'btn.openGuide')}`, REVIEW_FLOW_HINT_CALLBACK)]]);
+const buildGuideLinkText = (lang: Lang) => {
+  const guideUrl = buildWebAppUrl({ tab: 'settings', flow: 'stages' });
+  if (guideUrl) {
+    return `<a href="${guideUrl}">ℹ️ ${t(lang, 'btn.openGuide')}</a>`;
+  }
+  return `<tg-spoiler>ℹ️ ${t(lang, 'btn.openGuide')}</tg-spoiler>`;
+};
 const newsDigestRuntime = createNewsDigestRuntime({ mainReplyKeyboard });
 const settingsRuntime = createSettingsRuntime({
   loadUser: (ctx, userId) => ensureUser(userId, toTelegramProfile(ctx.from)),
@@ -523,16 +531,17 @@ bot.on('text', async (ctx) => {
       await resetState(BigInt(userId));
       if (inOnboarding) {
         // Final step of onboarding: Show success and reveal keyboard
-        await ctx.reply(t(effectiveLang, 'onboarding.finished', { value }), {
+        await ctx.reply(t(effectiveLang, 'onboarding.finished', {
+          value,
+          guideLink: buildGuideLinkText(effectiveLang),
+        }), {
           parse_mode: 'HTML',
           ...mainReplyKeyboard(effectiveLang),
         });
-        if (webAppUrl) {
-          await ctx.reply(
-            effectiveLang === 'uz' ? 'Sozlamalar va statistika ilovada' : 'Настройки и статистика в приложении',
-            { parse_mode: 'HTML', ...openWebAppKeyboard(effectiveLang) }
-          );
-        }
+        await ctx.reply(t(effectiveLang, 'reviewFlowHint'), {
+          parse_mode: 'HTML',
+          ...reviewFlowHintKeyboard(effectiveLang),
+        });
         // Do NOT send settings menu here
       } else {
         await ctx.reply(t(effectiveLang, 'settings.interval.saved', { value }), { parse_mode: 'HTML' });

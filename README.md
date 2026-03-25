@@ -216,6 +216,9 @@ npm run install:backup-cron
    - `npx prisma migrate deploy`
    - `npx prisma generate`
    - `npm run build`
+   - `npm run build:web`
+   - `sudo rsync -av --delete ~/apps/WordPing/web/dist/ /var/www/wordping/`
+   - `sudo systemctl reload nginx`
 5. Поднять все процессы:
    - `npm run pm2:start`
 6. Сохранить список процессов:
@@ -234,16 +237,23 @@ npm run install:backup-cron
    - `npx prisma migrate deploy`
 6. Пересобрать Prisma Client:
    - `npx prisma generate`
-7. Собрать проект:
+7. Собрать backend и web:
    - `npm run build`
-8. Перезапустить процессы:
+   - `npm run build:web`
+8. Обновить статику Mini App в `nginx`:
+   - `sudo rsync -av --delete ~/apps/WordPing/web/dist/ /var/www/wordping/`
+   - `sudo systemctl reload nginx`
+9. Перезапустить процессы:
    - `npm run pm2:restart`
-9. Очистить и проверить логи:
+10. Очистить и проверить логи:
    - `pm2 flush`
    - `pm2 logs wordping-worker --lines 60`
    - `pm2 logs wordping-news-worker --lines 60`
    - `pm2 logs wordping-bot --lines 40`
    - `pm2 logs wordping-api --lines 40`
+11. Проверить health и фронт:
+   - `curl http://localhost:3001/api/health`
+   - `curl -I https://wordping.duckdns.org`
 
 Короткий блок копипастой:
 ```bash
@@ -254,7 +264,13 @@ npm ci
 npx prisma migrate deploy
 npx prisma generate
 npm run build
+npm run build:web
+sudo rsync -av --delete ~/apps/WordPing/web/dist/ /var/www/wordping/
+sudo systemctl reload nginx
 npm run pm2:restart
+pm2 save
+curl http://localhost:3001/api/health
+curl -I https://wordping.duckdns.org
 pm2 flush
 pm2 logs wordping-worker --lines 60
 pm2 logs wordping-news-worker --lines 60
@@ -307,6 +323,7 @@ pm2 logs wordping-news-worker --lines 60
 Если открываешь Web App не внутри Telegram, можно передать `?devUserId=123456789`.
 Для продакшена укажи `WEB_ORIGIN` и настрой HTTPS-домен.
 Если фронт и API на одном AWS-сервере, настрой reverse proxy: `https://your-domain/api/* -> http://127.0.0.1:3001/api/*`.
+В текущем проде Mini App статика раздается `nginx` из `/var/www/wordping`, поэтому после `npm run build:web` нужно синхронизировать `~/apps/WordPing/web/dist/` в `/var/www/wordping/` и делать `sudo systemctl reload nginx`, иначе домен может продолжать отдавать старую версию фронта.
 
 ## Автоперевод
 Бот подставляет перевод слова через цепочку fallback:

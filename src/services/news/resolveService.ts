@@ -2,19 +2,13 @@ import { prisma } from '../../db/client';
 import {
     NEWS_STAGE_THRESHOLD,
     DEFAULT_RESOLVE_BATCH,
-    DEFAULT_NEEDS_RESOLVE_SCAN_LIMIT,
-    readNewsExhaustedRetryHours,
-    readNewsJobRetentionDays,
     readNewsMaxJobAttempts,
     readNewsNotFoundRetryStepsMinutes,
     readNewsRetryBaseMinutes,
     readNewsRetryMaxMinutes,
-    readNewsStaleDays,
-    readSourceLinkCheckBatch,
-    readSourceLinkTimeoutMs,
 } from './config';
-import { hoursFromNow, nextUtcDayStart } from './utils';
-import { ResolveOutcome, ResolvePendingNewsExamplesResult } from './types';
+import { nextUtcDayStart } from './utils';
+import type { ResolveOutcome, ResolvePendingNewsExamplesResult } from './types';
 import { findTier1FromNewsCache } from './providers/rss';
 import { findTier2FromNewsData } from './providers/newsdata';
 import { findTier3FromGdelt } from './providers/gdelt';
@@ -199,151 +193,94 @@ export const queueWordNewsResolve = async (
     });
 };
 
-export const enqueueWordsNeedingNewsResolve = async (limit = DEFAULT_NEEDS_RESOLVE_SCAN_LIMIT): Promise<number> => {
-    const words = await prisma.word.findMany({
-        where: {
-            reviews: {
-                some: { stage: { gte: NEWS_STAGE_THRESHOLD } },
-            },
-            OR: [
-                { newsExampleText: null },
-                { newsExampleNeedsRefresh: true },
-            ],
-        },
-        select: { id: true },
-        take: Math.max(1, limit),
-        orderBy: [{ newsExamplePreparedAt: 'asc' }, { id: 'asc' }],
-    });
-
-    for (const word of words) {
-        await queueWordNewsResolve(word.id);
-    }
-
-    return words.length;
-};
-
-export const markOldNewsForRefresh = async (): Promise<number> => {
-    const staleDays = readNewsStaleDays();
-    const cutoffDate = new Date(Date.now() - staleDays * 24 * 60 * 60 * 1000);
-
-    const affected = await prisma.word.updateMany({
-        where: {
-            newsExamplePreparedAt: { lt: cutoffDate },
-            newsExampleNeedsRefresh: false,
-            newsExampleText: { not: null },
-        },
-        data: {
-            newsExampleNeedsRefresh: true,
-        },
-    });
-
-    return affected.count;
-};
-
-const BROKEN_SOURCE_STATUSES = new Set([404, 410]);
-
-const fetchStatusWithTimeout = async (
-    url: string,
-    timeoutMs: number,
-    method: 'HEAD' | 'GET',
-): Promise<number | null> => {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
-    try {
-        const response = await fetch(url, {
-            method,
-            redirect: 'follow',
-            signal: controller.signal,
-        });
-        return response.status;
-    } catch {
-        return null;
-    } finally {
-        clearTimeout(timer);
-    }
-};
-
-const isBrokenSourceUrl = async (url: string, timeoutMs: number): Promise<boolean> => {
-    const headStatus = await fetchStatusWithTimeout(url, timeoutMs, 'HEAD');
-    if (headStatus === null) return false;
-    if (BROKEN_SOURCE_STATUSES.has(headStatus)) return true;
-
-    // Some sources do not support HEAD; fallback to GET for reliable status.
-    if (headStatus === 405 || headStatus === 501) {
-        const getStatus = await fetchStatusWithTimeout(url, timeoutMs, 'GET');
-        return getStatus !== null && BROKEN_SOURCE_STATUSES.has(getStatus);
-    }
-
-    return false;
-};
-
-export const markBrokenNewsSourcesForRefresh = async (
-    limit = readSourceLinkCheckBatch(),
-): Promise<number> => {
-    const maxItems = Math.max(1, limit);
-    const timeoutMs = readSourceLinkTimeoutMs();
-
-    const words = await prisma.word.findMany({
-        where: {
-            newsExampleSourceUrl: { not: null },
-            newsExampleText: { not: null },
-            newsExampleNeedsRefresh: false,
-            reviews: {
-                some: { stage: { gte: NEWS_STAGE_THRESHOLD } },
-            },
-        },
-        select: {
-            id: true,
-            newsExampleSourceUrl: true,
-        },
-        orderBy: [{ newsExamplePreparedAt: 'asc' }, { id: 'asc' }],
-        take: maxItems,
-    });
-
-    let marked = 0;
-    for (const word of words) {
-        const url = word.newsExampleSourceUrl?.trim();
-        if (!url) continue;
-
-        const broken = await isBrokenSourceUrl(url, timeoutMs);
-        if (!broken) continue;
-
-        await prisma.$transaction([
-            prisma.word.update({
-                where: { id: word.id },
-                data: {
-                    newsExampleSourceUrl: null,
-                    newsExampleNeedsRefresh: true,
-                },
-            }),
-            prisma.newsResolveJob.upsert({
-                where: { wordId: word.id },
-                create: {
-                    wordId: word.id,
-                    status: 'PENDING',
-                    attempts: 0,
-                    scheduledAt: new Date(),
-                },
-                update: {
-                    status: 'PENDING',
-                    attempts: 0,
-                    lockedAt: null,
-                    lastError: 'source_url_broken',
-                    scheduledAt: new Date(),
-                },
-            }),
-        ]);
-
-        marked += 1;
-    }
-
-    return marked;
-};
-
 type ClaimedJobRow = {
     id: number;
     wordId: number;
     attempts: number;
+};
+
+type ClaimedJobProcessingStatus = 'resolved' | 'failed' | 'deferred';
+
+const loadClaimedJob = (jobId: number) =>
+    prisma.newsResolveJob.findUnique({
+        where: { id: jobId },
+        include: {
+            word: {
+                include: {
+                    reviews: {
+                        select: { stage: true },
+                    },
+                },
+            },
+        },
+    });
+
+const requeueWordNotReadyJob = async (jobId: number, attempts: number): Promise<void> => {
+    const nextAttempts = Math.max(0, attempts - 1);
+    await prisma.newsResolveJob.update({
+        where: { id: jobId },
+        data: {
+            status: 'PENDING',
+            attempts: nextAttempts,
+            lockedAt: null,
+            scheduledAt: calculateRetryDate(nextAttempts, 'word_not_ready'),
+            lastError: 'word_not_ready',
+        },
+    });
+};
+
+const persistResolvedNewsExample = async (
+    jobId: number,
+    wordId: number,
+    resolved: NonNullable<ResolveOutcome['resolved']>,
+): Promise<void> => {
+    await prisma.word.update({
+        where: { id: wordId },
+        data: {
+            newsExampleText: resolved.text,
+            newsExampleTier: resolved.tier,
+            newsExampleSourceUrl: resolved.sourceUrl,
+            newsExampleSourceTitle: resolved.sourceTitle,
+            newsExamplePreparedAt: new Date(),
+            newsExampleMatchedWord: resolved.matchedWord,
+            newsExampleNeedsRefresh: false,
+        },
+    });
+
+    await markJobDone(jobId);
+};
+
+const processClaimedJob = async (jobInfo: ClaimedJobRow): Promise<ClaimedJobProcessingStatus> => {
+    const job = await loadClaimedJob(jobInfo.id);
+
+    if (!job?.word) {
+        await prisma.newsResolveJob.deleteMany({ where: { id: jobInfo.id } });
+        return 'failed';
+    }
+
+    if (!isWordReadyForNews(job.word.reviews)) {
+        await requeueWordNotReadyJob(jobInfo.id, job.attempts);
+        return 'deferred';
+    }
+
+    try {
+        const outcome = await resolveWordNewsExample(job.word);
+        if (!outcome.resolved) {
+            const reason = outcome.deferredReason ?? (outcome.deferredUntil ? 'provider_deferred' : 'news_not_found');
+            await markJobFailed(jobInfo.id, job.attempts, reason, {
+                ...(outcome.deferredUntil ? { scheduledAt: outcome.deferredUntil } : {}),
+                consumeAttempt: reason === 'news_not_found',
+            });
+            return 'deferred';
+        }
+
+        await persistResolvedNewsExample(jobInfo.id, job.wordId, outcome.resolved);
+        return 'resolved';
+    } catch (error) {
+        const message = error instanceof Error ? error.message : 'resolve_failed';
+        await markJobFailed(jobInfo.id, job.attempts, message, { consumeAttempt: true });
+        return 'failed';
+    }
 };
 
 export const resolvePendingNewsExamples = async (
@@ -392,126 +329,10 @@ export const resolvePendingNewsExamples = async (
     };
 
     for (const jobInfo of claimedJobs) {
-        const job = await prisma.newsResolveJob.findUnique({
-            where: { id: jobInfo.id },
-            include: {
-                word: {
-                    include: {
-                        reviews: {
-                            select: { stage: true },
-                        },
-                    },
-                },
-            },
-        });
-
-        if (!job?.word) {
-            await prisma.newsResolveJob.deleteMany({ where: { id: jobInfo.id } });
-            result.failed += 1;
-            continue;
-        }
-
-        if (!isWordReadyForNews(job.word.reviews)) {
-            const nextAttempts = Math.max(0, job.attempts - 1);
-            await prisma.newsResolveJob.update({
-                where: { id: jobInfo.id },
-                data: {
-                    status: 'PENDING',
-                    attempts: nextAttempts,
-                    lockedAt: null,
-                    scheduledAt: calculateRetryDate(nextAttempts, 'word_not_ready'),
-                    lastError: 'word_not_ready',
-                },
-            });
-            result.deferred += 1;
-            continue;
-        }
-
-        try {
-            const outcome = await resolveWordNewsExample(job.word);
-            if (!outcome.resolved) {
-                const reason = outcome.deferredReason ?? (outcome.deferredUntil ? 'provider_deferred' : 'news_not_found');
-                await markJobFailed(jobInfo.id, job.attempts, reason, {
-                    ...(outcome.deferredUntil ? { scheduledAt: outcome.deferredUntil } : {}),
-                    consumeAttempt: reason === 'news_not_found',
-                });
-                result.deferred += 1;
-                continue;
-            }
-
-            await prisma.word.update({
-                where: { id: job.wordId },
-                data: {
-                    newsExampleText: outcome.resolved.text,
-                    newsExampleTier: outcome.resolved.tier,
-                    newsExampleSourceUrl: outcome.resolved.sourceUrl,
-                    newsExampleSourceTitle: outcome.resolved.sourceTitle,
-                    newsExamplePreparedAt: new Date(),
-                    newsExampleMatchedWord: outcome.resolved.matchedWord,
-                    newsExampleNeedsRefresh: false,
-                },
-            });
-
-            await markJobDone(jobInfo.id);
-            result.resolved += 1;
-        } catch (error) {
-            const message = error instanceof Error ? error.message : 'resolve_failed';
-            await markJobFailed(jobInfo.id, job.attempts, message, { consumeAttempt: true });
-            result.failed += 1;
-        }
+        const status = await processClaimedJob(jobInfo);
+        result[status] += 1;
     }
 
     result.durationMs = Date.now() - startedAt;
     return result;
-};
-
-export const rearmExhaustedNewsResolveJobs = async (limit = DEFAULT_NEEDS_RESOLVE_SCAN_LIMIT): Promise<number> => {
-    const maxJobs = Math.max(1, limit);
-    const maxAttempts = readNewsMaxJobAttempts();
-    const exhaustedRetryHours = readNewsExhaustedRetryHours();
-    const cutoffDate = new Date(Date.now() - exhaustedRetryHours * 60 * 60 * 1000);
-
-    const rearmedRows = await prisma.$queryRaw<{ id: number }[]>`
-        WITH exhausted AS (
-            SELECT j.id
-            FROM "NewsResolveJob" j
-            INNER JOIN "Word" w ON w.id = j."wordId"
-            WHERE j.status = 'FAILED'
-              AND j.attempts >= ${maxAttempts}
-              AND j."updatedAt" <= ${cutoffDate}
-              AND (w."newsExampleNeedsRefresh" = TRUE OR w."newsExampleText" IS NULL)
-            ORDER BY j."updatedAt" ASC, j.id ASC
-            LIMIT ${maxJobs}
-            FOR UPDATE SKIP LOCKED
-        )
-        UPDATE "NewsResolveJob" j
-        SET status = 'PENDING',
-            attempts = 0,
-            "lockedAt" = NULL,
-            "lastError" = 'rearmed_after_exhausted',
-            "scheduledAt" = NOW()
-        FROM exhausted
-        WHERE j.id = exhausted.id
-        RETURNING j.id
-    `;
-
-    return rearmedRows.length;
-};
-
-export const pruneExpiredNewsCacheAndOldJobs = async (): Promise<void> => {
-    const now = new Date();
-    const retentionDays = readNewsJobRetentionDays();
-
-    await prisma.newsCache.deleteMany({
-        where: {
-            expiresAt: { lt: now },
-        },
-    });
-
-    await prisma.newsResolveJob.deleteMany({
-        where: {
-            status: { in: ['DONE', 'FAILED'] },
-            updatedAt: { lt: new Date(now.getTime() - retentionDays * 24 * 60 * 60 * 1000) },
-        },
-    });
 };

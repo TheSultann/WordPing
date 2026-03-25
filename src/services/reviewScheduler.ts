@@ -1,5 +1,5 @@
-import dayjs, { Dayjs } from 'dayjs';
-import { Review } from '../generated/prisma/client';
+import type { Dayjs } from 'dayjs';
+import type { Review } from '../generated/prisma/client';
 import { addMinutes } from '../utils/time';
 
 export type Rating = 'HARD' | 'GOOD' | 'EASY';
@@ -53,13 +53,22 @@ export const scheduleNextReview = (review: Pick<Review, 'stage' | 'intervalMinut
   };
 };
 
-export const scheduleSkipped = (now: Dayjs) => {
+export const scheduleSkipped = (review: Pick<Review, 'stage'>, now: Dayjs) => {
   const intervalMinutes = 60; // still bring back soon if user skipped
   return {
-    stage: 0,
+    stage: Math.max(review.stage ?? 0, 0),
     intervalMinutes,
     nextReviewAt: addMinutes(now, intervalMinutes).toDate(),
     lastReviewAt: now.toDate(),
+  };
+};
+
+export const scheduleUnrated = (review: Pick<Review, 'stage'>, now: Dayjs) => {
+  const intervalMinutes = 60;
+  return {
+    stage: Math.max(review.stage ?? 0, 0),
+    intervalMinutes,
+    nextReviewAt: addMinutes(now, intervalMinutes).toDate(),
   };
 };
 

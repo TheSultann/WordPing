@@ -203,20 +203,35 @@ describe('service integration', () => {
     expect(job?.status).toBe('PENDING');
   });
 
-  it('recordCompletion increments streak after 3 completions', async () => {
+  it('recordCompletion increments streak after 3 completions with accuracy above 50%', async () => {
     await prisma.user.create({ data: { id: userId } });
     const first = await prisma.user.findUnique({ where: { id: userId } });
-    const r1 = await recordCompletion(first!);
+    const r1 = await recordCompletion(first!, true);
     expect(r1.goalReached).toBe(false);
     const second = await prisma.user.findUnique({ where: { id: userId } });
-    const r2 = await recordCompletion(second!);
+    const r2 = await recordCompletion(second!, true);
     expect(r2.goalReached).toBe(false);
     const third = await prisma.user.findUnique({ where: { id: userId } });
-    const r3 = await recordCompletion(third!);
+    const r3 = await recordCompletion(third!, false);
     expect(r3.goalReached).toBe(true);
     const refreshed = await prisma.user.findUnique({ where: { id: userId } });
     expect(refreshed?.streakCount).toBe(1);
     expect(refreshed?.doneTodayCount).toBe(3);
+  });
+
+  it('recordCompletion does not increment streak when accuracy is 50% or lower', async () => {
+    await prisma.user.create({ data: { id: userId } });
+
+    await recordCompletion((await prisma.user.findUnique({ where: { id: userId } }))!, true);
+    await recordCompletion((await prisma.user.findUnique({ where: { id: userId } }))!, false);
+    const result = await recordCompletion((await prisma.user.findUnique({ where: { id: userId } }))!, false);
+
+    expect(result.goalReached).toBe(false);
+
+    const refreshed = await prisma.user.findUnique({ where: { id: userId } });
+    expect(refreshed?.streakCount).toBe(0);
+    expect(refreshed?.doneTodayCount).toBe(3);
+    expect(refreshed?.correctTodayCount).toBe(1);
   });
 
   it('resetProgressIfNeeded resets doneTodayCount on new day', async () => {
@@ -235,9 +250,14 @@ describe('service integration', () => {
 
   it('setQuietHours enforces minimum span', async () => {
     await ensureUser(Number(userId));
-    const updated = await setQuietHours(Number(userId), 600, 650);
-    expect(updated.quietHoursStartMinutes).toBe(600);
-    expect(updated.quietHoursEndMinutes).toBe(1080);
+    await expect(setQuietHours(Number(userId), 600, 650)).rejects.toMatchObject({
+      code: 'quiet_hours_span_too_short',
+      minSpanMinutes: 480,
+    });
+
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+    expect(user?.quietHoursStartMinutes).toBe(480);
+    expect(user?.quietHoursEndMinutes).toBe(1380);
   });
 
   it('setNotificationInterval and limit clamp values', async () => {

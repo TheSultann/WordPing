@@ -78,9 +78,69 @@ const mockFetchByUrl = (handler: (url: string) => Promise<any>) =>
     return handler(url);
   });
 
+const mockEmptyExternalNewsProviders = () =>
+  mockFetchByUrl(async (url) => {
+    if (url.startsWith(TEST_GDELT_API)) {
+      return { ok: true, status: 200, text: async () => JSON.stringify({ articles: [] }) } as any;
+    }
+    if (url.startsWith(TEST_NEWDATA_API)) {
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ status: 'success', results: [] }),
+      } as any;
+    }
+    return {
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ response: { status: 'ok', results: [] } }),
+    } as any;
+  });
+
 const utcDayStart = () => {
   const now = new Date();
   return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+};
+
+const seedQuizUsage = async (
+  items: Array<{
+    wordId: number;
+    outcome: 'CORRECT' | 'WRONG' | 'SKIPPED';
+    questionSentAt: Date;
+  }>,
+) => {
+  const run = await prisma.quizRun.create({
+    data: {
+      userId,
+      status: 'COMPLETED',
+      totalQuestions: items.length,
+      currentIndex: items.length,
+      correctCount: items.filter((item) => item.outcome === 'CORRECT').length,
+      wrongCount: items.filter((item) => item.outcome === 'WRONG').length,
+      skippedCount: items.filter((item) => item.outcome === 'SKIPPED').length,
+      finishedAt: new Date(),
+      durationSeconds: Math.max(1, items.length * 5),
+    },
+  });
+
+  await prisma.quizRunItem.createMany({
+    data: items.map((item, questionIndex) => ({
+      runId: run.id,
+      questionIndex,
+      wordId: item.wordId,
+      direction: 'EN_TO_RU',
+      mode: 'MULTIPLE_CHOICE',
+      promptText: `word-${item.wordId}`,
+      options: ['opt-1', 'opt-2', 'opt-3', 'opt-4'] as any,
+      correctAnswer: 'opt-1',
+      correctOptionIndex: 0,
+      selectedOptionIndex: item.outcome === 'SKIPPED' ? null : item.outcome === 'CORRECT' ? 0 : 1,
+      selectedAnswer: item.outcome === 'SKIPPED' ? null : item.outcome === 'CORRECT' ? 'opt-1' : 'opt-2',
+      outcome: item.outcome,
+      questionSentAt: item.questionSentAt,
+      answeredAt: item.questionSentAt,
+    })),
+  });
 };
 
 beforeAll(async () => {
@@ -460,6 +520,7 @@ describe('newsFallbackService integration', () => {
 
   it('resolvePendingNewsExamples applies limit by claimed jobs, not resolved jobs', async () => {
     process.env.NEWDATA_API_KEY = '';
+    mockEmptyExternalNewsProviders();
 
     const words = await Promise.all([
       createStage4Word('economy', 'ekonomika'),
@@ -816,5 +877,153 @@ describe('newsFallbackService integration', () => {
 
     const user = await prisma.user.findUnique({ where: { id: userId } });
     expect(user?.newsDigestLastOpenedAt).toBeTruthy();
+  });
+
+  it('buildUserNewsDigest emits debug payload when env flag is enabled', async () => {
+    const word = await createStage4Word('economy', 'ekonomika');
+
+    await prisma.word.update({
+      where: { id: word.id },
+      data: {
+        newsExampleText: 'The economy is recovering steadily.',
+        newsExampleTier: 'CACHE',
+        newsExampleSourceUrl: 'https://news.example/economy',
+        newsExampleSourceTitle: 'Economy report',
+        newsExamplePreparedAt: new Date(),
+      },
+    });
+
+    process.env.NEWS_SELECTION_DEBUG = '1';
+    const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    try {
+      const digest = await buildUserNewsDigest(userId, 3);
+      expect(digest).toHaveLength(1);
+
+      const debugCall = consoleSpy.mock.calls.find(([message]) => message === '[news][selection]');
+      expect(debugCall).toBeTruthy();
+      expect((debugCall?.[1] as any)?.label).toBe('digest-ranking');
+      expect(Array.isArray((debugCall?.[1] as any)?.digestWords)).toBe(true);
+      expect(Array.isArray((debugCall?.[1] as any)?.topCandidates)).toBe(true);
+    } finally {
+      delete process.env.NEWS_SELECTION_DEBUG;
+      consoleSpy.mockRestore();
+    }
+  });
+
+  it('buildUserNewsDigest boosts difficult words above equally fresh easy words', async () => {
+    const difficultWord = await createStage4Word('economy', 'ekonomika');
+    const easyWord = await createStage4Word('market', 'rynok');
+    const preparedAt = new Date(Date.now() - 60 * 60 * 1000);
+
+    await prisma.word.update({
+      where: { id: difficultWord.id },
+      data: {
+        newsExampleText: 'The economy remains under pressure after a difficult quarter.',
+        newsExampleTier: 'CACHE',
+        newsExampleSourceUrl: 'https://news.example/economy',
+        newsExampleSourceTitle: 'Economy report',
+        newsExamplePreparedAt: preparedAt,
+      },
+    });
+    await prisma.word.update({
+      where: { id: easyWord.id },
+      data: {
+        newsExampleText: 'The market stabilized after last week.',
+        newsExampleTier: 'CACHE',
+        newsExampleSourceUrl: 'https://news.example/market',
+        newsExampleSourceTitle: 'Market report',
+        newsExamplePreparedAt: preparedAt,
+      },
+    });
+
+    await seedQuizUsage([
+      { wordId: difficultWord.id, outcome: 'WRONG', questionSentAt: new Date(Date.now() - 4 * 24 * 60 * 60 * 1000) },
+      { wordId: difficultWord.id, outcome: 'WRONG', questionSentAt: new Date(Date.now() - 5 * 24 * 60 * 60 * 1000) },
+      { wordId: difficultWord.id, outcome: 'WRONG', questionSentAt: new Date(Date.now() - 6 * 24 * 60 * 60 * 1000) },
+    ]);
+
+    const digest = await buildUserNewsDigest(userId, 1);
+
+    expect(digest).toHaveLength(1);
+    expect(digest[0]?.wordEn).toBe('economy');
+  });
+
+  it('buildUserNewsDigest falls back to source title using the base word form', async () => {
+    const word = await createStage4Word('economy', 'ekonomika');
+
+    await prisma.word.update({
+      where: { id: word.id },
+      data: {
+        newsExampleText: 'Markets rallied today after the vote.',
+        newsExampleMatchedWord: 'economic',
+        newsExampleTier: 'CACHE',
+        newsExampleSourceTitle: 'Economy outlook improves',
+        newsExamplePreparedAt: new Date(),
+      },
+    });
+
+    const digest = await buildUserNewsDigest(userId, 1);
+
+    expect(digest).toHaveLength(1);
+    expect(digest[0]?.wordEn).toBe('economy');
+    expect(digest[0]?.highlightedText).toContain('<u><b>ECONOMY</b></u>');
+  });
+
+  it('buildUserNewsDigest skips a very recent quiz word when the batch is full', async () => {
+    const words = await Promise.all(
+      Array.from({ length: 6 }, (_, index) => createStage4Word(`word-${index + 1}`, `slovo-${index + 1}`)),
+    );
+
+    const now = Date.now();
+    for (const [index, word] of words.entries()) {
+      await prisma.word.update({
+        where: { id: word.id },
+        data: {
+          newsExampleText: `The word-${index + 1} appears in this article.`,
+          newsExampleTier: 'CACHE',
+          newsExampleSourceUrl: `https://news.example/word-${index + 1}`,
+          newsExampleSourceTitle: `Word ${index + 1} article`,
+          newsExamplePreparedAt: new Date(now - index * 60 * 60 * 1000),
+        },
+      });
+    }
+
+    const previousRun = await prisma.quizRun.create({
+      data: {
+        userId,
+        status: 'COMPLETED',
+        totalQuestions: 1,
+        currentIndex: 1,
+        correctCount: 1,
+        finishedAt: new Date(),
+        durationSeconds: 9,
+      },
+    });
+
+    const recentQuestionTime = new Date(now - 2 * 60 * 60 * 1000);
+    await prisma.quizRunItem.create({
+      data: {
+        runId: previousRun.id,
+        questionIndex: 0,
+        wordId: words[0]!.id,
+        direction: 'EN_TO_RU',
+        mode: 'MULTIPLE_CHOICE',
+        promptText: 'word-1',
+        options: ['slovo-1', 'slovo-2', 'slovo-3', 'slovo-4'] as any,
+        correctAnswer: 'slovo-1',
+        correctOptionIndex: 0,
+        selectedOptionIndex: 0,
+        selectedAnswer: 'slovo-1',
+        outcome: 'CORRECT',
+        questionSentAt: recentQuestionTime,
+        answeredAt: recentQuestionTime,
+      },
+    });
+
+    const digest = await buildUserNewsDigest(userId, 5);
+
+    expect(digest).toHaveLength(5);
+    expect(digest.map((item) => item.wordEn)).not.toContain('word-1');
   });
 });

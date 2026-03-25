@@ -1,5 +1,5 @@
 import { trimEnv } from '../../../utils/env';
-import { NewsDataArticle, NewsDataResponse, TierLookupResult } from '../types';
+import type { NewsDataArticle, NewsDataResponse, TierLookupResult } from '../types';
 import {
     newsDataApiKey,
     newsDataApiUrl,

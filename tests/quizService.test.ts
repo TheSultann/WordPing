@@ -89,7 +89,7 @@ afterAll(async () => {
 });
 
 describe('quizService integration', () => {
-  it('builds mixed 10-question run with safe options', async () => {
+  it('builds a quiz run without repeating the same word', async () => {
     await seedQuizWords(8);
 
     const started = await startOrResumeQuiz(userId);
@@ -107,7 +107,11 @@ describe('quizService integration', () => {
     });
 
     expect(run).toBeTruthy();
-    expect(run?.items.length).toBe(QUIZ_TOTAL_QUESTIONS);
+    expect(run?.items.length).toBe(8);
+    expect(run?.totalQuestions).toBe(8);
+
+    const uniqueWordIds = new Set(run!.items.map((item) => item.wordId));
+    expect(uniqueWordIds.size).toBe(run!.items.length);
 
     const directionCounts = run!.items.reduce<Record<string, number>>((acc, item) => {
       acc[item.direction] = (acc[item.direction] ?? 0) + 1;
@@ -138,7 +142,8 @@ describe('quizService integration', () => {
       expect(options).toContain(item.correctAnswer);
 
       if (item.mode === 'FILL_GAP') {
-        expect(item.promptText.includes('_')).toBe(true);
+        expect(item.promptText.includes('___')).toBe(false);
+        expect(item.promptText.includes('<u><b>')).toBe(true);
       }
     }
   });
@@ -159,6 +164,152 @@ describe('quizService integration', () => {
 
     const runCount = await prisma.quizRun.count({ where: { userId } });
     expect(runCount).toBe(1);
+  });
+
+  it('prioritizes overdue hard quiz words and cools down recently solved words', async () => {
+    await seedQuizWords(12);
+
+    const words = await prisma.word.findMany({
+      where: { userId },
+      select: { id: true, wordEn: true },
+      orderBy: { id: 'asc' },
+    });
+    const focusWord = words.find((word) => word.wordEn === 'word-1');
+    const cooledWord = words.find((word) => word.wordEn === 'word-12');
+
+    expect(focusWord).toBeTruthy();
+    expect(cooledWord).toBeTruthy();
+    if (!focusWord || !cooledWord) return;
+
+    await prisma.review.update({
+      where: {
+        wordId_direction: {
+          wordId: focusWord.id,
+          direction: 'EN_TO_RU',
+        },
+      },
+      data: {
+        stage: 4,
+        intervalMinutes: 720,
+        hardStreak: 2,
+        lastResult: 'INCORRECT',
+        lastReviewAt: new Date(Date.now() - 14 * 24 * 60 * 60 * 1000),
+        nextReviewAt: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000),
+      },
+    });
+
+    await prisma.review.update({
+      where: {
+        wordId_direction: {
+          wordId: cooledWord.id,
+          direction: 'EN_TO_RU',
+        },
+      },
+      data: {
+        stage: 3,
+        intervalMinutes: 1440,
+        hardStreak: 0,
+        lastResult: 'CORRECT',
+        lastReviewAt: new Date(),
+        nextReviewAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+      },
+    });
+
+    const previousRun = await prisma.quizRun.create({
+      data: {
+        userId,
+        status: 'COMPLETED',
+        totalQuestions: 1,
+        currentIndex: 1,
+        correctCount: 1,
+        finishedAt: new Date(),
+        durationSeconds: 10,
+      },
+    });
+
+    const recentQuestionTime = new Date(Date.now() - 2 * 60 * 60 * 1000);
+    await prisma.quizRunItem.create({
+      data: {
+        runId: previousRun.id,
+        questionIndex: 0,
+        wordId: cooledWord.id,
+        direction: 'EN_TO_RU',
+        mode: 'MULTIPLE_CHOICE',
+        promptText: cooledWord.wordEn,
+        options: ['native-12', 'native-1', 'native-2', 'native-3'] as any,
+        correctAnswer: 'native-12',
+        correctOptionIndex: 0,
+        selectedOptionIndex: 0,
+        selectedAnswer: 'native-12',
+        outcome: 'CORRECT',
+        questionSentAt: recentQuestionTime,
+        answeredAt: recentQuestionTime,
+      },
+    });
+
+    const started = await startOrResumeQuiz(userId);
+    expect(started.ok).toBe(true);
+    if (!started.ok) return;
+
+    const run = await prisma.quizRun.findUnique({
+      where: { id: started.runId },
+      select: {
+        items: {
+          select: {
+            wordId: true,
+            direction: true,
+          },
+        },
+      },
+    });
+
+    const runWordIds = run?.items.map((item) => item.wordId) ?? [];
+
+    expect(runWordIds).toContain(focusWord.id);
+    expect(runWordIds).not.toContain(cooledWord.id);
+  });
+
+  it('emits selection debug payload when env flag is enabled', async () => {
+    await seedQuizWords(8);
+
+    process.env.QUIZ_SELECTION_DEBUG = '1';
+    const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    try {
+      const started = await startOrResumeQuiz(userId);
+      expect(started.ok).toBe(true);
+
+      const debugCall = consoleSpy.mock.calls.find(([message]) => message === '[quiz][selection]');
+      expect(debugCall).toBeTruthy();
+      expect((debugCall?.[1] as any)?.label).toBe('ranking');
+      expect(Array.isArray((debugCall?.[1] as any)?.selectedCandidates)).toBe(true);
+      expect(Array.isArray((debugCall?.[1] as any)?.topCandidates)).toBe(true);
+    } finally {
+      delete process.env.QUIZ_SELECTION_DEBUG;
+      consoleSpy.mockRestore();
+    }
+  });
+
+  it('shrinks the quiz instead of repeating words when the pool is small', async () => {
+    await seedQuizWords(4);
+
+    const started = await startOrResumeQuiz(userId);
+    expect(started.ok).toBe(true);
+    if (!started.ok) return;
+
+    const run = await prisma.quizRun.findUnique({
+      where: { id: started.runId },
+      include: {
+        items: {
+          orderBy: { questionIndex: 'asc' },
+        },
+      },
+    });
+
+    expect(run).toBeTruthy();
+    expect(run?.items.length).toBe(4);
+    expect(run?.totalQuestions).toBe(4);
+    expect(new Set(run!.items.map((item) => item.wordId)).size).toBe(4);
   });
 
   it('marks timeout as SKIPPED', async () => {
@@ -186,7 +337,7 @@ describe('quizService integration', () => {
     expect(run?.skippedCount).toBe(1);
   });
 
-  it('enforces 5 starts per day', async () => {
+  it('enforces daily starts limit', async () => {
     await seedQuizWords(8);
 
     for (let index = 0; index < QUIZ_DAILY_LIMIT; index += 1) {
@@ -215,7 +366,6 @@ describe('quizService integration', () => {
     let lastResult: any = null;
     for (let index = 0; index < QUIZ_TOTAL_QUESTIONS; index += 1) {
       const current = await getCurrentQuestion(started.runId);
-      expect(current).toBeTruthy();
       if (!current) break;
 
       const item = await prisma.quizRunItem.findUnique({
@@ -245,11 +395,11 @@ describe('quizService integration', () => {
 
     expect(lastResult).toBeTruthy();
     expect(lastResult?.summary?.status).toBe('COMPLETED');
-    expect(lastResult?.summary?.totalQuestions).toBe(QUIZ_TOTAL_QUESTIONS);
+    expect(lastResult?.summary?.totalQuestions).toBe(8);
     expect(
       (lastResult?.summary?.correctCount ?? 0) +
       (lastResult?.summary?.wrongCount ?? 0) +
       (lastResult?.summary?.skippedCount ?? 0),
-    ).toBe(QUIZ_TOTAL_QUESTIONS);
+    ).toBe(8);
   });
 });

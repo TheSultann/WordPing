@@ -1,8 +1,9 @@
 import 'dotenv/config';
+import { randomUUID } from 'node:crypto';
 import express, { type RequestHandler } from 'express';
 import cors from 'cors';
 import { prisma } from '../db/client';
-import { Prisma } from '../generated/prisma/client';
+import type { Prisma } from '../generated/prisma/client';
 import {
   countDueNow,
   countDueToday,
@@ -16,17 +17,26 @@ import {
   setNotificationInterval,
   setNotificationLimit,
   setNotifications,
-  setQuietHours,
+  QuietHoursSpanError,
+  setDoNotDisturbHours,
   countReferrals,
   MIN_NOTIFICATION_INTERVAL,
   MAX_NOTIFICATION_INTERVAL,
   MIN_NOTIFICATIONS_PER_DAY,
   MAX_NOTIFICATIONS_PER_DAY,
 } from '../services/userService';
+import { resetState } from '../services/sessionService';
+import { trimEnv, validateRuntimeEnv } from '../utils/env';
+import { createLogger } from '../utils/logger';
+import { createRuntimeHealthReporter, readRuntimeHealth } from '../utils/runtimeHealth';
 import { DEFAULT_TIMEZONE, nowUtc, startOfUserDay, userNow } from '../utils/time';
 import { type TelegramUser, verifyInitData } from './auth';
 
+validateRuntimeEnv('api');
+
 export const app = express();
+const apiLogger = createLogger('api');
+const apiHealth = createRuntimeHealthReporter('api');
 
 const parseOrigins = (value?: string) =>
   (value ?? '')
@@ -113,6 +123,39 @@ app.use(
 
 app.use(express.json());
 
+app.use('/api', (req, res, next) => {
+  const startedAt = performance.now();
+  const requestId = trimEnv(req.header('x-request-id')) || randomUUID();
+  res.setHeader('x-request-id', requestId);
+
+  res.on('finish', () => {
+    const isHealthRequest = req.path === '/health';
+    if (isHealthRequest && res.statusCode < 400) return;
+
+    const context = {
+      requestId,
+      method: req.method,
+      path: req.originalUrl,
+      statusCode: res.statusCode,
+      durationMs: Math.round(performance.now() - startedAt),
+      ip: req.ip,
+      userId: req.telegramUserId?.toString(),
+    };
+
+    if (res.statusCode >= 500) {
+      apiLogger.error('request failed', context);
+      return;
+    }
+    if (res.statusCode >= 400) {
+      apiLogger.warn('request completed with client error', context);
+      return;
+    }
+    apiLogger.info('request completed', context);
+  });
+
+  next();
+});
+
 const botToken = process.env.BOT_TOKEN ?? '';
 const maxAgeSeconds = parseInt(process.env.INIT_DATA_MAX_AGE_SECONDS ?? '86400', 10);
 const allowDev = process.env.ALLOW_DEV_AUTH === 'true' && process.env.NODE_ENV !== 'production';
@@ -126,8 +169,34 @@ const adminTelegramId = (() => {
 })();
 const LEARNED_STAGE_MIN = 4;
 
-app.get('/api/health', (_req, res) => {
-  res.json({ ok: true });
+app.get('/api/health', async (_req, res) => {
+  let databaseOk = true;
+  try {
+    await prisma.$queryRaw`SELECT 1`;
+  } catch (error) {
+    databaseOk = false;
+    apiHealth.markError(error instanceof Error ? error.message : 'database check failed');
+    apiLogger.error('database health check failed', { error });
+  }
+
+  const services = await readRuntimeHealth();
+  const apiSnapshot = apiHealth.snapshot();
+  services.api = {
+    ...apiSnapshot,
+    status: apiSnapshot.state === 'error' ? 'error' : 'ok',
+    stale: false,
+    updatedAt: new Date().toISOString(),
+  };
+
+  const runtimeOk = Object.values(services).every((service) => service.status === 'ok');
+  const ok = databaseOk;
+
+  return res.status(ok ? 200 : 503).json({
+    ok,
+    runtimeOk,
+    database: { ok: databaseOk },
+    services,
+  });
 });
 
 app.use('/api', async (req, res, next) => {
@@ -144,7 +213,11 @@ app.use('/api', async (req, res, next) => {
             await ensureUser(devId);
             await persistTimezoneIfProvided(req.telegramUserId, req.header('x-timezone'));
           } catch (error) {
-            console.error('Failed to persist timezone', error);
+            apiLogger.warn('failed to persist timezone for dev auth request', {
+              userId: req.telegramUserId.toString(),
+              timezone: req.header('x-timezone'),
+              error,
+            });
           }
           return next();
         }
@@ -164,7 +237,11 @@ app.use('/api', async (req, res, next) => {
     await ensureUser(verified.user.id, toTelegramProfile(verified.user));
     await persistTimezoneIfProvided(req.telegramUserId, req.header('x-timezone'));
   } catch (error) {
-    console.error('Failed to persist timezone', error);
+    apiLogger.warn('failed to persist timezone for telegram auth request', {
+      userId: req.telegramUserId.toString(),
+      timezone: req.header('x-timezone'),
+      error,
+    });
   }
   return next();
 });
@@ -390,7 +467,17 @@ app.patch('/api/settings', async (req, res) => {
     Number.isFinite(quietHoursStartMinutes) &&
     Number.isFinite(quietHoursEndMinutes)
   ) {
-    await setQuietHours(Number(userId), quietHoursStartMinutes, quietHoursEndMinutes);
+    try {
+      await setDoNotDisturbHours(Number(userId), quietHoursStartMinutes, quietHoursEndMinutes);
+    } catch (error) {
+      if (error instanceof QuietHoursSpanError) {
+        return res.status(400).json({
+          error: error.code,
+          minSpanMinutes: error.minSpanMinutes,
+        });
+      }
+      throw error;
+    }
   }
 
   const user = await ensureUser(Number(userId));
@@ -475,9 +562,38 @@ app.delete('/api/words/:id', async (req, res) => {
   }
 
   try {
+    const word = await prisma.word.findFirst({
+      where: {
+        id,
+        userId,
+      },
+      select: {
+        id: true,
+        reviews: {
+          select: { id: true },
+        },
+      },
+    });
+
+    if (!word) {
+      return res.status(404).json({ error: 'not_found' });
+    }
+
+    const reviewIds = word.reviews.map((review) => review.id);
+    const sessionNeedsReset = await prisma.userSession.findFirst({
+      where: {
+        userId,
+        OR: [
+          { wordId: id },
+          ...(reviewIds.length > 0 ? [{ reviewId: { in: reviewIds } }] : []),
+        ],
+      },
+      select: { userId: true },
+    });
+
     // Be explicit: delete review first to avoid FK issues on environments
     // where ON DELETE CASCADE might not be in sync yet.
-    const [, wordsDeleted] = await prisma.$transaction([
+    await prisma.$transaction([
       prisma.review.deleteMany({
         where: {
           userId,
@@ -492,13 +608,13 @@ app.delete('/api/words/:id', async (req, res) => {
       }),
     ]);
 
-    if (wordsDeleted.count === 0) {
-      return res.status(404).json({ error: 'not_found' });
+    if (sessionNeedsReset) {
+      await resetState(userId);
     }
 
     return res.json({ ok: true });
   } catch (error) {
-    console.error('DELETE /api/words/:id failed', { userId: userId.toString(), id, error });
+    apiLogger.error('delete word failed', { userId: userId.toString(), wordId: id, error });
     return res.status(500).json({ error: 'delete_failed' });
   }
 });
@@ -797,9 +913,12 @@ app.post('/api/admin/broadcast', async (req, res) => {
 });
 
 export const startApiServer = () => {
+  apiHealth.start();
+  apiHealth.markOk('api server starting');
   const port = parseInt(process.env.API_PORT ?? '3001', 10);
   return app.listen(port, () => {
-    console.log(`API server listening on :${port}`);
+    apiHealth.markOk('api server listening');
+    apiLogger.info('api server listening', { port });
   });
 };
 

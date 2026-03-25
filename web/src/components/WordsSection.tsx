@@ -1,5 +1,5 @@
 import { BookOpen, Search, Trash2 } from 'lucide-react';
-import { Stats, WordItem } from '../api';
+import type { Stats, WordItem } from '../api';
 
 type TranslateFn = (key: string, params?: Record<string, string | number>) => string;
 type WordStatus = 'learned' | 'due' | 'new';

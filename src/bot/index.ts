@@ -1,12 +1,15 @@
-﻿import 'dotenv/config';
+import 'dotenv/config';
 import { escapeHtml } from '../utils/html';
-import { Context, Markup, Telegraf } from 'telegraf';
+import type { Context } from 'telegraf';
+import { Markup, Telegraf } from 'telegraf';
+import { isAddConfirmCallbackData } from './addConfirmCallbackData';
+import { createAddConfirmRuntime } from './addConfirmRuntime';
+import { addConfirmKeyboard } from './addConfirmUi';
 import {
   ensureUser,
   type TelegramProfile,
+  markReviewFlowHintShown,
   recordCompletion,
-  setNotifications,
-  setQuietHours,
   setNotificationLimit,
   setNotificationInterval,
   setLanguage,
@@ -22,26 +25,23 @@ import {
   detectAndTranslateWithGemini,
   translateAutoWithMyMemory,
 } from '../services/translation';
-import { addWordForUser, applyRating, loadReviewWithWord, DailyWordLimitError, DuplicateWordError } from '../services/reviewService';
+import {
+  addWordForUser,
+  applyRating,
+  loadReviewWithWord,
+  DailyWordLimitError,
+  DuplicateWordError,
+  findExistingWordByNormalizedEn,
+} from '../services/reviewService';
 import { generateSentences, saveSentences, removeSentenceAtIndex, getSentenceForReview, getSentenceCount, MIN_SENTENCES_FOR_SWAP } from '../services/sentenceService';
 import { checkAutoTranslateQuota, commitAutoTranslateQuota } from '../services/translationQuota';
-import { CardDirection, Prisma, QuizRunStatus, ReviewResult } from '../generated/prisma/client';
+import type { ReviewResult } from '../generated/prisma/client';
+import { Prisma } from '../generated/prisma/client';
 import { checkAnswer } from '../services/answerChecker';
-import { Rating } from '../services/reviewScheduler';
-import { buildUserNewsDigest, type NewsDigestItem } from '../services/newsFallbackService';
-import {
-  QUIZ_DAILY_LIMIT,
-  QUIZ_TIME_LIMIT_SECONDS,
-  finishQuiz,
-  getCurrentQuestion,
-  startOrResumeQuiz,
-  submitAnswer,
-  type QuizQuestionView,
-  type SubmitQuizAnswerResult,
-  type QuizSummary,
-} from '../services/quizService';
-import { minutesToTimeString } from '../utils/time';
+import type { Rating } from '../services/reviewScheduler';
+import { createRuntimeHealthReporter } from '../utils/runtimeHealth';
 import { normalizeWhitespace } from '../utils/text';
+import { buildHintMaskByPress, isHintAvailable } from '../utils/hint';
 import {
   MIN_NOTIFICATION_INTERVAL,
   DEFAULT_MAX_NOTIFICATIONS,
@@ -50,7 +50,21 @@ import {
   MAX_NOTIFICATION_INTERVAL,
 } from '../services/userService';
 import { blankTargetInSentence, highlightTargetInSentence } from '../utils/reviewCardText';
-import { t, hasLang, Lang } from '../i18n';
+import { validateRuntimeEnv } from '../utils/env';
+import { createLogger } from '../utils/logger';
+import type { Lang } from '../i18n';
+import { t } from '../i18n';
+import { isNewsDigestCallbackData } from './newsDigestCallbackData';
+import { createNewsDigestRuntime } from './newsDigestRuntime';
+import { NEWS_DIGEST_BUTTON_BY_LANG, NEWS_DIGEST_BUTTONS } from './newsDigestUi';
+import { isQuizCallbackData } from './quizCallbackData';
+import { createQuizRuntime } from './quizRuntime';
+import { isSettingsCallbackData } from './settingsCallbackData';
+import { createSettingsRuntime } from './settingsRuntime';
+
+validateRuntimeEnv('bot');
+const botLogger = createLogger('bot');
+const botHealth = createRuntimeHealthReporter('bot');
 
 const token = process.env.BOT_TOKEN;
 if (!token) {
@@ -66,346 +80,63 @@ const gradeKeyboard = Markup.inlineKeyboard([
     Markup.button.callback('Easy', 'grade:EASY'),
   ],
 ]);
-
-const confirmKeyboard = (lang: Lang) => Markup.inlineKeyboard([
-  [Markup.button.callback(t(lang, 'btn.confirmOk'), 'add_confirm'), Markup.button.callback(t(lang, 'btn.confirmEdit'), 'add_change')],
-  [Markup.button.callback(t(lang, 'btn.cancel'), 'add_cancel')],
-]);
+const REVIEW_FLOW_HINT_CALLBACK = 'review_flow_hint';
 
 const rawWebAppUrl = (process.env.WEBAPP_URL ?? '').trim();
-const parseHttpsUrl = (value: string): string | undefined => {
+const parseAppUrl = (value: string): string | undefined => {
   if (!value) return undefined;
   try {
     const url = new URL(value);
-    return url.protocol === 'https:' ? url.toString() : undefined;
+    return url.protocol === 'https:' || url.protocol === 'http:' ? url.toString() : undefined;
   } catch {
     return undefined;
   }
 };
-const webAppUrl = parseHttpsUrl(rawWebAppUrl);
+const appUrl = parseAppUrl(rawWebAppUrl);
+const webAppUrl = appUrl && appUrl.startsWith('https://') ? appUrl : undefined;
+const buildWebAppUrl = (params?: Record<string, string>) => {
+  const baseUrl = webAppUrl ?? appUrl;
+  if (!baseUrl) return undefined;
+  if (!params || Object.keys(params).length === 0) return baseUrl;
+  const url = new URL(baseUrl);
+  Object.entries(params).forEach(([key, value]) => {
+    url.searchParams.set(key, value);
+  });
+  return url.toString();
+};
 const webAppUnavailableText = rawWebAppUrl
   ? 'WEBAPP_URL must be HTTPS (Telegram does not allow http://).'
   : 'WEBAPP_URL is not set';
 if (rawWebAppUrl && !webAppUrl) {
-  console.warn('[bot] WEBAPP_URL ignored because it is not HTTPS:', rawWebAppUrl);
+  botLogger.warn('WEBAPP_URL ignored because it is not HTTPS', { webAppUrl: rawWebAppUrl });
 }
 const webAppLabel = (lang: Lang) => (lang === 'uz' ? 'Ilova' : 'Приложение');
-const NEWS_DIGEST_BUTTON_BY_LANG: Record<Lang, string> = {
-  ru: '\u{1F4F0} \u041F\u043E\u0447\u0438\u0442\u0430\u0442\u044C \u043D\u043E\u0432\u043E\u0441\u0442\u0438',
-  uz: '\u{1F4F0} Yangiliklarni o\u2018qish',
-};
-const NEWS_DIGEST_BUTTONS = Object.values(NEWS_DIGEST_BUTTON_BY_LANG);
-const NEWS_DIGEST_CARD_TITLE_BY_LANG: Record<Lang, string> = {
-  ru: '\u{1F4F0} \u041D\u043E\u0432\u043E\u0441\u0442\u044C \u0434\u043D\u044F',
-  uz: '\u{1F4F0} Kun yangiligi',
-};
-const NEWS_READ_FULL_LABEL_BY_LANG: Record<Lang, string> = {
-  ru: '\u0427\u0438\u0442\u0430\u0442\u044C \u043E\u0440\u0438\u0433\u0438\u043D\u0430\u043B',
-  uz: 'To\u2018liq o\u2018qish',
-};
-const NEWS_SOURCE_LABEL_BY_LANG: Record<Lang, string> = {
-  ru: '\u0418\u0441\u0442\u043E\u0447\u043D\u0438\u043A',
-  uz: 'Manba',
-};
-const NEWS_DIGEST_FALLBACK_TEXT_BY_LANG: Record<Lang, string> = {
-  ru: '\u{1F4F0} \u041F\u043E\u043A\u0430 \u043D\u0435\u0442 \u0433\u043E\u0442\u043E\u0432\u044B\u0445 \u043D\u043E\u0432\u043E\u0441\u0442\u043D\u044B\u0445 \u043F\u0440\u0438\u043C\u0435\u0440\u043E\u0432. \u041F\u043E\u043F\u0440\u043E\u0431\u0443\u0439\u0442\u0435 \u0447\u0443\u0442\u044C \u043F\u043E\u0437\u0436\u0435.',
-  uz: '\u{1F4F0} Hozircha tayyor yangilik namunalar yo\u2018q. Birozdan keyin urinib ko\u2018ring.',
-};
-const NEWS_DIGEST_STALE_TEXT_BY_LANG: Record<Lang, string> = {
-  ru: '\u0414\u0430\u0439\u0434\u0436\u0435\u0441\u0442 \u0443\u0441\u0442\u0430\u0440\u0435\u043B, \u043E\u0442\u043A\u0440\u043E\u0439\u0442\u0435 \u043D\u043E\u0432\u043E\u0441\u0442\u0438 \u0441\u043D\u043E\u0432\u0430',
-  uz: 'Dayjest eskirdi, yangiliklarni qayta oching',
-};
-const NEWS_NAV_PREV_CALLBACK = 'newsnav:prev';
-const NEWS_NAV_NEXT_CALLBACK = 'newsnav:next';
-const NEWS_NAV_NOOP_CALLBACK = 'newsnav:noop';
-const NEWS_NAV_PREV_LABEL_BY_LANG: Record<Lang, string> = {
-  ru: '⬅️ Назад',
-  uz: '⬅️ Orqaga',
-};
-const NEWS_NAV_NEXT_LABEL_BY_LANG: Record<Lang, string> = {
-  ru: 'Вперёд ➡️',
-  uz: 'Oldinga ➡️',
-};
 
 const QUIZ_BUTTON_BY_LANG: Record<Lang, string> = {
   ru: '\u{1F9E0} Quiz',
   uz: '\u{1F9E0} Quiz',
 };
 const QUIZ_BUTTONS = Object.values(QUIZ_BUTTON_BY_LANG);
-const QUIZ_CALLBACK_ANSWER_PREFIX = 'quiz:answer:';
-const QUIZ_CALLBACK_SKIP_PREFIX = 'quiz:skip:';
-const QUIZ_CALLBACK_NEXT_PREFIX = 'quiz:next:';
-const QUIZ_CALLBACK_EXIT_PREFIX = 'quiz:exit:';
 
-type QuizRunSnapshot = {
-  id: number;
-  status: QuizRunStatus;
-  totalQuestions: number;
-  currentIndex: number;
-  correctCount: number;
-  wrongCount: number;
-  skippedCount: number;
-  startedAt: Date;
-  durationSeconds: number | null;
-};
-
-const parsePositiveInt = (value: string | undefined): number | null => {
-  if (!value) return null;
-  const parsed = Number.parseInt(value, 10);
-  if (!Number.isFinite(parsed) || parsed <= 0) return null;
-  return parsed;
-};
-
-const parseNonNegativeInt = (value: string | undefined): number | null => {
-  if (!value) return null;
-  const parsed = Number.parseInt(value, 10);
-  if (!Number.isFinite(parsed) || parsed < 0) return null;
-  return parsed;
-};
-
-const quizAnswerCallback = (runId: number, questionId: number, optionIndex: number) =>
-  `${QUIZ_CALLBACK_ANSWER_PREFIX}${runId}:${questionId}:${optionIndex}`;
-const quizSkipCallback = (runId: number, questionId: number) =>
-  `${QUIZ_CALLBACK_SKIP_PREFIX}${runId}:${questionId}`;
-const quizNextCallback = (runId: number) => `${QUIZ_CALLBACK_NEXT_PREFIX}${runId}`;
-const quizExitCallback = (runId: number) => `${QUIZ_CALLBACK_EXIT_PREFIX}${runId}`;
-
-type NewsDigestNavItem = Pick<NewsDigestItem, 'wordId' | 'wordEn' | 'translation' | 'highlightedText' | 'sourceUrl' | 'sourceTitle'>;
-
-const isNewsDigestNavItem = (value: unknown): value is NewsDigestNavItem => {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
-  const item = value as Record<string, unknown>;
-  return (
-    typeof item.wordId === 'number' &&
-    typeof item.wordEn === 'string' &&
-    typeof item.highlightedText === 'string' &&
-    (item.translation === null || typeof item.translation === 'string') &&
-    (item.sourceUrl === null || typeof item.sourceUrl === 'string') &&
-    (item.sourceTitle === undefined || item.sourceTitle === null || typeof item.sourceTitle === 'string')
-  );
-};
-
-const newsDigestInlineKeyboard = (lang: Lang, index: number, total: number) =>
-  Markup.inlineKeyboard([
-    [
-      Markup.button.callback(NEWS_NAV_PREV_LABEL_BY_LANG[lang], NEWS_NAV_PREV_CALLBACK),
-      Markup.button.callback(`${Math.max(1, index + 1)} / ${Math.max(1, total)}`, NEWS_NAV_NOOP_CALLBACK),
-      Markup.button.callback(NEWS_NAV_NEXT_LABEL_BY_LANG[lang], NEWS_NAV_NEXT_CALLBACK),
-    ],
-  ]);
-
-const renderNewsDigestCard = (lang: Lang, item: NewsDigestNavItem): string => {
-  const translationPart = item.translation?.trim() ? ` - ${escapeHtml(item.translation.trim())}` : '';
-  const context = item.highlightedText;
-  const sourceLine = item.sourceUrl
-    ? `\n\n🔗 <a href="${escapeHtml(item.sourceUrl)}">${escapeHtml(NEWS_READ_FULL_LABEL_BY_LANG[lang])}</a>`
-    : (item.sourceTitle?.trim()
-      ? `\n\n🔎 ${escapeHtml(NEWS_SOURCE_LABEL_BY_LANG[lang])}: ${escapeHtml(item.sourceTitle.trim())}`
-      : '');
-  return `<b>${NEWS_DIGEST_CARD_TITLE_BY_LANG[lang]}</b>\n\n💡 <b>${escapeHtml(item.wordEn)}</b>${translationPart}\n\n${context}${sourceLine}`;
-};
-
-
-const quizTaskLabel = (lang: Lang, question: QuizQuestionView): string => {
-  if (question.mode === 'TRUE_FALSE') {
-    return lang === 'uz' ? 'Moslik to‘g‘rimi?' : 'Верно ли соответствие?';
-  }
-  if (question.mode === 'FILL_GAP') {
-    return lang === 'uz' ? 'Bo‘sh joyni to‘ldiring:' : 'Заполни пропуск:';
-  }
-  if (question.direction === 'EN_TO_RU') {
-    return lang === 'uz' ? 'Tarjimani tanlang:' : 'Выбери перевод:';
-  }
-  return lang === 'uz' ? 'Inglizcha so‘zni tanlang:' : 'Выбери английское слово:';
-};
-
-const quizQuestionText = (lang: Lang, question: QuizQuestionView): string => {
-  const questionNumber = question.questionIndex + 1;
-  const progress = quizProgressBar(questionNumber - 1, question.totalQuestions);
-  const lines = [
-    `🧠 <b>${lang === 'uz' ? 'Savol' : 'Вопрос'} ${questionNumber}/${question.totalQuestions}</b>  ⏱ ${QUIZ_TIME_LIMIT_SECONDS}${lang === 'uz' ? 's' : 'с'}`,
-    progress,
-    '',
-    `<b>${escapeHtml(quizTaskLabel(lang, question))}</b>`,
-    `💬 <code>${escapeHtml(question.promptText)}</code>`,
-  ];
-  return lines.join('\n');
-};
-
-const quizQuestionKeyboard = (lang: Lang, question: QuizQuestionView) => {
-  const rows: Array<Array<ReturnType<typeof Markup.button.callback>>> = [];
-  if (question.mode === 'TRUE_FALSE') {
-    rows.push([
-      Markup.button.callback(lang === 'uz' ? '✅ To‘g‘ri' : '✅ Верно', quizAnswerCallback(question.runId, question.questionId, 0)),
-      Markup.button.callback(lang === 'uz' ? '❌ Noto‘g‘ri' : '❌ Неверно', quizAnswerCallback(question.runId, question.questionId, 1)),
-    ]);
-  } else {
-    const options = question.options ?? [];
-    for (let index = 0; index < options.length; index += 2) {
-      const left = options[index];
-      const right = options[index + 1];
-      const row: Array<ReturnType<typeof Markup.button.callback>> = [];
-      if (left) {
-        row.push(Markup.button.callback(left, quizAnswerCallback(question.runId, question.questionId, index)));
-      }
-      if (right) {
-        row.push(Markup.button.callback(right, quizAnswerCallback(question.runId, question.questionId, index + 1)));
-      }
-      if (row.length) rows.push(row);
-    }
-  }
-
-  rows.push([
-    Markup.button.callback(lang === 'uz' ? 'O‘tkazish' : 'Пропуск', quizSkipCallback(question.runId, question.questionId)),
-    Markup.button.callback(lang === 'uz' ? 'Chiqish' : 'Выйти', quizExitCallback(question.runId)),
-  ]);
-  return Markup.inlineKeyboard(rows);
-};
-
-const quizAfterAnswerKeyboard = (lang: Lang, runId: number, hasNext: boolean) => {
-  const rows: Array<Array<ReturnType<typeof Markup.button.callback>>> = [];
-  if (hasNext) {
-    rows.push([Markup.button.callback(lang === 'uz' ? 'Keyingi savol' : 'Следующий вопрос', quizNextCallback(runId))]);
-  }
-  rows.push([Markup.button.callback(lang === 'uz' ? 'Chiqish' : 'Выйти', quizExitCallback(runId))]);
-  return Markup.inlineKeyboard(rows);
-};
-
-const quizAccuracy = (correctCount: number, totalQuestions: number): number => {
-  if (!Number.isFinite(totalQuestions) || totalQuestions <= 0) return 0;
-  return Math.round((correctCount / totalQuestions) * 100);
-};
-
-const quizSummaryText = (lang: Lang, summary: QuizSummary): string => {
-  const statusText = summary.status === 'ABANDONED'
-    ? (lang === 'uz' ? 'Toxtatildi' : 'Прерван')
-    : (lang === 'uz' ? 'Yakunlandi' : 'Завершен');
-  const durationLabel = summary.durationSeconds === null ? '-' : `${summary.durationSeconds}s`;
-
-  return [
-    `<b>\u{1F9E0} Quiz ${statusText}</b>`,
-    '',
-    `${lang === 'uz' ? 'Natija' : 'Результат'}: <b>${summary.correctCount}/${summary.totalQuestions}</b>`,
-    `${lang === 'uz' ? 'Aniqlik' : 'Точность'}: <b>${summary.accuracyPercent}%</b>`,
-    `${lang === 'uz' ? 'Xato' : 'Ошибок'}: <b>${summary.wrongCount}</b>`,
-    `${lang === 'uz' ? 'Propusk' : 'Пропусков'}: <b>${summary.skippedCount}</b>`,
-    `${lang === 'uz' ? 'Davomiylik' : 'Длительность'}: <b>${durationLabel}</b>`,
-  ].join('\n');
-};
-
-const quizAnswerResultText = (lang: Lang, result: Extract<SubmitQuizAnswerResult, { ok: true }>): string => {
-  const statusLine = result.outcome === 'CORRECT'
-    ? (lang === 'uz' ? '✅ To‘g‘ri' : '✅ Верно')
-    : result.outcome === 'WRONG'
-      ? (lang === 'uz' ? `❌ Noto‘g‘ri. To‘g‘ri javob: ${escapeHtml(result.correctAnswer)}` : `❌ Неверно. Правильный ответ: ${escapeHtml(result.correctAnswer)}`)
-      : result.timedOut
-        ? (lang === 'uz' ? '⏱ Vaqt tugadi, o‘tkazildi' : '⏱ Время вышло, засчитан пропуск')
-        : (lang === 'uz' ? '⏭ O‘tkazildi' : '⏭ Пропуск');
-  const progress = result.summary
-    ? `${lang === 'uz' ? 'Jarayon' : 'Прогресс'}: <b>${result.summary.correctCount + result.summary.wrongCount + result.summary.skippedCount}/${result.summary.totalQuestions}</b>`
-    : '';
-  const accuracy = result.summary
-    ? `${lang === 'uz' ? 'Aniqlik' : 'Точность'}: <b>${result.summary.accuracyPercent}%</b>`
-    : '';
-  return ['<b>\u{1F9E0} Quiz</b>', statusLine, progress, accuracy].filter(Boolean).join('\n');
-};
-
-const quizLimitReachedText = (lang: Lang, usedToday: number): string =>
-  lang === 'uz'
-    ? `Bugungi Quiz limiti tugadi: ${QUIZ_DAILY_LIMIT}. Ishlatildi: ${usedToday}/${QUIZ_DAILY_LIMIT}.`
-    : `Дневной лимит Quiz исчерпан: ${usedToday}/${QUIZ_DAILY_LIMIT}.`;
-
-const quizInsufficientWordsText = (lang: Lang, minRequiredWords: number): string =>
-  lang === 'uz'
-    ? `Quiz uchun kamida ${minRequiredWords} ta stage>=2 soz kerak.`
-    : `Для Quiz нужно минимум ${minRequiredWords} слов со stage>=2.`;
-
-const quizBusyStateText = (lang: Lang): string =>
-  lang === 'uz'
-    ? 'Avval joriy review kartani tugating.'
-    : 'Сначала завершите текущую review-карточку.';
-
-const quizUseButtonsText = (lang: Lang): string =>
-  lang === 'uz'
-    ? 'Quiz aktiv. Javobni tugmalar bilan bering.'
-    : 'Quiz активен. Отвечайте кнопками.';
-
-const quizUnavailableText = (lang: Lang): string =>
-  lang === 'uz'
-    ? 'Quiz vaqtincha mavjud emas. Keyinroq qayta urinib koring.'
-    : 'Quiz временно недоступен. Попробуйте позже.';
-
-const quizAlreadyHandledText = (lang: Lang, stale: boolean): string => {
-  if (stale) return lang === 'uz' ? 'Bu savol allaqachon yopilgan.' : 'Этот вопрос уже закрыт.';
-  return lang === 'uz' ? 'Javob allaqachon qabul qilingan.' : 'Ответ уже принят.';
-};
-
-const isQuizSchemaMissingError = (error: unknown): boolean => {
-  if (!(error instanceof Prisma.PrismaClientKnownRequestError)) return false;
-  return error.code === 'P2021' || error.code === 'P2022';
-};
-
-const loadQuizRunSnapshot = async (userId: bigint, runId: number): Promise<QuizRunSnapshot | null> => {
-  return prisma.quizRun.findFirst({
-    where: { id: runId, userId },
-    select: {
-      id: true,
-      status: true,
-      totalQuestions: true,
-      currentIndex: true,
-      correctCount: true,
-      wrongCount: true,
-      skippedCount: true,
-      startedAt: true,
-      durationSeconds: true,
-    },
-  });
-};
-
-const toQuizSummaryFromRun = (run: QuizRunSnapshot): QuizSummary => ({
-  runId: run.id,
-  status: run.status,
-  totalQuestions: run.totalQuestions,
-  correctCount: run.correctCount,
-  wrongCount: run.wrongCount,
-  skippedCount: run.skippedCount,
-  accuracyPercent: quizAccuracy(run.correctCount, run.totalQuestions),
-  durationSeconds: run.durationSeconds,
-});
-
-const finalizeCompletedRun = async (run: QuizRunSnapshot): Promise<QuizSummary> => {
-  if (run.status !== 'ACTIVE') return toQuizSummaryFromRun(run);
-  const now = new Date();
-  const durationSeconds = Math.max(0, Math.round((now.getTime() - run.startedAt.getTime()) / 1000));
-  const updated = await prisma.quizRun.update({
-    where: { id: run.id },
-    data: {
-      status: 'COMPLETED',
-      finishedAt: now,
-      durationSeconds,
-      lastActivityAt: now,
-    },
-    select: {
-      id: true,
-      status: true,
-      totalQuestions: true,
-      currentIndex: true,
-      correctCount: true,
-      wrongCount: true,
-      skippedCount: true,
-      startedAt: true,
-      durationSeconds: true,
-    },
-  });
-  return toQuizSummaryFromRun(updated);
-};
 
 const mainReplyKeyboard = (lang: Lang) =>
   Markup.keyboard([[NEWS_DIGEST_BUTTON_BY_LANG[lang], QUIZ_BUTTON_BY_LANG[lang]]]).resize().persistent(true);
-const openWebAppKeyboard = (lang: Lang) =>
-  webAppUrl
-    ? Markup.inlineKeyboard([[Markup.button.webApp(webAppLabel(lang), webAppUrl)]])
-    : undefined;
+const openWebAppKeyboard = (lang: Lang, params?: Record<string, string>, label?: string) => {
+  const url = buildWebAppUrl(params);
+  if (!url) return undefined;
+  return webAppUrl
+    ? Markup.inlineKeyboard([[Markup.button.webApp(label ?? webAppLabel(lang), url)]])
+    : Markup.inlineKeyboard([[Markup.button.url(label ?? webAppLabel(lang), url)]]);
+};
+const reviewFlowHintKeyboard = (lang: Lang) =>
+  Markup.inlineKeyboard([[Markup.button.callback(`ℹ️ ${t(lang, 'btn.openGuide')}`, REVIEW_FLOW_HINT_CALLBACK)]]);
+const newsDigestRuntime = createNewsDigestRuntime({ mainReplyKeyboard });
+const settingsRuntime = createSettingsRuntime({
+  loadUser: (ctx, userId) => ensureUser(userId, toTelegramProfile(ctx.from)),
+});
+const quizRuntime = createQuizRuntime({ bot, mainReplyKeyboard });
+export const runQuizQuestionTimeout = quizRuntime.runQuizQuestionTimeout;
+export const restoreActiveQuizTimeouts = quizRuntime.restoreActiveQuizTimeouts;
 
 const toTelegramProfile = (from?: Context['from']): TelegramProfile | undefined => {
   if (!from) return undefined;
@@ -445,6 +176,12 @@ const formatPairLine = (
 
 const nativeLangForUi = (lang: Lang): 'ru' | 'uz' => (lang === 'uz' ? 'uz' : 'ru');
 
+const addConfirmRuntime = createAddConfirmRuntime({
+  loadUser: (ctx, userId) => ensureUser(userId, toTelegramProfile(ctx.from)),
+  formatPairLine,
+  nativeLangForUi,
+});
+
 const hasCyrillic = (value: string) => /[\u0400-\u04FF]/u.test(value);
 
 const hasUzSpecificLatinMarkers = (value: string) =>
@@ -466,36 +203,13 @@ const shouldTryGeminiDisambiguation = (input: string, detectedLang: 'ru' | 'uz' 
 };
 
 const MAX_HINT_PRESSES_PER_CARD = 3;
+const isRating = (value: string): value is Rating => value === 'HARD' || value === 'GOOD' || value === 'EASY';
 
-const buildMaskedHint = (value: string, revealIndexes: number[]) => {
-  const chars = Array.from(value);
-  if (!chars.length) return null;
-  const reveal = new Set<number>();
-  for (const index of revealIndexes) {
-    if (index >= 0 && index < chars.length) reveal.add(index);
-  }
-  return chars
-    .map((char, index) => {
-      if (reveal.has(index)) return char;
-      if (/\s|['’`-]/.test(char)) return char;
-      return '_';
-    })
-    .join('');
-};
-
-const buildHintMaskByPress = (value: string, press: number): string | null => {
-  const chars = Array.from(value.trim());
-  if (!chars.length) return null;
-  const reveal = [0];
-  if (press >= 2 && chars.length > 1) reveal.push(chars.length - 1);
-  if (press >= 3 && chars.length > 2) reveal.push(1);
-  return buildMaskedHint(value.trim(), reveal);
-};
-
-const cardInlineKeyboard = (reviewId: number, swapData?: string | null) => {
-  const row: Array<{ text: string; callback_data: string }> = [{ text: '💡', callback_data: `hint:${reviewId}` }];
+const cardInlineKeyboard = (reviewId: number, swapData?: string | null, hintEnabled = true) => {
+  const row: Array<{ text: string; callback_data: string }> = [];
+  if (hintEnabled) row.push({ text: '💡', callback_data: `hint:${reviewId}` });
   if (swapData) row.push({ text: '🔄', callback_data: swapData });
-  return { inline_keyboard: [row] };
+  return row.length > 0 ? { inline_keyboard: [row] } : undefined;
 };
 
 
@@ -503,83 +217,6 @@ const cardInlineKeyboard = (reviewId: number, swapData?: string | null) => {
 const languageKeyboard = Markup.inlineKeyboard([
   [Markup.button.callback('🇷🇺 Русский', 'lang:ru'), Markup.button.callback('🇺🇿 O‘zbekcha', 'lang:uz')],
 ]);
-
-type SettingsView = 'main' | 'interval' | 'limit';
-
-const settingsMainKeyboard = (user: any, lang: Lang) =>
-  Markup.inlineKeyboard([
-    [Markup.button.callback(user.notificationsEnabled ? t(lang, 'btn.notifyOn') : t(lang, 'btn.notifyOff'), 'notify:toggle')],
-    [Markup.button.callback(t(lang, 'btn.interval'), 'settings:interval'), Markup.button.callback(t(lang, 'btn.limit'), 'settings:limit')],
-  ]);
-
-const renderMainText = (user: any, lang: Lang) => {
-  return [
-    t(lang, 'settings.title'),
-    '',
-    user.notificationsEnabled ? t(lang, 'settings.notificationsOn') : t(lang, 'settings.notificationsOff'),
-    t(lang, 'settings.intervalLine', { value: user.notificationIntervalMinutes }),
-    t(lang, 'settings.limitLine', { value: user.maxNotificationsPerDay }),
-  ].join('\n');
-};
-
-const renderSectionText = (view: SettingsView, user: any, lang: Lang) => {
-  switch (view) {
-    case "interval":
-      return t(lang, "settings.interval.ask", {
-        current: user.notificationIntervalMinutes,
-        min: MIN_NOTIFICATION_INTERVAL,
-        max: MAX_NOTIFICATION_INTERVAL,
-      });
-    case "limit":
-      return t(lang, "settings.limit.ask", {
-        current: user.maxNotificationsPerDay,
-        min: MIN_NOTIFICATIONS_PER_DAY,
-        max: MAX_NOTIFICATIONS_PER_DAY,
-      });
-    default:
-      return renderMainText(user, lang);
-  }
-};
-
-const safeReply = async (ctx: Context, text: string, extra?: any) => {
-  try {
-    await ctx.reply(text, { parse_mode: 'HTML', ...extra });
-  } catch (e) {
-    console.error('Reply error:', e);
-  }
-};
-
-const safeEditOrReply = async (ctx: Context, text: string, extra?: any) => {
-  if ('editMessageText' in ctx) {
-    try {
-      await (ctx as any).editMessageText(text, { parse_mode: 'HTML', ...extra });
-      return;
-    } catch {
-      // fallback to reply below
-    }
-  }
-  await safeReply(ctx, text, extra);
-};
-
-const sendSettings = async (ctx: Context, userId: number, view: SettingsView = "main", edit = false) => {
-  const fresh = await ensureUser(userId, toTelegramProfile(ctx.from));
-  const lang = (fresh.language as Lang) || 'ru';
-  const text = renderSectionText(view, fresh, lang);
-  const keyboard =
-    view === "interval" || view === "limit"
-      ? Markup.inlineKeyboard([[Markup.button.callback(t(lang, "btn.back"), "settings:main")]])
-      : settingsMainKeyboard(fresh, lang);
-
-  if (edit && "editMessageText" in ctx) {
-    try {
-      await (ctx as any).editMessageText(text, { parse_mode: "HTML", ...keyboard });
-      return;
-    } catch (e) {
-      // fall back
-    }
-  }
-  await ctx.reply(text, { parse_mode: "HTML", ...keyboard });
-};
 bot.start(async (ctx) => {
   if (!ctx.from) return;
   const user = await ensureUser(ctx.from.id, toTelegramProfile(ctx.from));
@@ -593,7 +230,7 @@ bot.start(async (ctx) => {
   }
   await ensureSession(user.id);
   await setState(user.id, 'IDLE', { payload: { onboarding: { step: 'lang' } } });
-  const chooseLangText = `${t('ru', 'chooseLang')}\n${t('uz', 'chooseLang')}`;
+  const chooseLangText = '\u{1F310} Tilni tanlang / \u0412\u044B\u0431\u0435\u0440\u0438 \u044F\u0437\u044B\u043A';
   await ctx.reply(chooseLangText, { parse_mode: 'HTML', ...languageKeyboard });
 });
 
@@ -653,63 +290,7 @@ bot.hears(QUIZ_BUTTONS, async (ctx) => {
 
   const user = await ensureUser(ctx.from.id, toTelegramProfile(ctx.from));
   const lang = ((user.language as Lang) || 'ru');
-  try {
-    const session = await getSession(BigInt(user.id));
-
-    if (session.state === 'WAITING_ANSWER' || session.state === 'WAITING_GRADE') {
-      await ctx.reply(quizBusyStateText(lang), { parse_mode: 'HTML', ...mainReplyKeyboard(lang) });
-      return;
-    }
-
-    const result = await startOrResumeQuiz(user.id);
-    if (!result.ok) {
-      if (result.reason === 'LIMIT_REACHED') {
-        await ctx.reply(quizLimitReachedText(lang, result.usedToday), { parse_mode: 'HTML', ...mainReplyKeyboard(lang) });
-        return;
-      }
-      await ctx.reply(quizInsufficientWordsText(lang, result.minRequiredWords ?? 4), {
-        parse_mode: 'HTML',
-        ...mainReplyKeyboard(lang),
-      });
-      return;
-    }
-
-    if (!result.question && result.summary) {
-      await resetState(BigInt(user.id));
-      await ctx.reply(quizSummaryText(lang, result.summary), { parse_mode: 'HTML', ...mainReplyKeyboard(lang) });
-      return;
-    }
-
-    if (!result.question) {
-      await resetState(BigInt(user.id));
-      await ctx.reply(lang === 'uz' ? 'Quizni boshlab bolmadi. Qayta urinib koring.' : 'Не удалось запустить Quiz. Попробуйте снова.', {
-        parse_mode: 'HTML',
-        ...mainReplyKeyboard(lang),
-      });
-      return;
-    }
-
-    await setState(BigInt(user.id), 'QUIZ_ACTIVE', {
-      payload: {
-        lang,
-        quizRunId: result.runId,
-      },
-    });
-
-    await ctx.reply(quizQuestionText(lang, result.question), {
-      parse_mode: 'HTML',
-      ...quizQuestionKeyboard(lang, result.question),
-    });
-  } catch (error) {
-    console.error('[quiz] start failed', { userId: user.id, error });
-    if (isQuizSchemaMissingError(error)) {
-      await ctx.reply(quizUnavailableText(lang), { ...mainReplyKeyboard(lang) });
-      return;
-    }
-    await ctx.reply(lang === 'uz' ? 'Quiz xatosi. Qayta urinib koring.' : 'Ошибка Quiz. Попробуйте снова.', {
-      ...mainReplyKeyboard(lang),
-    });
-  }
+  await quizRuntime.handleQuizStart(ctx, BigInt(user.id), lang);
 });
 
 bot.hears(NEWS_DIGEST_BUTTONS, async (ctx) => {
@@ -717,57 +298,7 @@ bot.hears(NEWS_DIGEST_BUTTONS, async (ctx) => {
 
   const user = await ensureUser(ctx.from.id, toTelegramProfile(ctx.from));
   const lang = ((user.language as Lang) || 'ru');
-  try {
-    const digest = await buildUserNewsDigest(user.id);
-
-    if (!digest.length) {
-      await ctx.reply(NEWS_DIGEST_FALLBACK_TEXT_BY_LANG[lang], {
-        parse_mode: 'HTML',
-        ...mainReplyKeyboard(lang),
-      });
-      return;
-    }
-
-    const session = await ensureSession(BigInt(user.id));
-    const payloadBase = (session.payload && typeof session.payload === 'object' && !Array.isArray(session.payload))
-      ? (session.payload as Record<string, unknown>)
-      : {};
-    const digestItems: NewsDigestNavItem[] = digest.map((item) => ({
-      wordId: item.wordId,
-      wordEn: item.wordEn,
-      translation: item.translation,
-      highlightedText: item.highlightedText,
-      sourceUrl: item.sourceUrl,
-      sourceTitle: item.sourceTitle,
-    }));
-    await prisma.userSession.update({
-      where: { userId: BigInt(user.id) },
-      data: {
-        payload: {
-          ...payloadBase,
-          newsDigest: {
-            items: digestItems,
-            index: 0,
-            updatedAt: new Date().toISOString(),
-          },
-        } as Prisma.InputJsonValue,
-      },
-    });
-
-    const text = renderNewsDigestCard(lang, digestItems[0]!);
-
-    await ctx.reply(text, {
-      parse_mode: 'HTML',
-      link_preview_options: { is_disabled: true },
-      ...newsDigestInlineKeyboard(lang, 0, digestItems.length),
-    });
-  } catch (error) {
-    console.error('[bot] news digest failed', { userId: user.id, error });
-    await ctx.reply(NEWS_DIGEST_FALLBACK_TEXT_BY_LANG[lang], {
-      parse_mode: 'HTML',
-      ...mainReplyKeyboard(lang),
-    });
-  }
+  await newsDigestRuntime.handleNewsDigestStart(ctx, BigInt(user.id), lang);
 });
 
 bot.on('text', async (ctx) => {
@@ -779,12 +310,7 @@ bot.on('text', async (ctx) => {
   const text = normalizeWhitespace(ctx.message.text);
 
   const findExistingWord = async (wordEn: string) => {
-    return prisma.word.findFirst({
-      where: {
-        userId: BigInt(userId),
-        wordEn: { equals: wordEn.trim(), mode: 'insensitive' },
-      },
-    });
+    return findExistingWordByNormalizedEn(BigInt(userId), wordEn);
   };
 
   const handleAddFlow = async (input: string) => {
@@ -950,10 +476,13 @@ bot.on('text', async (ctx) => {
       if (shouldCommitAutoTranslateQuota) {
         const committed = await commitAutoTranslateQuota(BigInt(userId), user.timezone);
         if (!committed.allowed) {
-          console.warn('Auto-translate quota commit skipped due to concurrent limit usage', {
+          botLogger.warn('Auto-translate quota commit skipped due to concurrent limit usage', {
             userId,
             limit: committed.limit,
             used: committed.used,
+          });
+          await ctx.reply(t(lang, 'add.apiLimitReachedNow', { limit: committed.limit }), {
+            parse_mode: 'HTML',
           });
         }
       }
@@ -961,7 +490,7 @@ bot.on('text', async (ctx) => {
         payload: { wordEn: finalEn, translationRu: finalTranslation },
       });
       await ctx.deleteMessage(searchingMsg.message_id).catch(() => { });
-      await ctx.reply(t(lang, 'add.suggest', { pair }), { parse_mode: 'HTML', ...confirmKeyboard(lang) });
+      await ctx.reply(t(lang, 'add.suggest', { pair }), { parse_mode: 'HTML', ...addConfirmKeyboard(lang) });
     } else {
       await setState(BigInt(userId), 'ADDING_WORD_WAIT_RU_MANUAL', {
         payload: { wordEn: finalEn },
@@ -1007,7 +536,7 @@ bot.on('text', async (ctx) => {
         // Do NOT send settings menu here
       } else {
         await ctx.reply(t(effectiveLang, 'settings.interval.saved', { value }), { parse_mode: 'HTML' });
-        await sendSettings(ctx, userId, 'main', true);
+        await settingsRuntime.sendSettings(ctx, userId, 'main', true);
       }
       break;
     }
@@ -1047,7 +576,7 @@ bot.on('text', async (ctx) => {
       } else {
         await resetState(BigInt(userId));
         await ctx.reply(t(effectiveLang, 'settings.limit.saved', { value }), { parse_mode: 'HTML' });
-        await sendSettings(ctx, userId, 'main', true);
+        await settingsRuntime.sendSettings(ctx, userId, 'main', true);
       }
       break;
     }
@@ -1175,7 +704,7 @@ bot.on('text', async (ctx) => {
       break;
     }
     case 'QUIZ_ACTIVE': {
-      await ctx.reply(quizUseButtonsText(lang), { parse_mode: 'HTML' });
+      await quizRuntime.handleQuizActiveText(ctx, BigInt(userId), lang, text, session);
       break;
     }
     case 'ADDING_WORD_CONFIRM_TRANSLATION': {
@@ -1198,7 +727,7 @@ bot.on('callback_query', async (ctx) => {
   if (data.startsWith('lang:')) {
     const lang = data.split(':')[1] === 'uz' ? 'uz' : 'ru';
     await setLanguage(userId, lang); // PERSIST LANGUAGE
-    const user = await ensureUser(userId, toTelegramProfile(ctx.from));
+    await ensureUser(userId, toTelegramProfile(ctx.from));
     await ctx.answerCbQuery();
     await ctx.reply(t(lang as Lang, 'hint'), {
       parse_mode: 'HTML',
@@ -1224,228 +753,29 @@ bot.on('callback_query', async (ctx) => {
     return;
   }
 
-  if (data.startsWith('quiz:')) {
+  if (isQuizCallbackData(data)) {
     const user = await ensureUser(userId, toTelegramProfile(ctx.from));
     const lang = (user.language as Lang) || 'ru';
-    const parts = data.split(':');
-    const action = parts[1] ?? '';
-
-    try {
-      if (action === 'answer' || action === 'skip') {
-        const runId = parsePositiveInt(parts[2]);
-        const questionId = parsePositiveInt(parts[3]);
-        const selectedOptionIndex = action === 'answer' ? parseNonNegativeInt(parts[4]) : null;
-
-        if (!runId || !questionId || (action === 'answer' && selectedOptionIndex === null)) {
-          await ctx.answerCbQuery(lang === 'uz' ? 'Quiz callback notogri.' : 'Некорректный callback Quiz.');
-          return;
-        }
-
-        const run = await loadQuizRunSnapshot(BigInt(userId), runId);
-        if (!run) {
-          await ctx.answerCbQuery(t(lang, 'session.lost'));
-          return;
-        }
-
-        if (run.status !== 'ACTIVE') {
-          await resetState(BigInt(userId));
-          await safeEditOrReply(ctx, quizSummaryText(lang, toQuizSummaryFromRun(run)));
-          await ctx.answerCbQuery();
-          return;
-        }
-
-        const result = await submitAnswer(runId, questionId, selectedOptionIndex, null);
-        if (!result.ok) {
-          if (result.reason === 'RUN_NOT_ACTIVE') {
-            const latest = await loadQuizRunSnapshot(BigInt(userId), runId);
-            if (latest) {
-              await resetState(BigInt(userId));
-              await safeEditOrReply(ctx, quizSummaryText(lang, toQuizSummaryFromRun(latest)));
-              await ctx.answerCbQuery();
-              return;
-            }
-          }
-          await ctx.answerCbQuery(lang === 'uz' ? 'Javob qabul qilinmadi.' : 'Ответ не принят.');
-          return;
-        }
-
-        if (result.duplicate) {
-          await ctx.answerCbQuery(quizAlreadyHandledText(lang, result.stale));
-          return;
-        }
-
-        if (result.summary && result.summary.status !== 'ACTIVE') {
-          await resetState(BigInt(userId));
-          await safeEditOrReply(ctx, quizSummaryText(lang, result.summary));
-          await ctx.answerCbQuery();
-          return;
-        }
-
-        await setState(BigInt(userId), 'QUIZ_ACTIVE', {
-          payload: { lang, quizRunId: runId },
-        });
-        await safeEditOrReply(
-          ctx,
-          quizAnswerResultText(lang, result),
-          quizAfterAnswerKeyboard(lang, runId, Boolean(result.nextQuestion)),
-        );
-        await ctx.answerCbQuery();
-        return;
-      }
-
-      if (action === 'next') {
-        const runId = parsePositiveInt(parts[2]);
-        if (!runId) {
-          await ctx.answerCbQuery(lang === 'uz' ? 'Quiz callback notogri.' : 'Некорректный callback Quiz.');
-          return;
-        }
-
-        const run = await loadQuizRunSnapshot(BigInt(userId), runId);
-        if (!run) {
-          await ctx.answerCbQuery(t(lang, 'session.lost'));
-          return;
-        }
-
-        if (run.status !== 'ACTIVE') {
-          await resetState(BigInt(userId));
-          await safeEditOrReply(ctx, quizSummaryText(lang, toQuizSummaryFromRun(run)));
-          await ctx.answerCbQuery();
-          return;
-        }
-
-        if (run.currentIndex >= run.totalQuestions) {
-          const summary = await finalizeCompletedRun(run);
-          await resetState(BigInt(userId));
-          await safeEditOrReply(ctx, quizSummaryText(lang, summary));
-          await ctx.answerCbQuery();
-          return;
-        }
-
-        const question = await getCurrentQuestion(runId);
-        if (!question) {
-          await ctx.answerCbQuery(lang === 'uz' ? 'Savol topilmadi. Quizni qayta oching.' : 'Вопрос не найден. Откройте Quiz снова.');
-          return;
-        }
-
-        await setState(BigInt(userId), 'QUIZ_ACTIVE', {
-          payload: { lang, quizRunId: runId },
-        });
-        await safeEditOrReply(ctx, quizQuestionText(lang, question), quizQuestionKeyboard(lang, question));
-        await ctx.answerCbQuery();
-        return;
-      }
-
-      if (action === 'exit') {
-        const runId = parsePositiveInt(parts[2]);
-        if (!runId) {
-          await ctx.answerCbQuery(lang === 'uz' ? 'Quiz callback notogri.' : 'Некорректный callback Quiz.');
-          return;
-        }
-
-        const run = await loadQuizRunSnapshot(BigInt(userId), runId);
-        if (!run) {
-          await ctx.answerCbQuery(t(lang, 'session.lost'));
-          return;
-        }
-
-        const summary = await finishQuiz(runId);
-        await resetState(BigInt(userId));
-        await safeEditOrReply(ctx, quizSummaryText(lang, summary ?? toQuizSummaryFromRun(run)));
-        await ctx.answerCbQuery(lang === 'uz' ? 'Quiz to‘xtatildi.' : 'Квиз остановлен.');
-        return;
-      }
-
-      await ctx.answerCbQuery(lang === 'uz' ? 'Nomalum quiz action.' : 'Unknown quiz action.');
-      return;
-    } catch (error) {
-      console.error('[quiz] callback failed', { userId, data, error });
-      if (isQuizSchemaMissingError(error)) {
-        await resetState(BigInt(userId));
-        await ctx.answerCbQuery(lang === 'uz' ? 'Quiz vaqtincha mavjud emas.' : 'Quiz временно недоступен.');
-        await ctx.reply(quizUnavailableText(lang), { ...mainReplyKeyboard(lang) });
-        return;
-      }
-      await ctx.answerCbQuery(lang === 'uz' ? 'Quiz xatosi.' : 'Ошибка Quiz.');
-      return;
-    }
-  }
-
-  if (data === NEWS_NAV_PREV_CALLBACK || data === NEWS_NAV_NEXT_CALLBACK || data === NEWS_NAV_NOOP_CALLBACK) {
-    const user = await ensureUser(userId, toTelegramProfile(ctx.from));
-    const lang = (user.language as Lang) || 'ru';
-
-    const payload = (session.payload && typeof session.payload === 'object' && !Array.isArray(session.payload))
-      ? (session.payload as Record<string, unknown>)
-      : null;
-    const digestPayload = (payload?.newsDigest && typeof payload.newsDigest === 'object' && !Array.isArray(payload.newsDigest))
-      ? (payload.newsDigest as Record<string, unknown>)
-      : null;
-    const rawItems = Array.isArray(digestPayload?.items) ? digestPayload.items : [];
-    const items = rawItems.filter(isNewsDigestNavItem);
-
-    if (!items.length) {
-      await ctx.answerCbQuery(NEWS_DIGEST_STALE_TEXT_BY_LANG[lang]);
-      return;
-    }
-
-    const currentIndex = (typeof digestPayload?.index === 'number' && Number.isFinite(digestPayload.index))
-      ? Math.max(0, Math.min(items.length - 1, digestPayload.index))
-      : 0;
-
-    if (data === NEWS_NAV_NOOP_CALLBACK) {
-      await ctx.answerCbQuery(`${currentIndex + 1}/${items.length}`);
-      return;
-    }
-
-    const step = data === NEWS_NAV_NEXT_CALLBACK ? 1 : -1;
-    const nextIndex = (currentIndex + step + items.length) % items.length;
-    const payloadBase = payload ?? {};
-
-    await prisma.userSession.update({
-      where: { userId: BigInt(userId) },
-      data: {
-        payload: {
-          ...payloadBase,
-          newsDigest: {
-            items,
-            index: nextIndex,
-            updatedAt: new Date().toISOString(),
-          },
-        } as Prisma.InputJsonValue,
-      },
-    });
-
-    await ctx.editMessageText(renderNewsDigestCard(lang, items[nextIndex]!), {
-      parse_mode: 'HTML',
-      link_preview_options: { is_disabled: true },
-      ...newsDigestInlineKeyboard(lang, nextIndex, items.length),
-    });
-    await ctx.answerCbQuery(`${nextIndex + 1}/${items.length}`);
+    await quizRuntime.handleQuizCallback(ctx, BigInt(userId), lang, data, session);
     return;
   }
 
-  if (data.startsWith('settings:')) {
-    const view = data.split(':')[1] as SettingsView;
+  if (isNewsDigestCallbackData(data)) {
     const user = await ensureUser(userId, toTelegramProfile(ctx.from));
     const lang = (user.language as Lang) || 'ru';
+    await newsDigestRuntime.handleNewsDigestCallback(ctx, BigInt(userId), lang, data, session);
+    return;
+  }
 
-    if (view === 'interval') {
-      await resetState(BigInt(userId));
-      await setState(BigInt(userId), 'SETTINGS_WAIT_INTERVAL');
-      await ctx.answerCbQuery();
-      await ctx.reply(renderSectionText('interval', user, lang), { parse_mode: 'HTML' });
-      return;
-    }
-    if (view === 'limit') {
-      await resetState(BigInt(userId));
-      await setState(BigInt(userId), 'SETTINGS_WAIT_GOAL');
-      await ctx.answerCbQuery();
-      await ctx.reply(renderSectionText('limit', user, lang), { parse_mode: 'HTML' });
-      return;
-    }
-    await resetState(BigInt(userId));
-    await sendSettings(ctx, userId, 'main', true);
-    await ctx.answerCbQuery();
+  if (isSettingsCallbackData(data)) {
+    await settingsRuntime.handleSettingsCallback(ctx, userId, data);
+    return;
+  }
+
+  if (data === REVIEW_FLOW_HINT_CALLBACK) {
+    const user = await ensureUser(userId, toTelegramProfile(ctx.from));
+    const lang = (user.language as Lang) || 'ru';
+    await ctx.answerCbQuery(t(lang, 'reviewFlowHint'), { show_alert: true });
     return;
   }
 
@@ -1480,11 +810,15 @@ bot.on('callback_query', async (ctx) => {
       }
       target = (session.direction === 'EN_TO_RU' ? review.word.translationRu : review.word.wordEn).trim();
     }
+    if (!isHintAvailable(target)) {
+      await ctx.answerCbQuery(t(lang, 'worker.hintUnavailable'));
+      return;
+    }
 
     const nextPress = currentPresses + 1;
     const masked = buildHintMaskByPress(target, nextPress);
     if (!masked) {
-      await ctx.answerCbQuery(t(lang, 'session.lost'));
+      await ctx.answerCbQuery(t(lang, 'worker.hintUnavailable'));
       return;
     }
 
@@ -1508,9 +842,10 @@ bot.on('callback_query', async (ctx) => {
       data: { payload: nextPayload as Prisma.InputJsonValue },
     });
 
+    const replyMarkup = cardInlineKeyboard(reviewId, swapData, true);
     await ctx.editMessageText(nextText, {
       parse_mode: 'HTML',
-      reply_markup: cardInlineKeyboard(reviewId, swapData),
+      ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
     });
     await ctx.answerCbQuery(`${nextPress}/${MAX_HINT_PRESSES_PER_CARD} 💡`);
     return;
@@ -1523,12 +858,21 @@ bot.on('callback_query', async (ctx) => {
       await ctx.answerCbQuery(t(lang, 'grade.noActive'));
       return;
     }
+    const rawRating = data.split(':')[1] ?? '';
+    if (!isRating(rawRating)) {
+      await ctx.answerCbQuery(t(lang, 'grade.noActive'));
+      return;
+    }
+    const reviewId = session.reviewId;
+    const direction = session.direction;
+    const answerText = session.answerText ?? undefined;
+    const wasCorrect = !!(session.payload as any)?.correct;
     const claim = await prisma.userSession.updateMany({
       where: {
         userId: BigInt(userId),
         state: 'WAITING_GRADE',
-        reviewId: session.reviewId,
-        direction: session.direction,
+        reviewId,
+        direction,
       },
       data: {
         state: 'IDLE',
@@ -1545,15 +889,15 @@ bot.on('callback_query', async (ctx) => {
       await ctx.answerCbQuery(t(lang, 'grade.noActive'));
       return;
     }
-    const rating = data.split(':')[1] as Rating;
-    const review = await loadReviewWithWord(session.reviewId);
+    const rating: Rating = rawRating;
+    const review = await loadReviewWithWord(reviewId);
     if (!review || !review.word) {
       await ctx.answerCbQuery(t(lang, 'session.lost'));
       return;
     }
-    const wasCorrect = !!(session.payload as any)?.correct;
+    const isInitialStageZeroReview = review.stage === 0 && review.lastReviewAt === null;
     const result: ReviewResult = wasCorrect ? 'CORRECT' : 'INCORRECT';
-    await applyRating(review, rating, result, session.direction, session.answerText ?? undefined);
+    await applyRating(review, rating, result, direction, answerText);
 
     const freshUser = await ensureUser(userId, toTelegramProfile(ctx.from));
     const progress = await recordCompletion(freshUser, wasCorrect);
@@ -1568,73 +912,34 @@ bot.on('callback_query', async (ctx) => {
     }
 
     const accepted = t(lang, 'grade.accepted');
-    const message = progressLine ? `${accepted}\n${progressLine}` : accepted;
-    await ctx.editMessageText(message, { parse_mode: 'HTML' });
+    let showReviewFlowHintButton = false;
+
+    if (isInitialStageZeroReview) {
+      const remainingUnseenDirections = await prisma.review.count({
+        where: {
+          wordId: review.wordId,
+          lastReviewAt: null,
+        },
+      });
+
+      if (remainingUnseenDirections === 0 && await markReviewFlowHintShown(userId)) {
+        showReviewFlowHintButton = true;
+      }
+    }
+
+    const messageParts = [accepted];
+    if (progressLine) messageParts.push(progressLine);
+
+    await ctx.editMessageText(messageParts.join('\n'), {
+      parse_mode: 'HTML',
+      ...(showReviewFlowHintButton ? reviewFlowHintKeyboard(lang) : {}),
+    });
     await ctx.answerCbQuery(t(lang, 'grade.saved'));
     return;
   }
 
-  if (data === 'add_confirm') {
-    const user = await ensureUser(userId, toTelegramProfile(ctx.from));
-    const lang = (user.language as Lang) || 'ru';
-    if (session.state !== 'ADDING_WORD_CONFIRM_TRANSLATION') {
-      await ctx.answerCbQuery(t(lang, 'session.lost'));
-      return;
-    }
-    const payload = (session.payload as any) || {};
-    if (!payload.wordEn || !payload.translationRu) {
-      await ctx.answerCbQuery(t(lang, 'session.lost'));
-      return;
-    }
-    try {
-      const result = await addWordForUser(BigInt(userId), payload.wordEn, payload.translationRu);
-      // Fire-and-forget sentence generation
-      const addLang = (lang === 'uz' ? 'uz' : 'ru') as 'ru' | 'uz';
-      generateSentences(payload.wordEn, payload.translationRu, addLang)
-        .then((s) => s && saveSentences(result.wordId, s))
-        .catch(() => {/* cron will retry */ });
-      await resetState(BigInt(userId));
-      const pair = formatPairLine(payload.wordEn, payload.translationRu, lang, 'en', nativeLangForUi(lang));
-      await ctx.editMessageText(
-        t(lang, 'add.saved', { pair }),
-        { parse_mode: 'HTML' }
-      );
-    } catch (error) {
-      if (error instanceof DailyWordLimitError) {
-        await ctx.reply(t(lang, 'add.dailyLimit', { limit: error.limit }), { parse_mode: 'HTML' });
-      } else
-        if (error instanceof DuplicateWordError) {
-          await ctx.reply(t(lang, 'add.duplicate', { en: payload.wordEn }), { parse_mode: 'HTML' });
-        } else {
-          await ctx.reply(error instanceof Error ? error.message : t(lang, 'add.error'), { parse_mode: 'HTML' });
-        }
-      await resetState(BigInt(userId));
-    }
-    await ctx.answerCbQuery();
-    return;
-  }
-
-  if (data === 'add_change') {
-    if (session.state !== 'ADDING_WORD_CONFIRM_TRANSLATION') {
-      const user = await ensureUser(userId, toTelegramProfile(ctx.from));
-      const lang = (user.language as Lang) || 'ru';
-      await ctx.answerCbQuery(t(lang, 'session.lost'));
-      return;
-    }
-    const payload = (session.payload as any) || {};
-    await setState(BigInt(userId), 'ADDING_WORD_WAIT_RU_MANUAL', { payload: { wordEn: payload.wordEn } });
-    await ctx.answerCbQuery();
-    const user = await ensureUser(userId, toTelegramProfile(ctx.from));
-    await ctx.editMessageText(t(user.language as Lang, 'add.manual'), { parse_mode: 'HTML' });
-    return;
-  }
-
-  if (data === 'add_cancel') {
-    const user = await ensureUser(userId, toTelegramProfile(ctx.from));
-    const lang = (user.language as Lang) || 'ru';
-    await resetState(BigInt(userId));
-    await ctx.answerCbQuery();
-    await ctx.editMessageText(t(lang, 'add.cancelled'), { parse_mode: 'HTML' });
+  if (isAddConfirmCallbackData(data)) {
+    await addConfirmRuntime.handleAddConfirmCallback(ctx, userId, data, session);
     return;
   }
 
@@ -1727,6 +1032,7 @@ bot.on('callback_query', async (ctx) => {
       ? `swap:${review.wordId}:${nextSentence.index}`
       : null;
     const hintTarget = (direction === 'EN_TO_RU' ? review.word.translationRu : review.word.wordEn).trim();
+    const hintEnabled = isHintAvailable(hintTarget);
     payload.cardBaseText = cardText;
     payload.hintTarget = hintTarget;
     payload.hintPresses = 0;
@@ -1740,34 +1046,34 @@ bot.on('callback_query', async (ctx) => {
     });
 
     // Edit (not delete) the message with new sentence
+    const replyMarkup = cardInlineKeyboard(review.id, newSwapData, hintEnabled);
     await ctx.editMessageText(cardText, {
       parse_mode: 'HTML',
-      reply_markup: cardInlineKeyboard(review.id, newSwapData),
+      ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
     });
     await ctx.answerCbQuery(lang === 'uz' ? 'Jumla almashtirildi 🔄' : 'Пример заменён 🔄');
     return;
   }
 
-  if (data === 'notify:toggle') {
-    const user = await ensureUser(userId, toTelegramProfile(ctx.from));
-    const lang = (user.language as Lang) || 'ru';
-    await setNotifications(userId, !user.notificationsEnabled);
-    await resetState(BigInt(userId));
-    await ctx.answerCbQuery(t(lang, 'notify.toggled'));
-    await sendSettings(ctx, userId, 'main', true);
-    return;
-  }
-
-
   await ctx.answerCbQuery();
 });
 
 bot.catch((err) => {
-  console.error('Bot error', err);
+  botHealth.markError(err instanceof Error ? err.message : 'bot error');
+  botLogger.error('bot error', { error: err });
 });
 
 export const startBot = () => {
-  bot.launch();
+  botHealth.start();
+  botHealth.markOk('bot starting');
+  botLogger.info('bot starting', { webAppConfigured: Boolean(webAppUrl) });
+  void bot.launch();
+  void restoreActiveQuizTimeouts().catch((error) => {
+    botHealth.markError(error instanceof Error ? error.message : 'quiz restore failed');
+    botLogger.error('quiz restore failed', { error });
+  });
+  botHealth.markOk('bot launched');
+  botLogger.info('bot launched', { webAppConfigured: Boolean(webAppUrl) });
   process.once('SIGINT', () => bot.stop('SIGINT'));
   process.once('SIGTERM', () => bot.stop('SIGTERM'));
   return bot;

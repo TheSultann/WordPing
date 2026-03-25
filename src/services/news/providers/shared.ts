@@ -1,5 +1,5 @@
 import { trimEnv } from '../../../utils/env';
-import { Prisma } from '../../../generated/prisma/client';
+import type { Prisma } from '../../../generated/prisma/client';
 import { normalizeWordForMatch } from '../utils';
 
 export const isEnglishLike = (value: string | undefined): boolean => {

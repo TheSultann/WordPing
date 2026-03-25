@@ -1,12 +1,20 @@
-import { CardDirection, Prisma, QuizAnswerOutcome, QuizQuestionMode, QuizRunStatus } from '../generated/prisma/client';
+import type { CardDirection, QuizAnswerOutcome, QuizQuestionMode, QuizRunStatus, ReviewResult } from '../generated/prisma/client';
+import { Prisma } from '../generated/prisma/client';
 import { prisma } from '../db/client';
 import { toExampleSentenceArray } from './sentenceService';
-import { blankTargetInSentence } from '../utils/reviewCardText';
+import { createLogger } from '../utils/logger';
+import { highlightTargetInSentence } from '../utils/reviewCardText';
 import { nowUtc, startOfUserDay } from '../utils/time';
+import { logSelectionDebug } from '../utils/selectionDebug';
+import { loadRecentDirectionalQuizStats } from './quizUsageService';
 
-export const QUIZ_DAILY_LIMIT = 5;
+const quizLogger = createLogger('quiz-service');
+
+export const QUIZ_DAILY_LIMIT = 100;
 export const QUIZ_TOTAL_QUESTIONS = 10;
-export const QUIZ_TIME_LIMIT_SECONDS = 12;
+export const QUIZ_TIME_LIMIT_SECONDS = 25;
+const QUIZ_MIN_WORDS_REQUIRED = 4;
+const QUIZ_PRIORITY_LOOKBACK_DAYS = 21;
 
 const QUIZ_MODES: readonly QuizQuestionMode[] = ['MULTIPLE_CHOICE', 'TRUE_FALSE', 'FILL_GAP'];
 const QUIZ_DIRECTIONS: readonly CardDirection[] = ['EN_TO_RU', 'RU_TO_EN'];
@@ -18,6 +26,36 @@ type QuizWordCandidate = {
   sentenceIndex: number;
   exampleSentences: Prisma.JsonValue | null;
   direction: CardDirection;
+  stage: number;
+  intervalMinutes: number;
+  hardStreak: number;
+  lastResult: ReviewResult | null;
+  lastReviewAt: Date | null;
+  nextReviewAt: Date | null;
+  reviewCreatedAt: Date;
+  recentStats: RecentDirectionalQuizStats | null;
+  priorityDebug: QuizPriorityDebug;
+  priorityScore: number;
+};
+
+type RecentDirectionalQuizStats = {
+  lastSeenAt: Date | null;
+  seenCount: number;
+  correctCount: number;
+  wrongCount: number;
+  skippedCount: number;
+  recentCorrectStreak: number;
+};
+
+type QuizPriorityDebug = {
+  stageBonus: number;
+  reviewRecencyBonus: number;
+  overdueBonus: number;
+  difficultyBonus: number;
+  recentFailureBonus: number;
+  recentSeenPenalty: number;
+  recentSuccessPenalty: number;
+  totalScore: number;
 };
 
 type RawQuestion = {
@@ -128,6 +166,103 @@ const calculateAccuracyPercent = (correctCount: number, totalQuestions: number):
   return Math.round((Math.max(0, correctCount) / totalQuestions) * 100);
 };
 
+const hoursSince = (now: Date, value: Date | null | undefined): number => {
+  if (!value) return Number.POSITIVE_INFINITY;
+  return Math.max(0, (now.getTime() - value.getTime()) / (60 * 60 * 1000));
+};
+
+const quizCandidateKey = (wordId: number, direction: CardDirection): string => `${wordId}:${direction}`;
+
+const quizStagePriorityBonus = (stage: number): number => {
+  if (stage <= 2) return 18;
+  if (stage <= 4) return 22;
+  if (stage <= 6) return 16;
+  if (stage <= 8) return 8;
+  return 2;
+};
+
+const quizReviewRecencyBonus = (hours: number): number => {
+  if (!Number.isFinite(hours)) return 14;
+  if (hours >= 24 * 14) return 18;
+  if (hours >= 24 * 7) return 14;
+  if (hours >= 24 * 3) return 10;
+  if (hours >= 24) return 7;
+  if (hours >= 12) return 4;
+  return 0;
+};
+
+const quizOverdueBonus = (hours: number): number => {
+  if (!Number.isFinite(hours) || hours <= 0) return 0;
+  if (hours >= 24 * 7) return 18;
+  if (hours >= 24) return 12;
+  if (hours >= 6) return 6;
+  return 2;
+};
+
+const quizRecentSeenPenalty = (hours: number): number => {
+  if (!Number.isFinite(hours)) return 0;
+  if (hours < 12) return 40;
+  if (hours < 24) return 28;
+  if (hours < 72) return 16;
+  if (hours < 24 * 7) return 8;
+  return 0;
+};
+
+const buildQuizPriorityDebug = (
+  candidate: Omit<QuizWordCandidate, 'priorityScore'>,
+  stats: RecentDirectionalQuizStats | undefined,
+  now: Date,
+): QuizPriorityDebug => {
+  const reviewAnchor = candidate.lastReviewAt ?? candidate.reviewCreatedAt;
+  const reviewAgeHours = hoursSince(now, reviewAnchor);
+  const overdueHours = candidate.nextReviewAt
+    ? Math.max(0, (now.getTime() - candidate.nextReviewAt.getTime()) / (60 * 60 * 1000))
+    : 0;
+  const lastSeenHours = hoursSince(now, stats?.lastSeenAt);
+
+  const difficultyBonus =
+    Math.min(18, candidate.hardStreak * 6) +
+    (candidate.lastResult === 'INCORRECT' ? 18 : candidate.lastResult === 'SKIPPED' ? 10 : 0);
+  const recentFailureBonus = Math.min(20, (stats?.wrongCount ?? 0) * 8 + (stats?.skippedCount ?? 0) * 5);
+  const recentSuccessPenalty = Math.min(18, (stats?.correctCount ?? 0) * 3 + (stats?.recentCorrectStreak ?? 0) * 4);
+
+  const stageBonus = quizStagePriorityBonus(candidate.stage);
+  const reviewRecencyBonus = quizReviewRecencyBonus(reviewAgeHours);
+  const overdueBonus = quizOverdueBonus(overdueHours);
+  const recentSeenPenalty = quizRecentSeenPenalty(lastSeenHours);
+  const totalScore =
+    50 +
+    stageBonus +
+    reviewRecencyBonus +
+    overdueBonus +
+    difficultyBonus +
+    recentFailureBonus -
+    recentSeenPenalty -
+    recentSuccessPenalty;
+
+  return {
+    stageBonus,
+    reviewRecencyBonus,
+    overdueBonus,
+    difficultyBonus,
+    recentFailureBonus,
+    recentSeenPenalty,
+    recentSuccessPenalty,
+    totalScore,
+  };
+};
+
+const compareQuizCandidates = (left: QuizWordCandidate, right: QuizWordCandidate): number => {
+  if (right.priorityScore !== left.priorityScore) return right.priorityScore - left.priorityScore;
+
+  const leftNext = left.nextReviewAt?.getTime() ?? Number.POSITIVE_INFINITY;
+  const rightNext = right.nextReviewAt?.getTime() ?? Number.POSITIVE_INFINITY;
+  if (leftNext !== rightNext) return leftNext - rightNext;
+
+  if (right.stage !== left.stage) return right.stage - left.stage;
+  return left.wordId - right.wordId;
+};
+
 const toQuizSummary = (run: {
   id: number;
   status: QuizRunStatus;
@@ -147,23 +282,24 @@ const toQuizSummary = (run: {
   durationSeconds: run.durationSeconds,
 });
 
-const buildDirectionSequence = (): CardDirection[] => {
-  const perDirection = Math.floor(QUIZ_TOTAL_QUESTIONS / QUIZ_DIRECTIONS.length);
+const buildDirectionSequence = (totalQuestions: number): CardDirection[] => {
+  const safeTotalQuestions = Math.max(0, totalQuestions);
+  const perDirection = Math.floor(safeTotalQuestions / QUIZ_DIRECTIONS.length);
   const sequence: CardDirection[] = [];
   for (const direction of QUIZ_DIRECTIONS) {
     for (let index = 0; index < perDirection; index += 1) {
       sequence.push(direction);
     }
   }
-  while (sequence.length < QUIZ_TOTAL_QUESTIONS) {
+  while (sequence.length < safeTotalQuestions) {
     sequence.push(QUIZ_DIRECTIONS[sequence.length % QUIZ_DIRECTIONS.length] ?? 'EN_TO_RU');
   }
   return shuffle(sequence);
 };
 
-const buildModeSequence = (): QuizQuestionMode[] => {
+const buildModeSequence = (totalQuestions: number): QuizQuestionMode[] => {
   const modes: QuizQuestionMode[] = [];
-  for (let index = 0; index < QUIZ_TOTAL_QUESTIONS; index += 1) {
+  for (let index = 0; index < totalQuestions; index += 1) {
     modes.push(QUIZ_MODES[index % QUIZ_MODES.length] ?? 'MULTIPLE_CHOICE');
   }
   return modes;
@@ -182,9 +318,9 @@ const buildFillGapPrompt = (candidate: QuizWordCandidate): string | null => {
   if (!sentence) return null;
 
   if (candidate.direction === 'EN_TO_RU') {
-    return blankTargetInSentence(sentence.en, candidate.wordEn);
+    return highlightTargetInSentence(sentence.en, candidate.wordEn);
   }
-  return blankTargetInSentence(sentence.native, candidate.translationRu);
+  return highlightTargetInSentence(sentence.native, candidate.translationRu);
 };
 
 const buildMultipleChoiceQuestion = (
@@ -250,40 +386,102 @@ const buildTrueFalseQuestion = (
   };
 };
 
-const buildQuestionSet = (candidates: QuizWordCandidate[]): RawQuestion[] => {
+const selectRunCandidates = (candidates: QuizWordCandidate[]): QuizWordCandidate[] => {
+  if (!candidates.length) return [];
+
+  const totalQuestions = Math.min(QUIZ_TOTAL_QUESTIONS, new Set(candidates.map((item) => item.wordId)).size);
+  if (totalQuestions <= 0) return [];
+
+  const preferredDirections = buildDirectionSequence(totalQuestions);
+  const selected: QuizWordCandidate[] = [];
+  const usedWordIds = new Set<number>();
+
+  const takeBestCandidate = (direction?: CardDirection): QuizWordCandidate | null => {
+    for (const candidate of candidates) {
+      if (usedWordIds.has(candidate.wordId)) continue;
+      if (direction && candidate.direction !== direction) continue;
+      usedWordIds.add(candidate.wordId);
+      return candidate;
+    }
+    return null;
+  };
+
+  for (const direction of preferredDirections) {
+    const candidate = takeBestCandidate(direction) ?? takeBestCandidate();
+    if (!candidate) break;
+    selected.push(candidate);
+  }
+
+  return selected;
+};
+
+const formatQuizCandidateForDebug = (candidate: QuizWordCandidate) => ({
+  wordId: candidate.wordId,
+  wordEn: candidate.wordEn,
+  direction: candidate.direction,
+  score: candidate.priorityScore,
+  stage: candidate.stage,
+  lastResult: candidate.lastResult,
+  hardStreak: candidate.hardStreak,
+  recentStats: candidate.recentStats,
+  breakdown: candidate.priorityDebug,
+});
+
+const logQuizSelection = (
+  userId: bigint,
+  candidates: QuizWordCandidate[],
+  selectedCandidates: QuizWordCandidate[],
+): void => {
+  logSelectionDebug('quiz', 'ranking', {
+    userId: userId.toString(),
+    totalCandidates: candidates.length,
+    selectedCount: selectedCandidates.length,
+    selectedCandidates: selectedCandidates.map(formatQuizCandidateForDebug),
+    topCandidates: candidates.slice(0, 12).map(formatQuizCandidateForDebug),
+  });
+};
+
+const buildQuestionSet = (
+  selectedCandidates: QuizWordCandidate[],
+  allCandidates: QuizWordCandidate[],
+): RawQuestion[] => {
   const byDirection: Record<CardDirection, QuizWordCandidate[]> = {
-    EN_TO_RU: shuffle(candidates.filter((item) => item.direction === 'EN_TO_RU')),
-    RU_TO_EN: shuffle(candidates.filter((item) => item.direction === 'RU_TO_EN')),
+    EN_TO_RU: selectedCandidates
+      .filter((item) => item.direction === 'EN_TO_RU')
+      .sort(compareQuizCandidates),
+    RU_TO_EN: selectedCandidates
+      .filter((item) => item.direction === 'RU_TO_EN')
+      .sort(compareQuizCandidates),
   };
 
   const nativeAnswerPool = uniqueStrings(
-    candidates
+    allCandidates
       .filter((item) => item.direction === 'EN_TO_RU')
       .map((item) => item.translationRu),
   );
   const englishAnswerPool = uniqueStrings(
-    candidates
+    allCandidates
       .filter((item) => item.direction === 'RU_TO_EN')
       .map((item) => item.wordEn),
   );
 
   if (nativeAnswerPool.length < 4 || englishAnswerPool.length < 4) return [];
-  if (!byDirection.EN_TO_RU.length || !byDirection.RU_TO_EN.length) return [];
+  if (!selectedCandidates.length) return [];
 
-  const directionSequence = buildDirectionSequence();
-  const modeSequence = buildModeSequence();
+  const directionSequence = selectedCandidates.map((item) => item.direction);
+  const modeSequence = buildModeSequence(selectedCandidates.length);
   const pointers: Record<CardDirection, number> = { EN_TO_RU: 0, RU_TO_EN: 0 };
   const out: RawQuestion[] = [];
 
-  for (let index = 0; index < QUIZ_TOTAL_QUESTIONS; index += 1) {
-    const direction = directionSequence[index] ?? 'EN_TO_RU';
+  for (let index = 0; index < selectedCandidates.length; index += 1) {
+    const direction = directionSequence[index] ?? selectedCandidates[index]?.direction ?? 'EN_TO_RU';
     const mode = modeSequence[index] ?? 'MULTIPLE_CHOICE';
     const pool = byDirection[direction];
     if (!pool.length) return [];
 
-    const pointer = pointers[direction] % pool.length;
+    const pointer = pointers[direction];
     pointers[direction] += 1;
-    const candidate = pool[pointer] ?? pool[0];
+    const candidate = pool[pointer];
     if (!candidate) return [];
 
     const answerPool = direction === 'EN_TO_RU' ? nativeAnswerPool : englishAnswerPool;
@@ -299,7 +497,7 @@ const buildQuestionSet = (candidates: QuizWordCandidate[]): RawQuestion[] => {
   return out;
 };
 
-const getUserDayStart = async (userId: bigint, date = nowUtc().toDate()): Promise<Date> => {
+const getUserDayStart = async (userId: bigint): Promise<Date> => {
   const user = await prisma.user.findUnique({
     where: { id: userId },
     select: { timezone: true },
@@ -415,6 +613,9 @@ const finalizeRun = async (runId: number, targetStatus: QuizRunStatus): Promise<
 };
 
 const loadQuizCandidates = async (userId: bigint): Promise<QuizWordCandidate[]> => {
+  const now = new Date();
+  const lookbackSince = new Date(now.getTime() - QUIZ_PRIORITY_LOOKBACK_DAYS * 24 * 60 * 60 * 1000);
+
   const reviews = await prisma.review.findMany({
     where: {
       userId,
@@ -423,6 +624,13 @@ const loadQuizCandidates = async (userId: bigint): Promise<QuizWordCandidate[]> 
     select: {
       wordId: true,
       direction: true,
+      stage: true,
+      intervalMinutes: true,
+      hardStreak: true,
+      lastResult: true,
+      lastReviewAt: true,
+      nextReviewAt: true,
+      createdAt: true,
       word: {
         select: {
           wordEn: true,
@@ -434,8 +642,13 @@ const loadQuizCandidates = async (userId: bigint): Promise<QuizWordCandidate[]> 
     },
     orderBy: [{ wordId: 'asc' }, { direction: 'asc' }],
   });
+  const candidateWordIds = [...new Set(reviews.map((review) => review.wordId))];
+  const recentUsageStats = await loadRecentDirectionalQuizStats(userId, lookbackSince, candidateWordIds);
 
   const dedupe = new Set<string>();
+  const recentStatsByDirection = new Map<string, RecentDirectionalQuizStats>(
+    recentUsageStats.map((row) => [quizCandidateKey(row.wordId, row.direction), row]),
+  );
   const out: QuizWordCandidate[] = [];
 
   for (const review of reviews) {
@@ -443,17 +656,43 @@ const loadQuizCandidates = async (userId: bigint): Promise<QuizWordCandidate[]> 
     if (dedupe.has(key)) continue;
     dedupe.add(key);
     if (!review.word) continue;
-    out.push({
+    const recentStats = recentStatsByDirection.get(quizCandidateKey(review.wordId, review.direction)) ?? null;
+    const candidateBase = {
       wordId: review.wordId,
       direction: review.direction,
       wordEn: review.word.wordEn,
       translationRu: review.word.translationRu,
       sentenceIndex: review.word.sentenceIndex,
       exampleSentences: review.word.exampleSentences,
+      stage: review.stage,
+      intervalMinutes: review.intervalMinutes,
+      hardStreak: review.hardStreak,
+      lastResult: review.lastResult,
+      lastReviewAt: review.lastReviewAt,
+      nextReviewAt: review.nextReviewAt,
+      reviewCreatedAt: review.createdAt,
+      recentStats,
+      priorityDebug: {
+        stageBonus: 0,
+        reviewRecencyBonus: 0,
+        overdueBonus: 0,
+        difficultyBonus: 0,
+        recentFailureBonus: 0,
+        recentSeenPenalty: 0,
+        recentSuccessPenalty: 0,
+        totalScore: 0,
+      },
+    } satisfies Omit<QuizWordCandidate, 'priorityScore'>;
+    const priorityDebug = buildQuizPriorityDebug(candidateBase, recentStats ?? undefined, now);
+
+    out.push({
+      ...candidateBase,
+      priorityDebug,
+      priorityScore: priorityDebug.totalScore,
     });
   }
 
-  return out;
+  return out.sort(compareQuizCandidates);
 };
 
 const consumeDailyQuizStart = async (
@@ -490,7 +729,7 @@ export const startOrResumeQuiz = async (userId: bigint): Promise<StartOrResumeQu
   if (activeRun) {
     const question = await loadQuizQuestion(activeRun.id);
     if (question) {
-      console.log('[quiz] resumed', { userId: userId.toString(), runId: activeRun.id });
+      quizLogger.info('quiz resumed', { userId: userId.toString(), runId: activeRun.id });
       return {
         ok: true,
         resumed: true,
@@ -511,14 +750,16 @@ export const startOrResumeQuiz = async (userId: bigint): Promise<StartOrResumeQu
 
   const dayStart = await getUserDayStart(userId);
   const candidates = await loadQuizCandidates(userId);
-  const rawQuestions = buildQuestionSet(candidates);
-  if (rawQuestions.length < QUIZ_TOTAL_QUESTIONS) {
+  const selectedCandidates = selectRunCandidates(candidates);
+  logQuizSelection(userId, candidates, selectedCandidates);
+  const rawQuestions = buildQuestionSet(selectedCandidates, candidates);
+  if (rawQuestions.length < QUIZ_MIN_WORDS_REQUIRED) {
     return {
       ok: false,
       reason: 'INSUFFICIENT_WORDS',
       limit: QUIZ_DAILY_LIMIT,
       usedToday: 0,
-      minRequiredWords: 4,
+      minRequiredWords: QUIZ_MIN_WORDS_REQUIRED,
     };
   }
 
@@ -536,7 +777,7 @@ export const startOrResumeQuiz = async (userId: bigint): Promise<StartOrResumeQu
       data: {
         userId,
         status: 'ACTIVE',
-        totalQuestions: QUIZ_TOTAL_QUESTIONS,
+        totalQuestions: rawQuestions.length,
         currentIndex: 0,
       },
       select: { id: true },
@@ -573,7 +814,7 @@ export const startOrResumeQuiz = async (userId: bigint): Promise<StartOrResumeQu
   }
 
   const question = await loadQuizQuestion(created.runId);
-  console.log('[quiz] started', { userId: userId.toString(), runId: created.runId });
+  quizLogger.info('quiz started', { userId: userId.toString(), runId: created.runId });
   return {
     ok: true,
     resumed: false,
@@ -847,7 +1088,7 @@ export const submitAnswer = async (
 
   const summary = transactionResult.summary;
   if (summary && summary.status !== 'ACTIVE') {
-    console.log('[quiz] finished', {
+    quizLogger.info('quiz finished', {
       runId: summary.runId,
       status: summary.status,
       accuracyPercent: summary.accuracyPercent,
@@ -856,7 +1097,7 @@ export const submitAnswer = async (
       skipped: summary.skippedCount,
     });
   } else {
-    console.log('[quiz] answered', {
+    quizLogger.info('quiz answered', {
       runId,
       questionId,
       outcome: transactionResult.outcome,
@@ -884,7 +1125,7 @@ export const submitAnswer = async (
 export const finishQuiz = async (runId: number): Promise<QuizSummary | null> => {
   const summary = await finalizeRun(runId, 'ABANDONED');
   if (summary) {
-    console.log('[quiz] abandoned', {
+    quizLogger.info('quiz abandoned', {
       runId: summary.runId,
       accuracyPercent: summary.accuracyPercent,
       correct: summary.correctCount,

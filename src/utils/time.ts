@@ -1,4 +1,5 @@
-﻿import dayjs, { Dayjs } from 'dayjs';
+﻿import type { Dayjs } from 'dayjs';
+import dayjs from 'dayjs';
 import utc from 'dayjs/plugin/utc';
 import timezone from 'dayjs/plugin/timezone';
 
@@ -31,7 +32,7 @@ export const userNow = (tz?: string | null): Dayjs => {
   const zone = resolveTimezone(tz);
   try {
     return dayjs().tz(zone);
-  } catch (e) {
+  } catch {
     return dayjs().tz(DEFAULT_TIMEZONE);
   }
 };
@@ -41,7 +42,7 @@ export const toUserTime = (date: Date | Dayjs, tz?: string | null): Dayjs => {
   const zone = resolveTimezone(tz);
   try {
     return base.tz(zone);
-  } catch (e) {
+  } catch {
     return base.tz(DEFAULT_TIMEZONE);
   }
 };

@@ -64,4 +64,25 @@ describe('verifyInitData', () => {
     const result = verifyInitData(initData, botToken, 86400);
     expect(result.ok).toBe(false);
   });
+
+  it('rejects missing auth_date', () => {
+    const payload = {
+      user: JSON.stringify({ id: 1 }),
+      query_id: 'AAEAAQ',
+    };
+    const initData = buildInitData(botToken, payload);
+    const result = verifyInitData(initData, botToken, 86400);
+    expect(result).toEqual({ ok: false, error: 'auth_date_missing' });
+  });
+
+  it('rejects invalid auth_date', () => {
+    const payload = {
+      auth_date: 'not-a-number',
+      user: JSON.stringify({ id: 1 }),
+      query_id: 'AAEAAQ',
+    };
+    const initData = buildInitData(botToken, payload);
+    const result = verifyInitData(initData, botToken, 86400);
+    expect(result).toEqual({ ok: false, error: 'auth_date_invalid' });
+  });
 });

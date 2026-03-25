@@ -1,10 +1,15 @@
 import { PrismaClientKnownRequestError } from '@prisma/client/runtime/library';
-import { CardDirection, Review, ReviewResult } from '../generated/prisma/client';
+import type { CardDirection, Review, ReviewResult } from '../generated/prisma/client';
 import { prisma } from '../db/client';
-import { initialReviewSchedule, Rating, scheduleNextReview, scheduleSkipped } from './reviewScheduler';
+import type { Rating} from './reviewScheduler';
+import { initialReviewSchedule, scheduleNextReview, scheduleSkipped, scheduleUnrated } from './reviewScheduler';
 import { nowUtc, startOfUserDay } from '../utils/time';
 import { trimEnv } from '../utils/env';
+import { createLogger } from '../utils/logger';
+import { normalizeWordLookup } from '../utils/text';
 import { queueWordNewsResolve } from './newsFallbackService';
+
+const reviewLogger = createLogger('review-service');
 
 export class DuplicateWordError extends Error {
   constructor(message = 'Duplicate word') {
@@ -57,11 +62,55 @@ export type AddWordResult = {
   reviewId: number;
 };
 
+type ExistingWordLookup = {
+  id: number;
+  wordEn: string;
+  translationRu: string;
+};
+
+export const findExistingWordByNormalizedEn = async (
+  userId: bigint,
+  wordEn: string
+): Promise<ExistingWordLookup | null> => {
+  const trimmed = wordEn.trim();
+  if (!trimmed) return null;
+
+  const directMatch = await prisma.word.findFirst({
+    where: {
+      userId,
+      wordEn: { equals: trimmed, mode: 'insensitive' },
+    },
+    select: {
+      id: true,
+      wordEn: true,
+      translationRu: true,
+    },
+  });
+  if (directMatch) return directMatch;
+
+  const normalizedTarget = normalizeWordLookup(trimmed);
+  const candidates = await prisma.word.findMany({
+    where: { userId },
+    select: {
+      id: true,
+      wordEn: true,
+      translationRu: true,
+    },
+  });
+
+  return candidates.find((candidate) => normalizeWordLookup(candidate.wordEn) === normalizedTarget) ?? null;
+};
+
 export const addWordForUser = async (
   userId: bigint,
   wordEn: string,
   translationRu: string
 ): Promise<AddWordResult> => {
+  const existing = await findExistingWordByNormalizedEn(userId, wordEn);
+  if (existing) {
+    throw new DuplicateWordError();
+  }
+
   const now = nowUtc();
   const schedule = initialReviewSchedule(now);
   const dailyLimit = readDailyWordAddLimit();
@@ -226,7 +275,7 @@ export const applyRating = async (
 
   if (review.stage < 4 && updated.stage >= 4) {
     queueWordNewsResolve(review.wordId).catch((error) => {
-      console.error('Failed to queue news resolve job', { wordId: review.wordId, error });
+      reviewLogger.error('failed to queue news resolve job', { wordId: review.wordId, error });
     });
   }
 
@@ -235,7 +284,7 @@ export const applyRating = async (
 
 export const markSkipped = async (review: Review) => {
   const now = nowUtc();
-  const schedule = scheduleSkipped(now);
+  const schedule = scheduleSkipped(review, now);
   return prisma.review.update({
     where: { id: review.id },
     data: {
@@ -245,6 +294,26 @@ export const markSkipped = async (review: Review) => {
       lastReviewAt: schedule.lastReviewAt,
       lastResult: 'SKIPPED',
       hardStreak: 0,
+    },
+  });
+};
+
+export const markPendingGradeExpired = async (
+  review: Review,
+  direction: CardDirection,
+  answerText?: string
+) => {
+  const now = nowUtc();
+  const schedule = scheduleUnrated(review, now);
+  const effectiveDirection = direction === review.direction ? direction : review.direction;
+  return prisma.review.update({
+    where: { id: review.id },
+    data: {
+      stage: schedule.stage,
+      intervalMinutes: schedule.intervalMinutes,
+      nextReviewAt: schedule.nextReviewAt,
+      lastDirection: effectiveDirection,
+      lastAnswerText: answerText ?? review.lastAnswerText ?? null,
     },
   });
 };

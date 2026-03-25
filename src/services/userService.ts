@@ -1,4 +1,4 @@
-import { DirectionMode, User } from '../generated/prisma/client';
+import type { DirectionMode, User } from '../generated/prisma/client';
 import { prisma } from '../db/client';
 import { ensureSession } from './sessionService';
 import { DEFAULT_TIMEZONE, diffInDays, startOfUserDay, userNow } from '../utils/time';
@@ -59,6 +59,26 @@ const buildProfileData = (profile?: TelegramProfile) => {
   };
 };
 
+const normalizeMinutes = (value: number) => ((value % 1440) + 1440) % 1440;
+
+const calculateWindowSpanMinutes = (startMinutes: number, endMinutes: number) => {
+  if (startMinutes === endMinutes) return 1440;
+  return startMinutes < endMinutes
+    ? endMinutes - startMinutes
+    : 1440 - (startMinutes - endMinutes);
+};
+
+export class QuietHoursSpanError extends Error {
+  readonly code = 'quiet_hours_span_too_short';
+  readonly minSpanMinutes: number;
+
+  constructor(minSpanMinutes = MIN_QUIET_SPAN_MINUTES) {
+    super(`Quiet-hours span must be at least ${minSpanMinutes} minutes`);
+    this.name = 'QuietHoursSpanError';
+    this.minSpanMinutes = minSpanMinutes;
+  }
+}
+
 export const ensureUser = async (telegramId: number, profile?: TelegramProfile): Promise<User> => {
   const id = toId(telegramId);
   const profileData = buildProfileData(profile) as Record<string, unknown>;
@@ -84,24 +104,20 @@ export const setNotifications = async (telegramId: number, enabled: boolean) => 
   return prisma.user.update({ where: { id: toId(telegramId) }, data: { notificationsEnabled: enabled } });
 };
 
-export const setQuietHours = async (telegramId: number, startMinutes: number, endMinutes: number) => {
-  // enforce at least MIN_QUIET_SPAN_MINUTES span to avoid too narrow windows
-  const normStart = ((startMinutes % 1440) + 1440) % 1440;
-  let normEnd = ((endMinutes % 1440) + 1440) % 1440;
-  const span =
-    normStart === normEnd
-      ? 1440
-      : normStart < normEnd
-        ? normEnd - normStart
-        : 1440 - (normStart - normEnd);
+export const setDoNotDisturbHours = async (telegramId: number, startMinutes: number, endMinutes: number) => {
+  const normStart = normalizeMinutes(startMinutes);
+  const normEnd = normalizeMinutes(endMinutes);
+  const span = calculateWindowSpanMinutes(normStart, normEnd);
   if (span < MIN_QUIET_SPAN_MINUTES) {
-    normEnd = (normStart + MIN_QUIET_SPAN_MINUTES) % 1440;
+    throw new QuietHoursSpanError();
   }
   return prisma.user.update({
     where: { id: toId(telegramId) },
     data: { quietHoursStartMinutes: normStart, quietHoursEndMinutes: normEnd },
   });
 };
+
+export const setQuietHours = setDoNotDisturbHours;
 
 export const setNotificationLimit = async (telegramId: number, maxPerDay: number) => {
   const clamped = Math.min(Math.max(maxPerDay, MIN_NOTIFICATIONS_PER_DAY), MAX_NOTIFICATIONS_PER_DAY);
@@ -125,6 +141,18 @@ export const setTimezone = async (telegramId: number, timezone?: string | null) 
 
 export const setLanguage = async (telegramId: number, language: string) => {
   return prisma.user.update({ where: { id: toId(telegramId) }, data: { language } });
+};
+
+export const markReviewFlowHintShown = async (telegramId: number) => {
+  const updated = await prisma.$queryRaw<Array<{ reviewFlowHintShownCount: number }>>`
+    UPDATE "User"
+    SET "reviewFlowHintShownAt" = COALESCE("reviewFlowHintShownAt", NOW()),
+        "reviewFlowHintShownCount" = "reviewFlowHintShownCount" + 1
+    WHERE "id" = ${toId(telegramId)}
+      AND "reviewFlowHintShownCount" < 2
+    RETURNING "reviewFlowHintShownCount"
+  `;
+  return updated.length > 0;
 };
 
 export const setReferredByIfEmpty = async (telegramId: number, referrerId: number) => {
@@ -211,7 +239,8 @@ export const recordCompletion = async (user: User, isCorrect = false): Promise<D
   }
 
   let goalReached = false;
-  if (doneToday >= STREAK_DAILY_TARGET) {
+  const accuracyQualified = doneToday >= STREAK_DAILY_TARGET && (correctToday / doneToday) > 0.5;
+  if (accuracyQualified) {
     if (!lastStreakDay) {
       streakCount = 1;
       goalReached = true;

@@ -286,7 +286,7 @@ export const nextUtcDayStart = (date: Date): Date =>
 export const hoursFromNow = (hours: number): Date => new Date(Date.now() + hours * 60 * 60 * 1000);
 
 // Needs type RssNormalizedItem 
-import { RssNormalizedItem } from './types';
+import type { RssNormalizedItem } from './types';
 
 export const parseRssFeed = (xml: string, sourceUrl: string): RssNormalizedItem[] => {
     const items: RssNormalizedItem[] = [];

@@ -64,6 +64,28 @@ describe('API integration', () => {
     const res = await request(app).get('/api/health');
     expect(res.status).toBe(200);
     expect(res.body.ok).toBe(true);
+    expect(res.body.runtimeOk).toEqual(expect.any(Boolean));
+    expect(res.body.database).toEqual({ ok: true });
+    expect(res.body.services.api).toMatchObject({
+      service: 'api',
+      status: expect.any(String),
+      stale: expect.any(Boolean),
+    });
+    expect(res.body.services.bot).toMatchObject({
+      service: 'bot',
+      status: expect.any(String),
+      stale: expect.any(Boolean),
+    });
+    expect(res.body.services.worker).toMatchObject({
+      service: 'worker',
+      status: expect.any(String),
+      stale: expect.any(Boolean),
+    });
+    expect(res.body.services['news-worker']).toMatchObject({
+      service: 'news-worker',
+      status: expect.any(String),
+      stale: expect.any(Boolean),
+    });
   });
 
   it('GET /api/settings returns defaults', async () => {
@@ -335,6 +357,52 @@ describe('API integration', () => {
       .set('x-dev-user-id', userId.toString());
     expect(listAfter.body.items.length).toBe(0);
     expect(listAfter.body.hasMore).toBe(false);
+  });
+
+  it('DELETE /api/words/:id resets active session when deleted word is open in review', async () => {
+    await prisma.user.create({ data: { id: userId } });
+    const created = await prisma.word.create({
+      data: {
+        userId,
+        wordEn: 'active-delete',
+        translationRu: 'активное удаление',
+        reviews: {
+          create: {
+            direction: 'EN_TO_RU',
+            userId,
+            stage: 2,
+            intervalMinutes: 30,
+            nextReviewAt: new Date(),
+          },
+        },
+      },
+      include: { reviews: true },
+    });
+
+    await prisma.userSession.create({
+      data: {
+        userId,
+        state: 'WAITING_ANSWER',
+        reviewId: created.reviews[0]!.id,
+        wordId: created.id,
+        direction: 'EN_TO_RU',
+        sentAt: new Date(),
+        reminderStep: 0,
+      },
+    });
+
+    const del = await request(app)
+      .delete(`/api/words/${created.id}`)
+      .set('x-dev-user-id', userId.toString());
+
+    expect(del.status).toBe(200);
+    expect(del.body.ok).toBe(true);
+
+    const session = await prisma.userSession.findUnique({ where: { userId } });
+    expect(session?.state).toBe('IDLE');
+    expect(session?.reviewId).toBeNull();
+    expect(session?.wordId).toBeNull();
+    expect(session?.direction).toBeNull();
   });
 
   it('DELETE /api/words/:id rejects non-integer ids', async () => {
@@ -708,8 +776,15 @@ describe('API integration', () => {
         quietHoursStartMinutes: 600,
         quietHoursEndMinutes: 650,
       });
-    expect(res.status).toBe(200);
-    expect(res.body.quietHoursStartMinutes).toBe(600);
-    expect(res.body.quietHoursEndMinutes).toBe(1080);
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('quiet_hours_span_too_short');
+    expect(res.body.minSpanMinutes).toBe(480);
+
+    const settings = await request(app)
+      .get('/api/settings')
+      .set('x-dev-user-id', userId.toString());
+    expect(settings.status).toBe(200);
+    expect(settings.body.quietHoursStartMinutes).toBe(480);
+    expect(settings.body.quietHoursEndMinutes).toBe(1380);
   });
 });

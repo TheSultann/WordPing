@@ -124,6 +124,8 @@ model User {
   session                UserSession?
   language               String           @default("ru")
   newsDigestLastOpenedAt DateTime?
+  reviewFlowHintShownAt  DateTime?
+  reviewFlowHintShownCount Int            @default(0)
 
   @@index([referredById])
   @@index([referredById, referralQualifiedAt])

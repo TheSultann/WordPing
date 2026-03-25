@@ -1,4 +1,5 @@
-import { CardDirection, Prisma, SessionState, UserSession } from '../generated/prisma/client';
+import type { CardDirection, SessionState, UserSession } from '../generated/prisma/client';
+import { Prisma } from '../generated/prisma/client';
 import { prisma } from '../db/client';
 
 /** Shape stored in session.payload JSON column. */
@@ -6,6 +7,11 @@ export interface SessionPayload {
   lang?: string | null;
   correct?: boolean;
   quizRunId?: number;
+  quizChatId?: number;
+  quizMessageId?: number;
+  quizQuestionId?: number;
+  quizServiceChatId?: number;
+  quizServiceMessageId?: number;
   wordEn?: string;
   translationRu?: string;
   cardBaseText?: string;

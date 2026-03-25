@@ -1,5 +1,6 @@
 import { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react';
-import { api, Settings, Stats, WordItem, Me, AdminOverview, AdminUserSummary } from './api';
+import type { Settings, Stats, WordItem, Me, AdminOverview, AdminUserSummary } from './api';
+import { api } from './api';
 import {
   Settings as SettingsIcon,
   BookOpen,
@@ -59,13 +60,28 @@ const COPY = {
     wordsSearch: 'Поиск...',
     wordsEmpty: 'Слов пока нет',
     settingsTitle: 'Уведомления',
+    settingsInfoAria: 'Как работает логика слова',
     settingsLoading: 'Загрузка...',
     notifyToggle: 'Включить уведомления',
     intervalLabel: 'Интервал (мин)',
     limitLabel: 'Лимит в день',
-    quietHours: 'Тихие часы',
-    quietStart: 'Начало',
-    quietEnd: 'Конец',
+    quietHoursTooShort: 'Разница между началом и концом должна быть минимум 8 часов.',
+    settingsFlowTitle: 'Как работают stage и интервалы',
+    settingsFlowIntro: 'После добавления слово получает stage 0, а каждый stage задает свой интервал до следующего показа.',
+    settingsFlowTimelineTitle: 'Шкала stage',
+    settingsFlowTimelineAdded: 'добавил слово -> первый показ через 5 мин',
+    settingsFlowTimelineStage1: 'stage 1 -> 25 мин',
+    settingsFlowTimelineStage2: 'stage 2 -> 1.5 часа',
+    settingsFlowTimelineStage3: 'stage 3 -> 20 часов',
+    settingsFlowTimelineLater: 'дальше интервалы становятся длиннее: дни и недели',
+    settingsFlowStepNew: 'stage 0-1 -> обычные повторы в уведомлениях',
+    settingsFlowStepQuiz: 'stage 2+ -> слово может попадать в Quiz',
+    settingsFlowStepNews: 'stage 4+ -> слово может попадать в news-digest',
+    settingsFlowOutro: 'GOOD двигает слово выше, EASY поднимает быстрее, HARD возвращает на более частые повторы.',
+    settingsFlowClose: 'Закрыть окно',
+    quietHours: 'Не беспокоить',
+    quietStart: 'Не отправлять с',
+    quietEnd: 'Не отправлять до',
     interfaceTitle: 'Интерфейс',
     languageLabel: 'Язык',
     languageRu: 'Русский',
@@ -163,13 +179,28 @@ const COPY = {
     wordsSearch: 'Qidiruv...',
     wordsEmpty: "Hozircha so'zlar yo'q",
     settingsTitle: 'Bildirishnomalar',
+    settingsInfoAria: 'So‘z logikasi qanday ishlaydi',
     settingsLoading: 'Yuklanmoqda...',
     notifyToggle: 'Bildirishnomalarni yoqish',
     intervalLabel: 'Oraliq (daq)',
     limitLabel: 'Kunlik limit',
-    quietHours: 'Tinch soatlar',
-    quietStart: 'Boshlanish',
-    quietEnd: 'Tugash',
+    quietHoursTooShort: 'Boshlanish va tugash orasida kamida 8 soat bo‘lishi kerak.',
+    settingsFlowTitle: 'Bosqichlar va intervallar qanday ishlaydi',
+    settingsFlowIntro: 'So‘z qo‘shilgach, u 0-bosqichdan boshlaydi va har bir bosqich keyingi ko‘rsatish oralig‘ini belgilaydi.',
+    settingsFlowTimelineTitle: 'Bosqichlar shkalasi',
+    settingsFlowTimelineAdded: 'so‘z qo‘shildi -> birinchi ko‘rsatish 5 daqiqadan so‘ng',
+    settingsFlowTimelineStage1: '1-bosqich -> 25 daqiqa',
+    settingsFlowTimelineStage2: '2-bosqich -> 1,5 soat',
+    settingsFlowTimelineStage3: '3-bosqich -> 20 soat',
+    settingsFlowTimelineLater: 'keyin intervallar yanada uzayadi: kunlar va haftalargacha',
+    settingsFlowStepNew: '0-1-bosqichlarda oddiy bildirishnoma takrorlari bo‘ladi',
+    settingsFlowStepQuiz: '2-bosqichdan boshlab so‘z Quizga tushishi mumkin',
+    settingsFlowStepNews: '4-bosqichdan boshlab so‘z news-digestga tushishi mumkin',
+    settingsFlowOutro: 'GOOD so‘zni keyingi bosqichga olib o‘tadi, EASY uni tezroq yuqoriga ko‘taradi, HARD esa oldingi bosqichga qaytaradi.',
+    settingsFlowClose: 'Oynani yopish',
+    quietHours: 'Bezovta qilmaslik',
+    quietStart: 'Yubormaslik boshi',
+    quietEnd: 'Yubormaslik oxiri',
     interfaceTitle: 'Interfeys',
     languageLabel: 'Til',
     languageRu: 'Ruscha',
@@ -242,6 +273,7 @@ const COPY = {
 type Lang = keyof typeof COPY;
 type CopyKey = keyof (typeof COPY)['ru'];
 type WordStatus = 'learned' | 'due' | 'new';
+type AppTab = 'settings' | 'stats' | 'words' | 'admin';
 
 const LANG_STORAGE_KEY = 'wordping.lang';
 const ADMIN_CACHE_KEY_PREFIX = 'wordping.is_admin.';
@@ -270,6 +302,20 @@ const getStoredLang = (): Lang | null => {
   if (typeof window === 'undefined') return null;
   const value = window.localStorage.getItem(LANG_STORAGE_KEY);
   return value === 'uz' || value === 'ru' ? value : null;
+};
+
+const getInitialTab = (): AppTab => {
+  if (typeof window === 'undefined') return 'stats';
+  const tab = new URLSearchParams(window.location.search).get('tab');
+  if (tab === 'settings' || tab === 'stats' || tab === 'words' || tab === 'admin') {
+    return tab;
+  }
+  return 'stats';
+};
+
+const getInitialSettingsFlowRequestId = (): number => {
+  if (typeof window === 'undefined') return 0;
+  return new URLSearchParams(window.location.search).get('flow') === 'stages' ? 1 : 0;
 };
 
 const normalizeUserId = (value: unknown): string | null => {
@@ -314,7 +360,7 @@ const getInitialAdminHint = (): boolean => {
 };
 
 const App = () => {
-  const [tab, setTab] = useState<'settings' | 'stats' | 'words' | 'admin'>('stats');
+  const [tab, setTab] = useState<AppTab>(() => getInitialTab());
   const [settings, setSettings] = useState<Settings | null>(null);
   const [form, setForm] = useState<Settings | null>(null);
   const [intervalInput, setIntervalInput] = useState('');
@@ -331,6 +377,7 @@ const App = () => {
   const [notice, setNotice] = useState('');
   const [lang, setLang] = useState<Lang>(() => getStoredLang() ?? 'ru');
   const [isAdminHint, setIsAdminHint] = useState<boolean>(() => getInitialAdminHint());
+  const [settingsFlowRequestId] = useState<number>(() => getInitialSettingsFlowRequestId());
   const [adminOverview, setAdminOverview] = useState<AdminOverview | null>(null);
   const [adminOverviewLoading, setAdminOverviewLoading] = useState(false);
   const [adminOverviewError, setAdminOverviewError] = useState('');
@@ -362,6 +409,24 @@ const App = () => {
   const authUserId = normalizeUserId(telegramUser?.id ?? devUserId);
   const canAuth = hasInitData || Boolean(devUserId);
   const isAdmin = me?.isAdmin ?? isAdminHint;
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const url = new URL(window.location.href);
+    let changed = false;
+    if (url.searchParams.has('tab')) {
+      url.searchParams.delete('tab');
+      changed = true;
+    }
+    if (url.searchParams.get('flow') === 'stages') {
+      url.searchParams.delete('flow');
+      changed = true;
+    }
+    if (!changed) return;
+    const nextSearch = url.searchParams.toString();
+    const nextUrl = `${url.pathname}${nextSearch ? `?${nextSearch}` : ''}${url.hash}`;
+    window.history.replaceState({}, '', nextUrl);
+  }, []);
 
   const t = (key: CopyKey, params?: Record<string, string | number>) => {
     let result: string = COPY[lang]?.[key] ?? COPY.ru[key];
@@ -498,7 +563,20 @@ const App = () => {
   const wordsCacheRef = useRef<Map<string, { items: WordItem[]; hasMore: boolean; offset: number; loadedAt: number }>>(new Map());
   const skipWordsDebounceOnceRef = useRef(false);
   const wordsRequestTokenRef = useRef(0);
+  const latestQueryRef = useRef(query);
+  const loadMeRef = useRef<(force?: boolean) => Promise<void>>(async () => {});
+  const loadSettingsRef = useRef<(force?: boolean) => Promise<void>>(async () => {});
+  const loadStatsRef = useRef<(force?: boolean) => Promise<void>>(async () => {});
+  const loadWordsRef = useRef<(q?: string, force?: boolean) => Promise<void>>(async () => {});
+  const loadAdminOverviewRef = useRef<(force?: boolean) => Promise<void>>(async () => {});
+  const loadAdminUsersRef = useRef<(
+    overrideQuery?: string,
+    options?: { append?: boolean }
+  ) => Promise<AdminUserSummary[]>>(async () => []);
   const isFresh = (timestamp: number) => (Date.now() - timestamp) < DATA_CACHE_TTL_MS;
+  const noticeAuthText = COPY[lang]?.noticeAuth ?? COPY.ru.noticeAuth;
+
+  latestQueryRef.current = query;
 
   const loadMe = async (force = false) => {
     if (!force && me && isFresh(cacheTsRef.current.me)) return;
@@ -605,7 +683,7 @@ const App = () => {
 
   useEffect(() => {
     if (!canAuth) {
-      setNotice(t('noticeAuth'));
+      setNotice(noticeAuthText);
       return;
     }
     setNotice((prev) => {
@@ -614,11 +692,11 @@ const App = () => {
       if (prev === authRu || prev === authUz) return '';
       return prev;
     });
-  }, [canAuth, lang]);
+  }, [canAuth, noticeAuthText]);
 
   useEffect(() => {
     if (!canAuth) return;
-    void loadMe();
+    void loadMeRef.current();
   }, [canAuth]);
 
   useEffect(() => {
@@ -634,19 +712,19 @@ const App = () => {
   useEffect(() => {
     if (!canAuth) return;
     if (tab === 'settings') {
-      void loadSettings();
+      void loadSettingsRef.current();
     }
     if (tab === 'stats') {
-      void loadStats();
+      void loadStatsRef.current();
     }
     if (tab === 'admin' && isAdmin) {
-      void loadAdminOverview();
-      void loadAdminUsers();
+      void loadAdminOverviewRef.current();
+      void loadAdminUsersRef.current();
     }
     if (tab === 'words') {
-      void loadStats();
+      void loadStatsRef.current();
       skipWordsDebounceOnceRef.current = true;
-      void loadWords(query);
+      void loadWordsRef.current(latestQueryRef.current);
     }
   }, [tab, canAuth, isAdmin]);
 
@@ -657,7 +735,7 @@ const App = () => {
       return;
     }
     const handle = setTimeout(() => {
-      void loadWords(query);
+      void loadWordsRef.current(query);
     }, 250);
     return () => clearTimeout(handle);
   }, [query, tab, canAuth]);
@@ -734,8 +812,8 @@ const App = () => {
     } catch (err) {
       if (requestToken !== wordsRequestTokenRef.current) return;
       setError(err instanceof Error ? err.message : t('loadWordsError'));
-    } finally {
-      if (requestToken !== wordsRequestTokenRef.current) return;
+    }
+    if (requestToken === wordsRequestTokenRef.current) {
       setLoading(false);
     }
   };
@@ -870,6 +948,13 @@ const App = () => {
     await loadAdminUsers(undefined, { append: true });
   };
 
+  loadMeRef.current = loadMe;
+  loadSettingsRef.current = loadSettings;
+  loadStatsRef.current = loadStats;
+  loadWordsRef.current = loadWords;
+  loadAdminOverviewRef.current = loadAdminOverview;
+  loadAdminUsersRef.current = loadAdminUsers;
+
   const sendAdminBroadcast = async () => {
     if (!isAdmin) return;
     const text = adminBroadcastMessage.trim();
@@ -954,7 +1039,11 @@ const App = () => {
       setNotice(t('saved'));
       setTimeout(() => setNotice(''), 2000);
     } catch (err) {
-      setError(err instanceof Error ? err.message : t('saveSettingsError'));
+      if (err instanceof Error && err.message === 'quiet_hours_span_too_short') {
+        setError(t('quietHoursTooShort'));
+      } else {
+        setError(err instanceof Error ? err.message : t('saveSettingsError'));
+      }
     } finally {
       setLoading(false);
     }
@@ -1045,7 +1134,7 @@ const App = () => {
               wordsHasMore={wordsHasMore}
               wordsLoadingMore={wordsLoadingMore}
               onLoadMoreWords={() => { void loadMoreWords(); }}
-              onDeleteWord={handleDelete}
+              onDeleteWord={(wordId) => { void handleDelete(wordId); }}
               resolveWordStatus={resolveWordStatus}
               getWordStatusLabel={getWordStatusLabel}
             />
@@ -1067,6 +1156,7 @@ const App = () => {
             <SettingsSection
               t={t}
               lang={lang}
+              flowOpenRequest={settingsFlowRequestId}
               form={form}
               loading={loading}
               intervalInput={intervalInput}

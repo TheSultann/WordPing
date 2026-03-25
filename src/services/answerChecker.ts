@@ -1,4 +1,4 @@
-import { CardDirection } from '../generated/prisma/client';
+import type { CardDirection } from '../generated/prisma/client';
 import { answersEqual, answersEqualEnglish } from '../utils/text';
 
 export type AnswerCheckResult = {

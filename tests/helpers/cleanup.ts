@@ -1,4 +1,4 @@
-import { PrismaClient } from '../../src/generated/prisma';
+import type { PrismaClient } from '../../src/generated/prisma';
 
 export const cleanupUserData = async (prisma: PrismaClient | undefined, userId: bigint) => {
   if (!prisma) return;

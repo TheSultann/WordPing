@@ -1,5 +1,5 @@
 ﻿import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { PrismaClient } from '../src/generated/prisma';
+import type { PrismaClient } from '../src/generated/prisma/client';
 import { prepareTestDatabase } from './helpers/testDb';
 import { cleanupUserData } from './helpers/cleanup';
 

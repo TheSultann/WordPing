@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { PrismaClient } from '../src/generated/prisma';
+import { PrismaClient } from '../src/generated/prisma/client';
 import { prepareTestDatabase } from './helpers/testDb';
 
 let prisma: PrismaClient;
@@ -36,4 +36,3 @@ describe('uvd worker tick isolation', () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 });
-

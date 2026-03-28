@@ -1,4 +1,4 @@
-import type { PrismaClient } from '../../src/generated/prisma';
+import type { PrismaClient } from '../../src/generated/prisma/client';
 
 type CleanupPrisma = Pick<PrismaClient, 'review' | 'word' | 'userSession' | 'user'>;
 

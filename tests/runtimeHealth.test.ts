@@ -74,4 +74,20 @@ describe('runtime health', () => {
     expect(isRuntimeSnapshotReady(freshErrorSnapshot)).toBe(false);
     expect(isRuntimeSnapshotReady(freshErrorSnapshot, { allowFreshError: true })).toBe(true);
   });
+
+  it('never treats stale error snapshots as ready', () => {
+    const staleErrorSnapshot = {
+      service: 'worker' as const,
+      pid: 1,
+      startedAt: '2026-03-28T00:00:00.000Z',
+      updatedAt: '2026-03-28T00:01:00.000Z',
+      state: 'error' as const,
+      status: 'error' as const,
+      stale: true,
+      note: 'worker failed long ago',
+    };
+
+    expect(isRuntimeSnapshotReady(staleErrorSnapshot)).toBe(false);
+    expect(isRuntimeSnapshotReady(staleErrorSnapshot, { allowFreshError: true })).toBe(false);
+  });
 });

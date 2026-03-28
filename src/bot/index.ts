@@ -1119,24 +1119,33 @@ bot.catch((err) => {
   botLogger.error('bot error', { error: err });
 });
 
-export const startBot = () => {
+export const startBot = async () => {
   botHealth.start();
-  botHealth.markOk('bot starting');
+  botHealth.markError('bot starting');
   botLogger.info('bot starting', { webAppConfigured: Boolean(webAppUrl) });
-  void bot.launch();
+  try {
+    await bot.launch();
+  } catch (error) {
+    botHealth.markError(error instanceof Error ? error.message : 'bot launch failed');
+    botLogger.error('bot launch failed', { error });
+    throw error;
+  }
+
+  botHealth.markOk('bot launched');
+  botLogger.info('bot launched', { webAppConfigured: Boolean(webAppUrl) });
   void restoreActiveQuizTimeouts().catch((error) => {
     botHealth.markError(error instanceof Error ? error.message : 'quiz restore failed');
     botLogger.error('quiz restore failed', { error });
   });
-  botHealth.markOk('bot launched');
-  botLogger.info('bot launched', { webAppConfigured: Boolean(webAppUrl) });
   process.once('SIGINT', () => bot.stop('SIGINT'));
   process.once('SIGTERM', () => bot.stop('SIGTERM'));
   return bot;
 };
 
 if (require.main === module) {
-  startBot();
+  void startBot().catch(() => {
+    process.exitCode = 1;
+  });
 }
 
 export { bot };

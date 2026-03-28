@@ -87,7 +87,7 @@ export const isRuntimeSnapshotReady = (
   }
 
   if (snapshot.status === 'error') {
-    return options.allowFreshError === true;
+    return options.allowFreshError === true && snapshot.stale !== true;
   }
 
   return true;

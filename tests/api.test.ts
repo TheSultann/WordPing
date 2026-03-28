@@ -169,6 +169,29 @@ describe('API integration', () => {
     expect(res.body.services.worker.status).toBe('stale');
   });
 
+  it('GET /api/ready returns 503 when worker error heartbeat is stale', async () => {
+    await waitForRuntimeStatus('worker', 'ok');
+    await writeFile(
+      path.join(runtimeHealthDir, 'worker.json'),
+      JSON.stringify({
+        service: 'worker',
+        pid: 123,
+        startedAt: '2026-03-28T00:00:00.000Z',
+        updatedAt: '2026-03-28T00:00:00.000Z',
+        state: 'error',
+        note: 'worker failed',
+      }, null, 2),
+      'utf8',
+    );
+
+    const res = await request(app).get('/api/ready');
+    expect(res.status).toBe(503);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.runtimeReady).toBe(false);
+    expect(res.body.services.worker.status).toBe('error');
+    expect(res.body.services.worker.stale).toBe(true);
+  });
+
   it('GET /api/settings returns defaults', async () => {
     const res = await request(app)
       .get('/api/settings')

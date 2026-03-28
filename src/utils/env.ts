@@ -45,6 +45,11 @@ const validateBooleanEnv = (errors: string[], key: string): void => {
   }
 };
 
+const isEnabledBooleanEnv = (key: string): boolean => {
+  const raw = readEnv(key).toLowerCase();
+  return raw === '1' || raw === 'true' || raw === 'yes' || raw === 'on';
+};
+
 const validateEnumEnv = (errors: string[], key: string, allowed: Set<string>): void => {
   const raw = readEnv(key).toLowerCase();
   if (!raw) return;
@@ -141,8 +146,12 @@ export const validateRuntimeEnv = (service: RuntimeService): void => {
     validateIntegerEnv(errors, 'API_PORT', { min: 1, max: 65535 });
     validateIntegerEnv(errors, 'INIT_DATA_MAX_AGE_SECONDS', { min: 1 });
     validateBooleanEnv(errors, 'ALLOW_DEV_AUTH');
+    pushMissing(errors, 'ADMIN_TELEGRAM_ID');
     validateBigIntEnv(errors, 'ADMIN_TELEGRAM_ID');
     validateOriginListEnv(errors, 'WEB_ORIGIN');
+    if (process.env.NODE_ENV === 'production' && isEnabledBooleanEnv('ALLOW_DEV_AUTH')) {
+      errors.push('ALLOW_DEV_AUTH must be disabled in production');
+    }
   }
 
   if (service === 'bot') {

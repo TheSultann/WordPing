@@ -334,13 +334,16 @@ textarea {
 }
 
 .sheet-overlay {
+  --sheet-top-gap: 20px;
+  --sheet-side-gap: 16px;
+  --sheet-bottom-gap: calc(16px + env(safe-area-inset-bottom));
   position: fixed;
   inset: 0;
   z-index: 40;
   display: flex;
   align-items: flex-end;
   justify-content: center;
-  padding: 20px 16px calc(16px + env(safe-area-inset-bottom));
+  padding: var(--sheet-top-gap) var(--sheet-side-gap) var(--sheet-bottom-gap);
   background: rgba(2, 6, 23, 0.5);
   backdrop-filter: blur(10px);
   -webkit-backdrop-filter: blur(10px);
@@ -348,7 +351,7 @@ textarea {
 
 .sheet-card {
   width: min(100%, 520px);
-  max-height: calc(100dvh - 40px - env(safe-area-inset-bottom));
+  max-height: calc(100dvh - var(--sheet-top-gap) - var(--sheet-bottom-gap));
   border-radius: 24px;
   border: 1px solid var(--border);
   background: color-mix(in srgb, var(--surface) 92%, var(--surface-muted) 8%);
@@ -2302,7 +2305,9 @@ input:checked+.toggle-slider:before {
   }
 
   .sheet-overlay {
-    padding: 12px 12px calc(12px + env(safe-area-inset-bottom));
+    --sheet-top-gap: calc(clamp(56px, 9dvh, 76px) + env(safe-area-inset-top));
+    --sheet-side-gap: 12px;
+    --sheet-bottom-gap: calc(12px + env(safe-area-inset-bottom));
   }
 
   .sheet-card {

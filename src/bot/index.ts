@@ -131,18 +131,26 @@ const openWebAppKeyboard = (lang: Lang, params?: Record<string, string>, label?:
 const reviewFlowHintKeyboard = (lang: Lang) =>
   openWebAppKeyboard(lang, { tab: 'settings', flow: 'stages' }, `ℹ️ ${t(lang, 'btn.openGuide')}`)
   ?? Markup.inlineKeyboard([[Markup.button.callback(`ℹ️ ${t(lang, 'btn.openGuide')}`, REVIEW_FLOW_HINT_CALLBACK)]]);
+const buildGuideSpoilerText = (lang: Lang) => `<tg-spoiler>${t(lang, 'btn.openGuide')}</tg-spoiler>`;
+const buildGuideSpoilerLinkText = (lang: Lang) => {
+  const guideUrl = buildWebAppUrl({ tab: 'settings', flow: 'stages' });
+  if (guideUrl) {
+    return `<a href="${guideUrl}">${buildGuideSpoilerText(lang)}</a>`;
+  }
+  return buildGuideSpoilerText(lang);
+};
 const buildGuideLinkText = (lang: Lang) => {
   const guideUrl = buildWebAppUrl({ tab: 'settings', flow: 'stages' });
   if (guideUrl) {
-    return `<a href="${guideUrl}">ℹ️ ${t(lang, 'btn.openGuide')}</a>`;
+    return `<a href="${guideUrl}">${t(lang, 'btn.openGuide')}</a>`;
   }
-  return `<tg-spoiler>ℹ️ ${t(lang, 'btn.openGuide')}</tg-spoiler>`;
+  return buildGuideSpoilerText(lang);
 };
-const newsDigestRuntime = createNewsDigestRuntime({ mainReplyKeyboard });
+const newsDigestRuntime = createNewsDigestRuntime({ mainReplyKeyboard, buildGuideLinkText });
 const settingsRuntime = createSettingsRuntime({
   loadUser: (ctx, userId) => ensureUser(userId, toTelegramProfile(ctx.from)),
 });
-const quizRuntime = createQuizRuntime({ bot, mainReplyKeyboard });
+const quizRuntime = createQuizRuntime({ bot, mainReplyKeyboard, buildGuideLinkText });
 export const runQuizQuestionTimeout = quizRuntime.runQuizQuestionTimeout;
 export const restoreActiveQuizTimeouts = quizRuntime.restoreActiveQuizTimeouts;
 
@@ -225,6 +233,44 @@ const cardInlineKeyboard = (reviewId: number, swapData?: string | null, hintEnab
 const languageKeyboard = Markup.inlineKeyboard([
   [Markup.button.callback('🇷🇺 Русский', 'lang:ru'), Markup.button.callback('🇺🇿 O‘zbekcha', 'lang:uz')],
 ]);
+const chooseLangText = '\u{1F310} Tilni tanlang / \u0412\u044B\u0431\u0435\u0440\u0438 \u044F\u0437\u044B\u043A';
+const onboardingNextKeyboard = (lang: Lang) =>
+  Markup.inlineKeyboard([[Markup.button.callback(t(lang, 'btn.next'), 'onboarding:next')]]);
+
+const sendChooseLangPrompt = async (ctx: Context) => {
+  await ctx.reply(chooseLangText, { parse_mode: 'HTML', ...languageKeyboard });
+};
+
+const sendOnboardingHintPrompt = async (ctx: Context, lang: Lang) => {
+  await ctx.reply(t(lang, 'hint'), {
+    parse_mode: 'HTML',
+    ...onboardingNextKeyboard(lang),
+  });
+};
+
+const getPendingOnboardingStep = (session: { payload?: unknown } | null | undefined): 'lang' | 'intro' | null => {
+  const step = (session?.payload as any)?.onboarding?.step;
+  return step === 'lang' || step === 'intro' ? step : null;
+};
+
+const replyIfOnboardingPending = async (
+  ctx: Context,
+  session: { payload?: unknown } | null | undefined,
+  fallbackLang: Lang
+) => {
+  const step = getPendingOnboardingStep(session);
+  if (!step) return false;
+  if (step === 'lang') {
+    await sendChooseLangPrompt(ctx);
+    return true;
+  }
+
+  const onboardingLang = (session?.payload as any)?.onboarding?.lang;
+  const lang = onboardingLang === 'uz' || onboardingLang === 'ru' ? onboardingLang : fallbackLang;
+  await sendOnboardingHintPrompt(ctx, lang);
+  return true;
+};
+
 bot.start(async (ctx) => {
   if (!ctx.from) return;
   const user = await ensureUser(ctx.from.id, toTelegramProfile(ctx.from));
@@ -238,8 +284,7 @@ bot.start(async (ctx) => {
   }
   await ensureSession(user.id);
   await setState(user.id, 'IDLE', { payload: { onboarding: { step: 'lang' } } });
-  const chooseLangText = '\u{1F310} Tilni tanlang / \u0412\u044B\u0431\u0435\u0440\u0438 \u044F\u0437\u044B\u043A';
-  await ctx.reply(chooseLangText, { parse_mode: 'HTML', ...languageKeyboard });
+  await sendChooseLangPrompt(ctx);
 });
 
 bot.command('app', async (ctx) => {
@@ -260,8 +305,11 @@ bot.command('add', async (ctx) => {
   if (!ctx.from) return;
   const userId = ctx.from.id;
   const user = await ensureUser(userId, toTelegramProfile(ctx.from));
+  const lang = (user.language as Lang) || 'ru';
+  const session = await getSession(BigInt(userId));
+  if (await replyIfOnboardingPending(ctx, session, lang)) return;
   await setState(BigInt(userId), 'ADDING_WORD_WAIT_EN');
-  await ctx.reply(t(user.language as Lang, 'add.enter'), { parse_mode: 'HTML' });
+  await ctx.reply(t(lang, 'add.enter'), { parse_mode: 'HTML' });
 });
 
 bot.command('settings', async (ctx) => {
@@ -298,6 +346,8 @@ bot.hears(QUIZ_BUTTONS, async (ctx) => {
 
   const user = await ensureUser(ctx.from.id, toTelegramProfile(ctx.from));
   const lang = ((user.language as Lang) || 'ru');
+  const session = await getSession(BigInt(user.id));
+  if (await replyIfOnboardingPending(ctx, session, lang)) return;
   await quizRuntime.handleQuizStart(ctx, BigInt(user.id), lang);
 });
 
@@ -306,6 +356,8 @@ bot.hears(NEWS_DIGEST_BUTTONS, async (ctx) => {
 
   const user = await ensureUser(ctx.from.id, toTelegramProfile(ctx.from));
   const lang = ((user.language as Lang) || 'ru');
+  const session = await getSession(BigInt(user.id));
+  if (await replyIfOnboardingPending(ctx, session, lang)) return;
   await newsDigestRuntime.handleNewsDigestStart(ctx, BigInt(user.id), lang);
 });
 
@@ -533,14 +585,10 @@ bot.on('text', async (ctx) => {
         // Final step of onboarding: Show success and reveal keyboard
         await ctx.reply(t(effectiveLang, 'onboarding.finished', {
           value,
-          guideLink: buildGuideLinkText(effectiveLang),
+          guideLink: buildGuideSpoilerLinkText(effectiveLang),
         }), {
           parse_mode: 'HTML',
           ...mainReplyKeyboard(effectiveLang),
-        });
-        await ctx.reply(t(effectiveLang, 'reviewFlowHint'), {
-          parse_mode: 'HTML',
-          ...reviewFlowHintKeyboard(effectiveLang),
         });
         // Do NOT send settings menu here
       } else {
@@ -722,6 +770,7 @@ bot.on('text', async (ctx) => {
     }
     default:
       if (text.startsWith('/')) return; // ignore other commands
+      if (await replyIfOnboardingPending(ctx, session, lang)) return;
       await handleAddFlow(text);
       break;
   }
@@ -737,11 +786,9 @@ bot.on('callback_query', async (ctx) => {
     const lang = data.split(':')[1] === 'uz' ? 'uz' : 'ru';
     await setLanguage(userId, lang); // PERSIST LANGUAGE
     await ensureUser(userId, toTelegramProfile(ctx.from));
+    await setState(BigInt(userId), 'IDLE', { payload: { lang, onboarding: { step: 'intro', lang } } });
     await ctx.answerCbQuery();
-    await ctx.reply(t(lang as Lang, 'hint'), {
-      parse_mode: 'HTML',
-      ...Markup.inlineKeyboard([[Markup.button.callback(t(lang as Lang, 'btn.next'), 'onboarding:next')]]),
-    });
+    await sendOnboardingHintPrompt(ctx, lang);
     return;
   }
 

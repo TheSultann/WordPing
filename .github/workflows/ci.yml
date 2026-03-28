@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - 'codex/**'
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: wordping
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d wordping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/wordping?schema=public
+      TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/wordping?schema=public
+      BOT_TOKEN: test-token
+      ADMIN_TELEGRAM_ID: '900000001'
+      ALLOW_DEV_AUTH: 'true'
+      NODE_ENV: test
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            web/package-lock.json
+
+      - name: Install backend dependencies
+        run: npm ci
+
+      - name: Install frontend dependencies
+        run: npm --prefix web ci
+
+      - name: Validate release shell scripts
+        run: bash -n scripts/*.sh
+
+      - name: Generate Prisma client
+        run: npx prisma generate
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Test
+        run: npm test
+
+      - name: Build backend
+        run: npm run build
+
+      - name: Build frontend
+        run: npm run build:web

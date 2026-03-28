@@ -57,6 +57,7 @@ const makeCallbackUpdate = (data: string, messageId = 1) => ({
 
 beforeAll(async () => {
   process.env.BOT_TOKEN = process.env.BOT_TOKEN ?? 'test_bot_token';
+  process.env.WEBAPP_URL = 'https://example.test/app';
   const testUrl = await prepareTestDatabase();
   process.env.DATABASE_URL = testUrl;
 
@@ -172,7 +173,11 @@ describe('bot news digest button', () => {
     const firstButton = replyMarkup?.keyboard?.[0]?.[0];
     const firstButtonText = typeof firstButton === 'string' ? firstButton : firstButton?.text;
 
-    expect(String(payload?.text ?? '')).toContain('\u{1F4F0}');
+    const text = String(payload?.text ?? '');
+    expect(text).toContain('📰 <b>Новости пока недоступны</b>');
+    expect(text).toContain('Stage 4');
+    expect(text).toContain('Как работают этапы?');
+    expect(text).toContain('https://example.test/app?tab=settings&flow=stages');
     expect(firstButtonText).toBe(NEWS_BUTTON_RU);
   });
 

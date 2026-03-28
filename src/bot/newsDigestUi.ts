@@ -24,11 +24,6 @@ const NEWS_SOURCE_LABEL_BY_LANG: Record<Lang, string> = {
   uz: 'Manba',
 };
 
-const NEWS_DIGEST_FALLBACK_TEXT_BY_LANG: Record<Lang, string> = {
-  ru: '\u{1F4F0} \u041F\u043E\u043A\u0430 \u043D\u0435\u0442 \u0433\u043E\u0442\u043E\u0432\u044B\u0445 \u043D\u043E\u0432\u043E\u0441\u0442\u043D\u044B\u0445 \u043F\u0440\u0438\u043C\u0435\u0440\u043E\u0432. \u041F\u043E\u043F\u0440\u043E\u0431\u0443\u0439\u0442\u0435 \u0447\u0443\u0442\u044C \u043F\u043E\u0437\u0436\u0435.',
-  uz: '\u{1F4F0} Hozircha tayyor yangilik namunalar yo\u2018q. Birozdan keyin urinib ko\u2018ring.',
-};
-
 const NEWS_DIGEST_STALE_TEXT_BY_LANG: Record<Lang, string> = {
   ru: '\u0414\u0430\u0439\u0434\u0436\u0435\u0441\u0442 \u0443\u0441\u0442\u0430\u0440\u0435\u043B, \u043E\u0442\u043A\u0440\u043E\u0439\u0442\u0435 \u043D\u043E\u0432\u043E\u0441\u0442\u0438 \u0441\u043D\u043E\u0432\u0430',
   uz: 'Dayjest eskirdi, yangiliklarni qayta oching',
@@ -60,9 +55,25 @@ export type NewsDigestNavItem = Pick<
 const newsNavMoreLabel = (lang: Lang, count: number): string =>
   lang === 'uz'
     ? `Yana ${count} ta`
-    : `\u0415\u0449\u0451 ${count}`;
+    : `Ещё ${count}`;
 
-export const newsDigestFallbackText = (lang: Lang): string => NEWS_DIGEST_FALLBACK_TEXT_BY_LANG[lang];
+export const newsDigestFallbackText = (lang: Lang, guideLinkText: string): string => {
+  if (lang === 'uz') {
+    return `📰 <b>Yangiliklar hozircha mavjud emas</b>
+
+So'zlar Stage 4 ga yetganda yangiliklarda paydo bo'ladi.
+Eslatmalarga javob berishda davom eting! 💪
+
+📈 ${guideLinkText}`;
+  }
+
+  return `📰 <b>Новости пока недоступны</b>
+
+Слова появятся в новостях когда достигнут Stage 4.
+Продолжай отвечать на напоминания! 💪
+
+📈 ${guideLinkText}`;
+};
 
 export const newsDigestStaleText = (lang: Lang): string => NEWS_DIGEST_STALE_TEXT_BY_LANG[lang];
 

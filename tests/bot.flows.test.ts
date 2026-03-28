@@ -153,11 +153,77 @@ describe('bot extended flows', () => {
     await bot.handleUpdate(makeCallbackUpdate('lang:uz', 2), {} as any);
 
     const user = await prisma.user.findUnique({ where: { id: BigInt(userId) } });
+    const session = await prisma.userSession.findUnique({ where: { userId: BigInt(userId) } });
     expect(user?.language).toBe('uz');
+    expect(session?.state).toBe('IDLE');
+    expect((session?.payload as any)?.onboarding?.step).toBe('intro');
+    expect((session?.payload as any)?.onboarding?.lang).toBe('uz');
 
     const answerCb = callApiSpy.mock.calls.find(([method]: any[]) => method === 'answerCallbackQuery');
     expect(answerCb).toBeTruthy();
     expect(sentTexts(callApiSpy)).toContain(t('uz', 'hint'));
+  });
+
+  it('does not accept plain text before language is chosen', async () => {
+    await prisma.user.create({ data: { id: BigInt(userId) } });
+    await setState(BigInt(userId), 'IDLE', { payload: { onboarding: { step: 'lang' } } });
+    const callApiSpy = vi
+      .spyOn(Object.getPrototypeOf(bot.telegram), 'callApi')
+      .mockResolvedValue({} as any);
+
+    await bot.handleUpdate(makeMessageUpdate('hello', 20), {} as any);
+
+    const texts = sentTexts(callApiSpy);
+    expect(texts.some((text) => text.includes(t('ru', 'chooseLang')))).toBe(true);
+    expect(texts.some((text) => text.includes(t('uz', 'chooseLang')))).toBe(true);
+    expect(translateAutoMock).not.toHaveBeenCalled();
+    expect(await prisma.word.count({ where: { userId: BigInt(userId) } })).toBe(0);
+  });
+
+  it('does not accept plain text before onboarding next is pressed', async () => {
+    await prisma.user.create({ data: { id: BigInt(userId), language: 'ru' } });
+    await setState(BigInt(userId), 'IDLE', { payload: { onboarding: { step: 'intro', lang: 'ru' } } });
+    const callApiSpy = vi
+      .spyOn(Object.getPrototypeOf(bot.telegram), 'callApi')
+      .mockResolvedValue({} as any);
+
+    await bot.handleUpdate(makeMessageUpdate('hello', 21), {} as any);
+
+    const session = await prisma.userSession.findUnique({ where: { userId: BigInt(userId) } });
+    expect(session?.state).toBe('IDLE');
+    expect((session?.payload as any)?.onboarding?.step).toBe('intro');
+    expect(sentTexts(callApiSpy)).toContain(t('ru', 'hint'));
+    expect(translateAutoMock).not.toHaveBeenCalled();
+    expect(await prisma.word.count({ where: { userId: BigInt(userId) } })).toBe(0);
+  });
+
+  it('blocks /add until onboarding next is pressed', async () => {
+    await prisma.user.create({ data: { id: BigInt(userId), language: 'ru' } });
+    await setState(BigInt(userId), 'IDLE', { payload: { onboarding: { step: 'intro', lang: 'ru' } } });
+    const callApiSpy = vi
+      .spyOn(Object.getPrototypeOf(bot.telegram), 'callApi')
+      .mockResolvedValue({} as any);
+
+    await bot.handleUpdate(makeMessageUpdate('/add', 22), {} as any);
+
+    const session = await prisma.userSession.findUnique({ where: { userId: BigInt(userId) } });
+    expect(session?.state).toBe('IDLE');
+    expect(sentTexts(callApiSpy)).toContain(t('ru', 'hint'));
+    expect(sentTexts(callApiSpy)).not.toContain(t('ru', 'add.enter'));
+  });
+
+  it('blocks quiz entry until onboarding next is pressed', async () => {
+    await prisma.user.create({ data: { id: BigInt(userId), language: 'ru' } });
+    await setState(BigInt(userId), 'IDLE', { payload: { onboarding: { step: 'intro', lang: 'ru' } } });
+    const callApiSpy = vi
+      .spyOn(Object.getPrototypeOf(bot.telegram), 'callApi')
+      .mockResolvedValue({} as any);
+
+    await bot.handleUpdate(makeMessageUpdate('\u{1F9E0} Quiz', 23), {} as any);
+
+    const session = await prisma.userSession.findUnique({ where: { userId: BigInt(userId) } });
+    expect(session?.state).toBe('IDLE');
+    expect(sentTexts(callApiSpy)).toContain(t('ru', 'hint'));
   });
 
   it('onboarding next moves to SETTINGS_WAIT_GOAL', async () => {
@@ -209,7 +275,7 @@ describe('bot extended flows', () => {
     expect(sentTexts(callApiSpy)).toContain(t('ru', 'intervalNeedNumber'));
   });
 
-  it('SETTINGS_WAIT_INTERVAL in onboarding sends finished message with guide text', async () => {
+  it('SETTINGS_WAIT_INTERVAL in onboarding sends finished message with hidden guide text', async () => {
     await prisma.user.create({ data: { id: BigInt(userId), language: 'uz', notificationIntervalMinutes: 15 } });
     await setState(BigInt(userId), 'SETTINGS_WAIT_INTERVAL', { payload: { onboarding: { lang: 'uz' } } });
     const callApiSpy = vi
@@ -221,20 +287,21 @@ describe('bot extended flows', () => {
     const user = await prisma.user.findUnique({ where: { id: BigInt(userId) } });
     const session = await prisma.userSession.findUnique({ where: { userId: BigInt(userId) } });
     const texts = sentTexts(callApiSpy);
-    const expectedGuideLink = '<a href="https://example.test/app?tab=settings&flow=stages">ℹ️ Eslatmalar qanday ishlaydi?</a>';
 
     expect(user?.notificationIntervalMinutes).toBe(10);
     expect(session?.state).toBe('IDLE');
-    expect(texts).toContain(t('uz', 'onboarding.finished', { value: 10, guideLink: expectedGuideLink }));
-    expect(texts.some((text) => text.includes(expectedGuideLink))).toBe(true);
-    const guideCall = callApiSpy.mock.calls
-      .filter(([method]: any[]) => method === 'sendMessage')
-      .find(([, payload]: any[]) => String(payload?.text ?? '') === t('uz', 'reviewFlowHint'));
-    expect(guideCall).toBeTruthy();
-    expect((guideCall?.[1] as any)?.reply_markup?.inline_keyboard?.[0]?.[0]?.web_app?.url)
-      .toBe('https://example.test/app?tab=settings&flow=stages');
+    expect(texts).toContain(t('uz', 'onboarding.finished', {
+      value: 10,
+      guideLink:
+        '<a href="https://example.test/app?tab=settings&flow=stages"><tg-spoiler>Bosqichlar qanday ishlaydi?</tg-spoiler></a>',
+    }));
+    expect(
+      texts.some((text) =>
+        text.includes('<a href="https://example.test/app?tab=settings&flow=stages"><tg-spoiler>Bosqichlar qanday ishlaydi?</tg-spoiler></a>')
+      )
+    ).toBe(true);
+    expect(texts).not.toContain(t('uz', 'reviewFlowHint'));
   });
-
   it('SETTINGS_WAIT_INTERVAL saves value in regular settings flow', async () => {
     await prisma.user.create({ data: { id: BigInt(userId), language: 'ru', notificationIntervalMinutes: 15 } });
     await setState(BigInt(userId), 'SETTINGS_WAIT_INTERVAL');
@@ -1259,3 +1326,4 @@ describe('bot extended flows', () => {
     expect(String((answerCbCall?.[1] as any)?.text ?? '')).toBe(t('ru', 'notify.toggled'));
   });
 });
+

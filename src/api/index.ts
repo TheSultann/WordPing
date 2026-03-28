@@ -28,7 +28,13 @@ import {
 import { resetState } from '../services/sessionService';
 import { trimEnv, validateRuntimeEnv } from '../utils/env';
 import { createLogger } from '../utils/logger';
-import { createRuntimeHealthReporter, readRuntimeHealth } from '../utils/runtimeHealth';
+import {
+  createRuntimeHealthReporter,
+  isRuntimeSnapshotReady,
+  readRuntimeHealth,
+  type RuntimeHealthService,
+  type RuntimeHealthSnapshot,
+} from '../utils/runtimeHealth';
 import { DEFAULT_TIMEZONE, nowUtc, startOfUserDay, userNow } from '../utils/time';
 import { type TelegramUser, verifyInitData } from './auth';
 
@@ -37,6 +43,32 @@ validateRuntimeEnv('api');
 export const app = express();
 const apiLogger = createLogger('api');
 const apiHealth = createRuntimeHealthReporter('api');
+const backgroundRuntimeServices: RuntimeHealthService[] = ['bot', 'worker', 'news-worker'];
+
+const buildApiRuntimeSnapshot = (): RuntimeHealthSnapshot => {
+  const apiSnapshot = apiHealth.snapshot();
+  return {
+    ...apiSnapshot,
+    status: apiSnapshot.state === 'error' ? 'error' : 'ok',
+    stale: false,
+    updatedAt: new Date().toISOString(),
+  };
+};
+
+const loadRuntimeSnapshots = async (): Promise<Record<RuntimeHealthService, RuntimeHealthSnapshot>> => {
+  const services = await readRuntimeHealth(backgroundRuntimeServices);
+  services.api = buildApiRuntimeSnapshot();
+  return services;
+};
+
+const isStrictRuntimeHealthy = (services: Record<RuntimeHealthService, RuntimeHealthSnapshot>): boolean =>
+  Object.values(services).every((service) => service.status === 'ok');
+
+const isDeployRuntimeReady = (services: Record<RuntimeHealthService, RuntimeHealthSnapshot>): boolean =>
+  isRuntimeSnapshotReady(services.api) &&
+  isRuntimeSnapshotReady(services.bot) &&
+  isRuntimeSnapshotReady(services.worker, { allowFreshError: true }) &&
+  isRuntimeSnapshotReady(services['news-worker'], { allowFreshError: true });
 
 const parseOrigins = (value?: string) =>
   (value ?? '')
@@ -159,14 +191,7 @@ app.use('/api', (req, res, next) => {
 const botToken = process.env.BOT_TOKEN ?? '';
 const maxAgeSeconds = parseInt(process.env.INIT_DATA_MAX_AGE_SECONDS ?? '86400', 10);
 const allowDev = process.env.ALLOW_DEV_AUTH === 'true' && process.env.NODE_ENV !== 'production';
-const adminTelegramId = (() => {
-  const raw = (process.env.ADMIN_TELEGRAM_ID ?? '467595754').trim();
-  try {
-    return BigInt(raw);
-  } catch {
-    return BigInt(467595754);
-  }
-})();
+const adminTelegramId = BigInt(trimEnv(process.env.ADMIN_TELEGRAM_ID));
 const LEARNED_STAGE_MIN = 4;
 
 app.get('/api/health', async (_req, res) => {
@@ -175,25 +200,37 @@ app.get('/api/health', async (_req, res) => {
     await prisma.$queryRaw`SELECT 1`;
   } catch (error) {
     databaseOk = false;
-    apiHealth.markError(error instanceof Error ? error.message : 'database check failed');
     apiLogger.error('database health check failed', { error });
   }
 
-  const services = await readRuntimeHealth();
-  const apiSnapshot = apiHealth.snapshot();
-  services.api = {
-    ...apiSnapshot,
-    status: apiSnapshot.state === 'error' ? 'error' : 'ok',
-    stale: false,
-    updatedAt: new Date().toISOString(),
-  };
-
-  const runtimeOk = Object.values(services).every((service) => service.status === 'ok');
-  const ok = databaseOk;
+  const services = await loadRuntimeSnapshots();
+  const runtimeOk = isStrictRuntimeHealthy(services);
+  const ok = databaseOk && runtimeOk;
 
   return res.status(ok ? 200 : 503).json({
     ok,
     runtimeOk,
+    database: { ok: databaseOk },
+    services,
+  });
+});
+
+app.get('/api/ready', async (_req, res) => {
+  let databaseOk = true;
+  try {
+    await prisma.$queryRaw`SELECT 1`;
+  } catch (error) {
+    databaseOk = false;
+    apiLogger.error('database readiness check failed', { error });
+  }
+
+  const services = await loadRuntimeSnapshots();
+  const runtimeReady = isDeployRuntimeReady(services);
+  const ok = databaseOk && runtimeReady;
+
+  return res.status(ok ? 200 : 503).json({
+    ok,
+    runtimeReady,
     database: { ok: databaseOk },
     services,
   });

@@ -25,10 +25,15 @@ export type RuntimeHealthSnapshot = RuntimeHeartbeatPayload & {
   stale: boolean;
 };
 
+type RuntimeReadinessOptions = {
+  allowFreshError?: boolean;
+};
+
 const HEALTH_DIR = path.join(process.cwd(), '.runtime', 'health');
 const HEARTBEAT_INTERVAL_MS = 30_000;
 const HEARTBEAT_STALE_MS = 90_000;
 const ALL_SERVICES: RuntimeHealthService[] = ['api', 'bot', 'worker', 'news-worker'];
+const persistQueues = new Map<RuntimeHealthService, Promise<void>>();
 
 const heartbeatPath = (service: RuntimeHealthService): string =>
   path.join(HEALTH_DIR, `${service}.json`);
@@ -73,6 +78,21 @@ const buildSnapshotStatus = (
   };
 };
 
+export const isRuntimeSnapshotReady = (
+  snapshot: RuntimeHealthSnapshot,
+  options: RuntimeReadinessOptions = {},
+): boolean => {
+  if (snapshot.status === 'missing' || snapshot.status === 'stale') {
+    return false;
+  }
+
+  if (snapshot.status === 'error') {
+    return options.allowFreshError === true;
+  }
+
+  return true;
+};
+
 export const readRuntimeHealth = async (
   services: RuntimeHealthService[] = ALL_SERVICES,
 ): Promise<Record<RuntimeHealthService, RuntimeHealthSnapshot>> => {
@@ -104,14 +124,22 @@ export const createRuntimeHealthReporter = (service: RuntimeHealthService) => {
     state: 'ok',
   };
 
-  const persist = async (): Promise<void> => {
-    await ensureHealthDir();
-    state = {
-      ...state,
-      updatedAt: new Date().toISOString(),
-      pid: process.pid,
-    };
-    await writeFile(heartbeatPath(service), JSON.stringify(state, null, 2), 'utf8');
+  const persist = (): Promise<void> => {
+    const currentQueue = persistQueues.get(service) ?? Promise.resolve();
+    const nextQueue = currentQueue
+      .catch(() => {})
+      .then(async () => {
+        await ensureHealthDir();
+        state = {
+          ...state,
+          updatedAt: new Date().toISOString(),
+          pid: process.pid,
+        };
+        await writeFile(heartbeatPath(service), JSON.stringify(state, null, 2), 'utf8');
+      });
+
+    persistQueues.set(service, nextQueue);
+    return nextQueue;
   };
 
   return {

@@ -18,9 +18,28 @@ describe('runtime env validation', () => {
   it('throws when API_PORT is invalid', () => {
     process.env.DATABASE_URL = 'postgresql://postgres:postgres@localhost:5432/wordping';
     process.env.BOT_TOKEN = 'test-token';
+    process.env.ADMIN_TELEGRAM_ID = '123';
     process.env.API_PORT = 'abc';
 
     expect(() => validateRuntimeEnv('api')).toThrow('API_PORT must be an integer');
+  });
+
+  it('throws when ADMIN_TELEGRAM_ID is missing for api', () => {
+    process.env.DATABASE_URL = 'postgresql://postgres:postgres@localhost:5432/wordping';
+    process.env.BOT_TOKEN = 'test-token';
+    delete process.env.ADMIN_TELEGRAM_ID;
+
+    expect(() => validateRuntimeEnv('api')).toThrow('ADMIN_TELEGRAM_ID is not set');
+  });
+
+  it('throws when ALLOW_DEV_AUTH is enabled in production', () => {
+    process.env.DATABASE_URL = 'postgresql://postgres:postgres@localhost:5432/wordping';
+    process.env.BOT_TOKEN = 'test-token';
+    process.env.ADMIN_TELEGRAM_ID = '123';
+    process.env.NODE_ENV = 'production';
+    process.env.ALLOW_DEV_AUTH = 'true';
+
+    expect(() => validateRuntimeEnv('api')).toThrow('ALLOW_DEV_AUTH must be disabled in production');
   });
 
   it('throws when news cron is invalid', () => {

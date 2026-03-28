@@ -21,6 +21,7 @@ type MainReplyKeyboardFactory = (lang: Lang) => ReturnType<typeof Markup.keyboar
 
 type NewsDigestRuntimeOptions = {
   mainReplyKeyboard: MainReplyKeyboardFactory;
+  buildGuideLinkText: (lang: Lang) => string;
 };
 
 type NewsDigestSessionSnapshot = Pick<UserSession, 'payload'>;
@@ -88,13 +89,13 @@ export const getNextNewsDigestIndex = (
   return (safeIndex + step + safeTotal) % safeTotal;
 };
 
-export const createNewsDigestRuntime = ({ mainReplyKeyboard }: NewsDigestRuntimeOptions) => {
+export const createNewsDigestRuntime = ({ mainReplyKeyboard, buildGuideLinkText }: NewsDigestRuntimeOptions) => {
   const handleNewsDigestStart = async (ctx: Context, userId: bigint, lang: Lang) => {
     try {
       const digest = await buildUserNewsDigest(userId);
 
       if (!digest.length) {
-        await ctx.reply(newsDigestFallbackText(lang), {
+        await ctx.reply(newsDigestFallbackText(lang, buildGuideLinkText(lang)), {
           parse_mode: 'HTML',
           ...mainReplyKeyboard(lang),
         });
@@ -119,7 +120,7 @@ export const createNewsDigestRuntime = ({ mainReplyKeyboard }: NewsDigestRuntime
       });
     } catch (error) {
       newsDigestLogger.error('news digest failed', { userId: userId.toString(), error });
-      await ctx.reply(newsDigestFallbackText(lang), {
+      await ctx.reply(newsDigestFallbackText(lang, buildGuideLinkText(lang)), {
         parse_mode: 'HTML',
         ...mainReplyKeyboard(lang),
       });

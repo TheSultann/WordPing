@@ -11,6 +11,7 @@ yarn-error.log*
 dist
 coverage
 .runtime
+.deploy
 backups
 prisma/generated
 src/generated

@@ -65,9 +65,10 @@ type QuizSessionSnapshot = Pick<UserSession, 'state' | 'payload'>;
 
 type QuizServiceAction = 'TIRED';
 
-type QuizRuntimeOptions = {
+export type QuizRuntimeDeps = {
   bot: Telegraf<Context>;
   mainReplyKeyboard: MainReplyKeyboardFactory;
+  buildGuideLinkText: (lang: Lang) => string;
 };
 
 const quizRuntimeLogger = createLogger('bot').child({ component: 'quiz-runtime' });
@@ -99,10 +100,20 @@ const quizLimitReachedText = (lang: Lang, usedToday: number): string =>
     ? `Bugungi Quiz limiti tugadi: ${QUIZ_DAILY_LIMIT}. Ishlatildi: ${usedToday}/${QUIZ_DAILY_LIMIT}.`
     : `Дневной лимит Quiz исчерпан: ${usedToday}/${QUIZ_DAILY_LIMIT}.`;
 
-const quizInsufficientWordsText = (lang: Lang, minRequiredWords: number): string =>
-  lang === 'uz'
-    ? `Quiz uchun kamida ${minRequiredWords} ta stage>=2 soz kerak.`
-    : `Для Quiz нужно минимум ${minRequiredWords} слов со stage>=2.`;
+const quizInsufficientWordsText = (lang: Lang, minRequiredWords: number, guideLinkText: string): string => {
+  if (lang === 'uz') {
+    return `🧠 <b>Quiz boshlash uchun kamida ${minRequiredWords} ta so'z Stage 2+ ga yetishi kerak</b>
+
+So'z qo'shishda davom eting va eslatmalarga javob bering! 💪
+
+📈 ${guideLinkText}`;
+  }
+  return `🧠 <b>Quiz для старта требует минимум ${minRequiredWords} слова на Stage 2+</b>
+
+Продолжай добавлять слова и отвечай на напоминания! 💪
+
+📈 ${guideLinkText}`;
+};
 
 const quizPendingFlowText = (lang: Lang): string =>
   lang === 'uz'
@@ -231,7 +242,7 @@ const finalizeCompletedRun = async (run: QuizRunSnapshot): Promise<QuizSummary> 
   return toQuizSummaryFromRun(updated);
 };
 
-export const createQuizRuntime = ({ bot, mainReplyKeyboard }: QuizRuntimeOptions) => {
+export const createQuizRuntime = ({ bot, mainReplyKeyboard, buildGuideLinkText }: QuizRuntimeDeps) => {
   const quizTimeouts = new Map<number, ReturnType<typeof setTimeout>>();
 
   const clearScheduledQuizTimeout = (runId: number): void => {
@@ -620,7 +631,8 @@ export const createQuizRuntime = ({ bot, mainReplyKeyboard }: QuizRuntimeOptions
         await ctx.reply(quizLimitReachedText(lang, result.usedToday), { parse_mode: 'HTML', ...mainReplyKeyboard(lang) });
         return;
       }
-      await ctx.reply(quizInsufficientWordsText(lang, result.minRequiredWords ?? 4), {
+      const guideLinkText = buildGuideLinkText(lang);
+      await ctx.reply(quizInsufficientWordsText(lang, result.minRequiredWords ?? 4, guideLinkText), {
         parse_mode: 'HTML',
         ...mainReplyKeyboard(lang),
       });

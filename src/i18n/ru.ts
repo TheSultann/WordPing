@@ -23,7 +23,7 @@ const ru = {
   'onboarding.intervalSaved': '✅ <b>Отлично!</b> Интервал: {value} мин.',
   'onboarding.settingsTip': '⚙️ Остальное настроишь потом в меню.',
   'onboarding.finished':
-    '✅ <b>Готово!</b> Интервал: {value} мин.\n\nОтправь первое слово на английском 👇\n\n{guideLink}',
+    '✅ <b>Готово!</b> Интервал: {value} мин.\n\n<b>Отправь первое слово на английском ❗️</b>\n\n{guideLink}',
 
   'btn.back': '⬅️ Назад',
   'btn.next': 'Понятно, погнали! 🚀',
@@ -36,7 +36,7 @@ const ru = {
   'btn.confirmEdit': '✏️ Исправить',
   'btn.editWord': '🇺🇸 Слово',
   'btn.editTranslation': '🇷🇺 Перевод',
-  'btn.openGuide': 'Как работают напоминания?',
+  'btn.openGuide': 'Как работают этапы?',
 
   'settings.title': '⚙️ <b>Твои настройки</b>',
   'settings.notificationsOn': '🔔 <b>Уведомления</b>: Работают',

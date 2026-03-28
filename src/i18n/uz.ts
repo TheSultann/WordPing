@@ -25,7 +25,7 @@ const uz = {
   'onboarding.intervalSaved': '\u2705 <b>Ajoyib!</b> Yangi oraliq: {value} daqiqa.',
   'onboarding.settingsTip': '\u2699\uFE0F Qolgan sozlamalarni keyin menyudan ham ozgartira olasiz.',
   'onboarding.finished':
-    '\u2705 <b>Tayyor!</b> Oraliq: {value} daqiqa.\n\nBirinchi inglizcha sozni yuboring \u{1F447}\n\n{guideLink}',
+    '\u2705 <b>Tayyor!</b> Oraliq: {value} daqiqa.\n\n<b>Birinchi inglizcha sozni yuboring \u2757\uFE0F</b>\n\n{guideLink}',
 
   'btn.back': 'Orqaga',
   'btn.next': 'Tushunarli, boshladik! \u{1F680}',
@@ -38,7 +38,7 @@ const uz = {
   'btn.confirmEdit': '✏️ Tuzatish',
   'btn.editWord': '🇺🇸 So\'z',
   'btn.editTranslation': '🇺🇿 Tarjima',
-  'btn.openGuide': 'Eslatmalar qanday ishlaydi?',
+  'btn.openGuide': 'Bosqichlar qanday ishlaydi?',
 
   'settings.title': '\u2699\uFE0F <b>Sozlamalaringiz</b>',
   'settings.notificationsOn': '\u{1F514} <b>Bildirishnomalar</b>: Yoniq',

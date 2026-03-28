@@ -151,6 +151,24 @@ afterAll(async () => {
 });
 
 describe('bot quiz integration', () => {
+  it('shows a clear insufficient words message with a guide link', async () => {
+    await prisma.user.create({
+      data: {
+        id: BigInt(userId),
+        language: 'ru',
+        timezone: 'UTC',
+      },
+    });
+    const callApiSpy = mockTelegramApi();
+
+    await bot.handleUpdate(makeMessageUpdate(QUIZ_BUTTON, 0), {} as any);
+
+    const finalText = sentTexts(callApiSpy).at(-1) ?? '';
+    expect(finalText).toContain('Quiz для старта требует минимум 4 слова на Stage 2+');
+    expect(finalText).toContain('Как работают этапы?');
+    expect(finalText).toContain('https://example.test/app?tab=settings&flow=stages');
+  });
+
   it('starts quiz from keyboard button and enters QUIZ_ACTIVE', async () => {
     await seedQuizWords(10);
     const callApiSpy = mockTelegramApi();

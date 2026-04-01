@@ -624,36 +624,23 @@ describe('newsFallbackService integration', () => {
   });
 
   it('parallel resolve cycles do not claim the same job', async () => {
-    process.env.NEWDATA_API_KEY = 'test-key';
-
     const words = await Promise.all([
       createStage4Word('reform', 'reforma'),
       createStage4Word('growth', 'rost'),
     ]);
 
-    const fetchSpy = mockFetchByUrl(async (url) => {
-      const parsed = new URL(url);
-      if (!url.startsWith(TEST_NEWDATA_API)) {
-        return { ok: true, status: 200, text: async () => JSON.stringify({ status: 'success', results: [] }) } as any;
-      }
-      const q = parsed.searchParams.get('q') ?? 'word';
-      return {
-        ok: true,
-        status: 200,
-        text: async () =>
-          JSON.stringify({
-            status: 'success',
-            results: [
-              {
-                title: `${q} update in Uzbekistan`,
-                link: `https://newsdata.example/${q}`,
-                description: `${q} is discussed globally with detailed analysis and practical implications for policy.`,
-                language: 'en',
-              },
-            ],
-          }),
-      } as any;
+    await seedNews({
+      title: 'Reform update in Uzbekistan',
+      snippet: 'The reform agenda gained momentum after detailed policy analysis and regional debate this week.',
+      contentHash: 'parallel-resolve-reform',
     });
+    await seedNews({
+      title: 'Growth update in Uzbekistan',
+      snippet: 'The growth outlook improved after detailed economic analysis and major investment policy changes.',
+      contentHash: 'parallel-resolve-growth',
+    });
+
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
 
     for (const word of words) {
       await queueWordNewsResolve(word.id);
@@ -669,7 +656,7 @@ describe('newsFallbackService integration', () => {
 
     const doneCount = await prisma.newsResolveJob.count({ where: { status: 'DONE' } });
     expect(doneCount).toBe(2);
-    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 
   it('reclaims stale PROCESSING job and resolves it', async () => {

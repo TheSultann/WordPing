@@ -12,6 +12,7 @@ type InitDataPayload = {
   hash: string;
   dataCheckString: string;
   authDate?: number;
+  authDatePresent: boolean;
   user?: TelegramUser | null;
 };
 
@@ -42,6 +43,7 @@ const parseInitData = (initData: string): InitDataPayload => {
   const payload: InitDataPayload = {
     hash,
     dataCheckString,
+    authDatePresent: Object.prototype.hasOwnProperty.call(data, 'auth_date'),
     user,
   };
 
@@ -53,7 +55,7 @@ const parseInitData = (initData: string): InitDataPayload => {
 };
 
 export type VerifyInitDataResult =
-  | { ok: true; user: TelegramUser; authDate?: number }
+  | { ok: true; user: TelegramUser; authDate: number }
   | { ok: false; error: string };
 
 export const verifyInitData = (
@@ -64,9 +66,14 @@ export const verifyInitData = (
   if (!initData) return { ok: false, error: 'initData_missing' };
   if (!botToken) return { ok: false, error: 'bot_token_missing' };
 
-  const { hash, dataCheckString, authDate, user } = parseInitData(initData);
+  const { hash, dataCheckString, authDate, authDatePresent, user } = parseInitData(initData);
   if (!hash) return { ok: false, error: 'hash_missing' };
   if (!user) return { ok: false, error: 'user_missing' };
+  if (!authDatePresent) return { ok: false, error: 'auth_date_missing' };
+  if (typeof authDate !== 'number' || !Number.isFinite(authDate)) {
+    return { ok: false, error: 'auth_date_invalid' };
+  }
+  const verifiedAuthDate = authDate;
 
   const secretKey = crypto.createHmac('sha256', 'WebAppData').update(botToken).digest();
   const computedHash = crypto.createHmac('sha256', secretKey).update(dataCheckString).digest('hex');
@@ -80,15 +87,11 @@ export const verifyInitData = (
     return { ok: false, error: 'hash_mismatch' };
   }
 
-  if (authDate) {
-    const now = Math.floor(Date.now() / 1000);
-    if (Math.abs(now - authDate) > maxAgeSeconds) {
-      return { ok: false, error: 'auth_date_expired' };
-    }
+  const now = Math.floor(Date.now() / 1000);
+  if (Math.abs(now - verifiedAuthDate) > maxAgeSeconds) {
+    return { ok: false, error: 'auth_date_expired' };
   }
 
-  const result: VerifyInitDataResult = { ok: true, user };
-  if (authDate) result.authDate = authDate;
-  return result;
+  return { ok: true, user, authDate: verifiedAuthDate };
 };
 

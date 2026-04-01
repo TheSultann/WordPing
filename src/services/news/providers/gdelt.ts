@@ -1,5 +1,5 @@
 ﻿import { prisma } from '../../../db/client';
-import { GdeltArticle, GdeltResponse, GdeltScope, TierLookupResult } from '../types';
+import type { GdeltArticle, GdeltResponse, GdeltScope, TierLookupResult } from '../types';
 import {
     gdeltApiUrl,
     gdeltQueryScope,

@@ -1,4 +1,4 @@
-import { GuardianApiResponse, TierLookupResult } from '../types';
+import type { GuardianApiResponse, TierLookupResult } from '../types';
 import {
     guardianApiKey,
     guardianApiUrl,

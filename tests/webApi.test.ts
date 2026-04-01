@@ -175,11 +175,11 @@ describe('web api client', () => {
 
     const [, updateMeInit] = fetchSpy.mock.calls[0] as [string, RequestInit];
     expect(updateMeInit.method).toBe('PATCH');
-    expect(String(updateMeInit.body)).toBe(JSON.stringify({ language: 'uz' }));
+    expect(updateMeInit.body as string).toBe(JSON.stringify({ language: 'uz' }));
 
     const [, updateSettingsInit] = fetchSpy.mock.calls[1] as [string, RequestInit];
     expect(updateSettingsInit.method).toBe('PATCH');
-    expect(String(updateSettingsInit.body)).toBe(JSON.stringify({ notificationsEnabled: false }));
+    expect(updateSettingsInit.body as string).toBe(JSON.stringify({ notificationsEnabled: false }));
 
     const [deleteUrl, deleteInit] = fetchSpy.mock.calls[2] as [string, RequestInit];
     expect(deleteUrl).toBe('/api/words/42');
@@ -188,7 +188,7 @@ describe('web api client', () => {
     const [broadcastUrl, broadcastInit] = fetchSpy.mock.calls[3] as [string, RequestInit];
     expect(broadcastUrl).toBe('/api/admin/broadcast');
     expect(broadcastInit.method).toBe('POST');
-    expect(String(broadcastInit.body)).toBe(JSON.stringify({ message: 'hello', photoUrl: 'https://example.test/p.jpg' }));
+    expect(broadcastInit.body as string).toBe(JSON.stringify({ message: 'hello', photoUrl: 'https://example.test/p.jpg' }));
   });
 
   it('keeps HTTP status text when error body is not JSON', async () => {

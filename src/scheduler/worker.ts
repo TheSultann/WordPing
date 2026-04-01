@@ -1,16 +1,17 @@
 import 'dotenv/config';
 import { escapeHtml } from '../utils/html';
-import { buildMaskedHint } from '../utils/hint';
-import { t, Lang } from '../i18n';
+import { isHintAvailable } from '../utils/hint';
+import type { Lang } from '../i18n';
+import { t } from '../i18n';
 import cron from 'node-cron';
 import { Telegraf } from 'telegraf';
 import { prisma } from '../db/client';
 import { ensureSession, setState, setSessionActiveIfIdle, asPayload } from '../services/sessionService';
 import {
-  applyRating,
   findDueFirstExposureStageZeroReview,
   findDueReview,
   findWeakDueReview,
+  markPendingGradeExpired,
   markSkipped,
 } from '../services/reviewService';
 import {
@@ -25,13 +26,12 @@ import {
   SENTENCES_PER_WORD,
   MIN_SENTENCES_FOR_SWAP,
 } from '../services/sentenceService';
-import { CardDirection, Prisma, ReviewResult, User } from '../generated/prisma/client';
+import type { CardDirection, User } from '../generated/prisma/client';
+import { Prisma } from '../generated/prisma/client';
 import { isWithinWindow, nowUtc, startOfUserDay, userNow } from '../utils/time';
 import dayjs from 'dayjs';
 import {
   resetNotificationCountersIfNeeded,
-  ensureUser,
-  recordCompletion,
   DEFAULT_MAX_NOTIFICATIONS,
   DEFAULT_NOTIFICATION_INTERVAL,
   DEFAULT_QUIET_START,
@@ -39,6 +39,13 @@ import {
   MIN_NOTIFICATION_INTERVAL,
 } from '../services/userService';
 import { blankTargetInSentence, highlightTargetInSentence } from '../utils/reviewCardText';
+import { validateRuntimeEnv } from '../utils/env';
+import { createLogger } from '../utils/logger';
+import { createRuntimeHealthReporter } from '../utils/runtimeHealth';
+
+validateRuntimeEnv('worker');
+const workerLogger = createLogger('worker');
+const workerHealth = createRuntimeHealthReporter('worker');
 
 const token = process.env.BOT_TOKEN;
 if (!token) {
@@ -108,9 +115,11 @@ const handleBlockedUserSendError = async (
   if (!isTelegramBlockedByUserError(error)) return false;
   markBlockedUserCooldown(userId);
   await setState(toBigIntUserId(userId), 'IDLE');
-  console.warn(
-    `Skip notifications for blocked user ${blockedUserKey(userId)} for ${BLOCKED_USER_COOLDOWN_MINUTES}m (${context}).`
-  );
+  workerLogger.warn('skip notifications for blocked user', {
+    userId: blockedUserKey(userId),
+    cooldownMinutes: BLOCKED_USER_COOLDOWN_MINUTES,
+    context,
+  });
   return true;
 };
 
@@ -151,8 +160,6 @@ const registerNotification = async (user: User) => {
   });
 };
 
-// buildMaskedHint imported from utils/hint.ts
-
 export const handleReminders = async (user: User, session: SessionLike, canNotify: boolean) => {
   if (!session.sentAt || !session.reviewId) return;
   const sentAt = dayjs(session.sentAt);
@@ -172,7 +179,7 @@ export const handleReminders = async (user: User, session: SessionLike, canNotif
       } catch (error) {
         const handled = await handleBlockedUserSendError(user.id, error, 'skip');
         if (!handled) {
-          console.error('Failed to send skip notification', error);
+          workerLogger.error('failed to send skip notification', { userId: user.id.toString(), error });
         }
       }
     }
@@ -186,7 +193,7 @@ export const handleReminders = async (user: User, session: SessionLike, canNotif
     } catch (error) {
       const handled = await handleBlockedUserSendError(user.id, error, 'reminder');
       if (!handled) {
-        console.error('Failed to send reminder notification', error);
+        workerLogger.error('failed to send reminder notification', { userId: user.id.toString(), error });
       }
       return;
     }
@@ -248,13 +255,7 @@ export const handlePendingGrade = async (user: User, session: SessionLike) => {
   const review = await prisma.review.findUnique({ where: { id: session.reviewId } });
   if (!review) return;
 
-  const wasCorrect = Boolean(asPayload(session.payload)?.correct);
-  const rating = wasCorrect ? 'GOOD' : 'HARD';
-  const result: ReviewResult = wasCorrect ? 'CORRECT' : 'INCORRECT';
-  await applyRating(review, rating, result, session.direction, session.answerText ?? undefined);
-
-  const freshUser = await ensureUser(Number(user.id));
-  await recordCompletion(freshUser, wasCorrect);
+  await markPendingGradeExpired(review, session.direction, session.answerText ?? undefined);
 };
 
 export const processUser = async (user: User) => {
@@ -276,6 +277,10 @@ export const processUser = async (user: User) => {
 
   if (session.state === 'WAITING_GRADE') {
     await handlePendingGrade(normalizedUser, session);
+    return;
+  }
+
+  if (session.state === 'QUIZ_ACTIVE') {
     return;
   }
 
@@ -302,9 +307,6 @@ export const processUser = async (user: User) => {
 
   const direction = review.direction;
   const lang = (normalizedUser.language as Lang) || 'ru';
-  const answerPromptKey = direction === 'EN_TO_RU'
-    ? 'worker.answerPrompt.native'
-    : 'worker.answerPrompt.english';
 
   // Build card text based on stage
   let cardText: string;
@@ -344,6 +346,7 @@ export const processUser = async (user: User) => {
   }
 
   const hintTarget = (direction === 'EN_TO_RU' ? review.word.translationRu : review.word.wordEn).trim();
+  const hintEnabled = isHintAvailable(hintTarget);
   const swapCallback = sentenceData && sentenceCount >= MIN_SENTENCES_FOR_SWAP
     ? `swap:${review.wordId}:${sentenceData.index}`
     : null;
@@ -373,15 +376,23 @@ export const processUser = async (user: User) => {
   }
 
   try {
-    const row: Array<{ text: string; callback_data: string }> = [{ text: '💡', callback_data: `hint:${review.id}` }];
+    const row: Array<{ text: string; callback_data: string }> = [];
+    if (hintEnabled) row.push({ text: '💡', callback_data: `hint:${review.id}` });
     if (swapCallback) row.push({ text: '🔄', callback_data: swapCallback });
-    const sendOpts: any = { parse_mode: 'HTML', reply_markup: { inline_keyboard: [row] } };
+    const sendOpts: any = {
+      parse_mode: 'HTML',
+      ...(row.length > 0 ? { reply_markup: { inline_keyboard: [row] } } : {}),
+    };
     await telegram.sendMessage(Number(normalizedUser.id), cardText, sendOpts);
     await registerNotification(normalizedUser);
   } catch (e) {
     const handled = await handleBlockedUserSendError(normalizedUser.id, e, 'card');
     if (handled) return;
-    console.error('Failed to send card, reverting state', e);
+    workerLogger.error('failed to send card, reverting state', {
+      userId: normalizedUser.id.toString(),
+      reviewId: review.id,
+      error: e,
+    });
     await setState(normalizedUser.id, 'IDLE');
   }
 };
@@ -403,7 +414,7 @@ export const tick = async () => {
     try {
       await processUser(user);
     } catch (e) {
-      console.error('Worker user error', user.id, e);
+      workerLogger.error('worker user processing failed', { userId: user.id.toString(), error: e });
     }
   }
 };
@@ -524,7 +535,7 @@ const fillSentences = async () => {
         }
       }
     } catch (e) {
-      console.error('fillSentences error', word.id, e);
+      workerLogger.error('fillSentences failed', { wordId: word.id, error: e });
     }
   }
 };
@@ -532,10 +543,35 @@ const fillSentences = async () => {
 export const __fillSentencesForTest = fillSentences;
 
 export const startWorker = () => {
-  console.log('Scheduler started.');
-  cron.schedule('* * * * *', tick);
-  cron.schedule('*/30 * * * *', fillSentences);
-  void tick();
+  workerHealth.start();
+  workerHealth.markOk('worker started');
+  workerLogger.info('Scheduler started.');
+  workerLogger.info('worker cron configured', {
+    tickCron: '* * * * *',
+    fillSentencesCron: '*/30 * * * *',
+  });
+  cron.schedule('* * * * *', () => {
+    void tick()
+      .then(() => workerHealth.markTask('tick', 'ok'))
+      .catch((error) => {
+        workerHealth.markTask('tick', 'error', error instanceof Error ? error.message : 'tick failed');
+        workerLogger.error('tick fatal error', { error });
+      });
+  });
+  cron.schedule('*/30 * * * *', () => {
+    void fillSentences()
+      .then(() => workerHealth.markTask('fillSentences', 'ok'))
+      .catch((error) => {
+        workerHealth.markTask('fillSentences', 'error', error instanceof Error ? error.message : 'fillSentences failed');
+        workerLogger.error('fillSentences fatal error', { error });
+      });
+  });
+  void tick()
+    .then(() => workerHealth.markTask('tick', 'ok'))
+    .catch((error) => {
+      workerHealth.markTask('tick', 'error', error instanceof Error ? error.message : 'tick failed');
+      workerLogger.error('tick fatal error', { error });
+    });
 };
 
 if (require.main === module) {

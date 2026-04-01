@@ -22,7 +22,8 @@ const ru = {
   'onboarding.intervalOutOfRange': '⚠️ <b>От {min} до {max} минут.</b>\nПопробуй другое число.',
   'onboarding.intervalSaved': '✅ <b>Отлично!</b> Интервал: {value} мин.',
   'onboarding.settingsTip': '⚙️ Остальное настроишь потом в меню.',
-  'onboarding.finished': '✅ <b>Готово!</b> Интервал: {value} мин.\n\nОтправь первое слово на английском 👇',
+  'onboarding.finished':
+    '✅ <b>Готово!</b> Интервал: {value} мин.\n\n<b>Отправь первое слово на английском ❗️</b>\n\n{guideLink}',
 
   'btn.back': '⬅️ Назад',
   'btn.next': 'Понятно, погнали! 🚀',
@@ -33,6 +34,9 @@ const ru = {
   'btn.notifyOff': '🔕 Выключены',
   'btn.confirmOk': '✅ Всё верно',
   'btn.confirmEdit': '✏️ Исправить',
+  'btn.editWord': '🇺🇸 Слово',
+  'btn.editTranslation': '🇷🇺 Перевод',
+  'btn.openGuide': 'Как работают этапы?',
 
   'settings.title': '⚙️ <b>Твои настройки</b>',
   'settings.notificationsOn': '🔔 <b>Уведомления</b>: Работают',
@@ -59,6 +63,8 @@ const ru = {
 
   'add.enter': '✍️ <b>Новое слово</b>\n\n👇 Пиши на английском:',
   'add.searchingTranslation': '🔎 <b>Ищу перевод...</b>',
+  'add.editChoice': '✏️ <b>Что исправить?</b>',
+  'add.manualEnglish': '✍️ <b>Английское слово</b>\n\n👇 Напиши слово заново:',
   'add.manual': '✍️ <b>Перевод</b>\n\n👇 Напиши перевод для этого слова:',
   'add.confirmPrompt': 'Подтверди, если всё ок.',
   'add.failSave': '❌ <b>Упс, ошибка сохранения.</b> Попробуй еще раз.',
@@ -71,6 +77,8 @@ const ru = {
   'add.apiLimitNeedEnglish': '🛑 <b>Лимит автоперевода на сегодня исчерпан ({limit}).</b>\n👇 Напиши слово на английском вручную.',
   'add.apiLimitFallbackQuality':
     '🛑 <b>Лимит автоперевода на сегодня исчерпан ({limit}).</b>\n⚠️ Дальше перевожу через MyMemory, качество может быть ниже.',
+  'add.apiLimitReachedNow':
+    '⚠️ <b>Лимит автоперевода только что закончился ({limit}).</b>\nСледующее слово уже попрошу ввести вручную.',
   'add.suspectAutoTranslation':
     '⚠️ <b>Автоперевод выглядит неточным.</b>\n👇 Напиши перевод вручную, чтобы сохранить правильно:',
   'add.dailyLimit': '🙏 <b>Сори, сегодня лимит: {limit} слов.</b>\nЗавтра сможешь добавить еще.',
@@ -95,6 +103,7 @@ const ru = {
   'worker.answerTarget.english': '✍️ → 🇬🇧',
   'worker.hintReveal': '💡 <b>{masked}</b>',
   'worker.hintLimit': 'Подсказки закончились (3/3)',
+  'worker.hintUnavailable': 'Для очень коротких слов подсказка отключена.',
   'worker.answerPrompt': '👇 Пиши перевод:',
   'worker.reminder': '⏰ <b>Тик-так!</b> Не забывай отвечать.',
   'worker.skipped': '🍃 <b>Улетело...</b>\nВернусь с ним позже!',
@@ -111,6 +120,7 @@ const ru = {
   'grade.accepted': '🚀 <b>Принято!</b> Едем дальше.',
   'grade.progress': 'Сегодня: <b>{done}/{limit}</b> · Осталось {left}',
   'grade.limitReached': 'Сегодняшний лимит выполнен ✅',
+  'reviewFlowHint': 'ℹ️ В настройках можно быстро посмотреть, как работают stage и интервалы.',
 
   'notify.toggled': '👌 <b>Переключил.</b>',
 };

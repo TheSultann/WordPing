@@ -1,5 +1,5 @@
 ﻿import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { PrismaClient } from '../src/generated/prisma';
+import type { PrismaClient } from '../src/generated/prisma/client';
 import { prepareTestDatabase } from './helpers/testDb';
 import { cleanupUserData } from './helpers/cleanup';
 
@@ -10,6 +10,7 @@ const NEWS_SOURCE_LABEL_UZ = 'To\u2018liq o\u2018qish';
 const NEWS_NAV_PREV = 'newsnav:prev';
 const NEWS_NAV_NEXT = 'newsnav:next';
 const NEWS_NAV_NOOP = 'newsnav:noop';
+const NEWS_NAV_MORE = 'newsnav:more';
 
 vi.mock('../src/services/translation', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../src/services/translation')>();
@@ -56,6 +57,7 @@ const makeCallbackUpdate = (data: string, messageId = 1) => ({
 
 beforeAll(async () => {
   process.env.BOT_TOKEN = process.env.BOT_TOKEN ?? 'test_bot_token';
+  process.env.WEBAPP_URL = 'https://example.test/app';
   const testUrl = await prepareTestDatabase();
   process.env.DATABASE_URL = testUrl;
 
@@ -171,7 +173,11 @@ describe('bot news digest button', () => {
     const firstButton = replyMarkup?.keyboard?.[0]?.[0];
     const firstButtonText = typeof firstButton === 'string' ? firstButton : firstButton?.text;
 
-    expect(String(payload?.text ?? '')).toContain('\u{1F4F0}');
+    const text = String(payload?.text ?? '');
+    expect(text).toContain('📰 <b>Новости пока недоступны</b>');
+    expect(text).toContain('Stage 4');
+    expect(text).toContain('Как работают этапы?');
+    expect(text).toContain('https://example.test/app?tab=settings&flow=stages');
     expect(firstButtonText).toBe(NEWS_BUTTON_RU);
   });
 
@@ -275,7 +281,7 @@ describe('bot news digest button', () => {
     expect(buttons[2]?.text).toBe('Oldinga ➡️');
   });
 
-  it('sends one digest card with arrows when there are up to 3 cards', async () => {
+  it('sends one digest card with arrows when there are five or fewer cards', async () => {
     await prisma.user.create({
       data: {
         id: BigInt(userId),
@@ -446,5 +452,78 @@ describe('bot news digest button', () => {
     expect(buttons[1]?.callback_data).toBe(NEWS_NAV_NOOP);
     expect(buttons[2]?.text).toBe('Вперёд ➡️');
     expect(buttons[2]?.callback_data).toBe(NEWS_NAV_NEXT);
+  });
+
+  it('shows jump button for batches larger than five and moves to the next batch', async () => {
+    await prisma.user.create({
+      data: {
+        id: BigInt(userId),
+        language: 'ru',
+      },
+    });
+
+    await prisma.word.createMany({
+      data: Array.from({ length: 10 }, (_, index) => ({
+        userId: BigInt(userId),
+        wordEn: `word${index + 1}`,
+        translationRu: `slovo${index + 1}`,
+        newsExampleText: `The word${index + 1} appears in this article.`,
+        newsExampleTier: 'CACHE',
+        newsExampleSourceUrl: `https://news.example/word${index + 1}`,
+        newsExampleSourceTitle: `Word ${index + 1} report`,
+        newsExamplePreparedAt: new Date(Date.now() + index * 1000),
+      })),
+    });
+
+    const words = await prisma.word.findMany({
+      where: { userId: BigInt(userId) },
+      select: { id: true },
+    });
+
+    await prisma.review.createMany({
+      data: words.map((word) => ({
+        userId: BigInt(userId),
+        wordId: word.id,
+        direction: 'EN_TO_RU',
+        stage: 4,
+        intervalMinutes: 3600,
+        nextReviewAt: new Date(Date.now() - 1000),
+      })),
+    });
+
+    const callApiSpy = vi
+      .spyOn(Object.getPrototypeOf(bot.telegram), 'callApi')
+      .mockResolvedValue({} as any);
+
+    await bot.handleUpdate(makeMessageUpdate(NEWS_BUTTON_RU, 60), {} as any);
+
+    const sendCalls = callApiSpy.mock.calls.filter(([method]) => method === 'sendMessage');
+    expect(sendCalls.length).toBe(1);
+
+    const firstPayload = sendCalls[0]?.[1] as any;
+    const firstReplyMarkup = typeof firstPayload?.reply_markup === 'string'
+      ? JSON.parse(firstPayload.reply_markup)
+      : firstPayload?.reply_markup;
+    const firstButtonsRow1 = firstReplyMarkup?.inline_keyboard?.[0] ?? [];
+    const firstButtonsRow2 = firstReplyMarkup?.inline_keyboard?.[1] ?? [];
+    expect(firstButtonsRow1[1]?.text).toBe('1 / 10');
+    expect(firstButtonsRow2[0]?.text).toBe('Ещё 5');
+    expect(firstButtonsRow2[0]?.callback_data).toBe(NEWS_NAV_MORE);
+
+    await bot.handleUpdate(makeCallbackUpdate(NEWS_NAV_MORE, 60), {} as any);
+
+    const editCalls = callApiSpy.mock.calls.filter(([method]) => method === 'editMessageText');
+    expect(editCalls.length).toBeGreaterThan(0);
+    const editPayload = editCalls[0]?.[1] as any;
+    const editedText = String(editPayload?.text ?? '');
+    const editedReplyMarkup = typeof editPayload?.reply_markup === 'string'
+      ? JSON.parse(editPayload.reply_markup)
+      : editPayload?.reply_markup;
+    const editedButtonsRow1 = editedReplyMarkup?.inline_keyboard?.[0] ?? [];
+    const editedButtonsRow2 = editedReplyMarkup?.inline_keyboard?.[1] ?? [];
+
+    expect(editedText).toContain('<b>word5</b>');
+    expect(editedButtonsRow1[1]?.text).toBe('6 / 10');
+    expect(editedButtonsRow2.length).toBe(0);
   });
 });

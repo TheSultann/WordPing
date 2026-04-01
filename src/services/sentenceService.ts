@@ -1,12 +1,13 @@
 import { Prisma } from '../generated/prisma/client';
 import { prisma } from '../db/client';
 import { trimEnv } from '../utils/env';
+import type {
+    GeminiResponse} from './translation';
 import {
     fetchJson,
     readGeminiModels,
     readTimeoutMs,
-    runWithGeminiModelPool,
-    GeminiResponse,
+    runWithGeminiModelPool
 } from './translation';
 
 const GEMINI_DEFAULT_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta/models';
@@ -260,7 +261,7 @@ export const advanceSentenceIndex = async (wordId: number): Promise<void> => {
     const word = await prisma.word.findUnique({ where: { id: wordId } });
     if (!word?.exampleSentences) return;
 
-    const sentences = word.exampleSentences as unknown as ExampleSentence[];
+    const sentences = toExampleSentenceArray(word.exampleSentences);
     if (sentences.length === 0) return;
 
     const nextIndex = (word.sentenceIndex + 1) % sentences.length;
@@ -275,8 +276,8 @@ export const getSentenceForReview = (
 ): { sentence: ExampleSentence; index: number } | null => {
     if (!word.exampleSentences) return null;
 
-    const sentences = word.exampleSentences as unknown as ExampleSentence[];
-    if (!Array.isArray(sentences) || sentences.length === 0) return null;
+    const sentences = toExampleSentenceArray(word.exampleSentences);
+    if (sentences.length === 0) return null;
 
     const index = word.sentenceIndex % sentences.length;
     const item = sentences[index];

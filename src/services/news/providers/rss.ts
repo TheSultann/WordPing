@@ -1,6 +1,6 @@
-import { Prisma } from '../../../generated/prisma/client';
+import type { Prisma } from '../../../generated/prisma/client';
 import { prisma } from '../../../db/client';
-import { RefreshNewsCacheResult, ResolvedNewsExample } from '../types';
+import type { RefreshNewsCacheResult, ResolvedNewsExample } from '../types';
 import {
     readNewsCacheTtlDays,
     readRssBodyStageLimit,

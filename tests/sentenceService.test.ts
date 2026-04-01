@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { PrismaClient } from '../src/generated/prisma';
+import { PrismaClient } from '../src/generated/prisma/client';
 import { prepareTestDatabase } from './helpers/testDb';
 import { cleanupUserData } from './helpers/cleanup';
 
@@ -8,6 +8,8 @@ let findWordsNeedingSentences: (limit: number) => Promise<any[]>;
 let countWordsNeedingSentences: () => Promise<number>;
 let removeSentenceAtIndex: (wordId: number, index: number) => Promise<{ sentences: any[]; removed: boolean }>;
 let appendSentences: (wordId: number, newSentences: any[], maxCount?: number) => Promise<void>;
+let advanceSentenceIndex: (wordId: number) => Promise<void>;
+let getSentenceForReview: (word: { exampleSentences: any; sentenceIndex: number }) => { sentence: any; index: number } | null;
 
 const userId = BigInt(900000220);
 
@@ -20,6 +22,8 @@ beforeAll(async () => {
   countWordsNeedingSentences = sentenceService.countWordsNeedingSentences;
   removeSentenceAtIndex = sentenceService.removeSentenceAtIndex;
   appendSentences = sentenceService.appendSentences;
+  advanceSentenceIndex = sentenceService.advanceSentenceIndex;
+  getSentenceForReview = sentenceService.getSentenceForReview;
 
   prisma = new PrismaClient({ datasources: { db: { url: testUrl } } });
 });
@@ -162,5 +166,31 @@ describe('sentenceService integration', () => {
     expect(stored[0]?.en).toBe('Keep this first sentence.');
     expect(stored[1]?.en).toBe('Keep this second sentence.');
     expect(stored[2]?.en).toBe('Add this missing third sentence.');
+  });
+
+  it('ignores malformed exampleSentences when advancing sentence index', async () => {
+    const word = await prisma.word.create({
+      data: {
+        userId,
+        wordEn: 'broken-pool',
+        translationRu: 'slomannyi-pul',
+        sentenceIndex: 5,
+        exampleSentences: { broken: true } as any,
+      },
+    });
+
+    await expect(advanceSentenceIndex(word.id)).resolves.toBeUndefined();
+
+    const fresh = await prisma.word.findUnique({ where: { id: word.id } });
+    expect(fresh?.sentenceIndex).toBe(5);
+  });
+
+  it('returns null for malformed exampleSentences in review flow', () => {
+    const result = getSentenceForReview({
+      exampleSentences: { broken: true },
+      sentenceIndex: 0,
+    });
+
+    expect(result).toBeNull();
   });
 });

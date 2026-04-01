@@ -1,4 +1,4 @@
-import {
+import type {
     NewsCacheCandidate,
     FieldMatch,
     Tier1MatchProfile,
@@ -120,7 +120,7 @@ const sliceAroundMatch = (text: string, forms: string[], maxChars: number): stri
 
     const leading = Math.floor(maxChars * 0.35);
     let start = Math.max(0, first.index - leading);
-    let end = Math.min(normalized.length, start + maxChars);
+    const end = Math.min(normalized.length, start + maxChars);
     if (end - start < maxChars) {
         start = Math.max(0, end - maxChars);
     }

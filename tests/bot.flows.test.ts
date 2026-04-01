@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { PrismaClient } from '../src/generated/prisma';
+import { PrismaClient } from '../src/generated/prisma/client';
 import { prepareTestDatabase } from './helpers/testDb';
 import { cleanupUserData } from './helpers/cleanup';
 import { t } from '../src/i18n';
@@ -8,6 +8,10 @@ const suggestTranslationMock = vi.fn().mockResolvedValue(null as string | null);
 const translateAutoMock = vi.fn().mockResolvedValue('hello' as string | null);
 const translateAutoWithMyMemoryMock = vi.fn().mockResolvedValue('beta-ru' as string | null);
 const detectAndTranslateWithGeminiMock = vi.fn().mockResolvedValue(null as any);
+const checkAutoTranslateQuotaMock = vi.fn();
+const commitAutoTranslateQuotaMock = vi.fn();
+let realCheckAutoTranslateQuota: any;
+let realCommitAutoTranslateQuota: any;
 
 vi.mock('../src/services/translation', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../src/services/translation')>();
@@ -17,6 +21,18 @@ vi.mock('../src/services/translation', async (importOriginal) => {
     translateAuto: translateAutoMock,
     translateAutoWithMyMemory: translateAutoWithMyMemoryMock,
     detectAndTranslateWithGemini: detectAndTranslateWithGeminiMock,
+  };
+});
+
+vi.mock('../src/services/translationQuota', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/services/translationQuota')>();
+  realCheckAutoTranslateQuota = actual.checkAutoTranslateQuota;
+  realCommitAutoTranslateQuota = actual.commitAutoTranslateQuota;
+  return {
+    ...actual,
+    checkAutoTranslateQuota: (...args: any[]) => checkAutoTranslateQuotaMock(...args),
+    commitAutoTranslateQuota: (...args: any[]) => commitAutoTranslateQuotaMock(...args),
+    consumeAutoTranslateQuota: (...args: any[]) => commitAutoTranslateQuotaMock(...args),
   };
 });
 
@@ -96,6 +112,10 @@ beforeEach(async () => {
   translateAutoWithMyMemoryMock.mockResolvedValue('beta-ru');
   detectAndTranslateWithGeminiMock.mockReset();
   detectAndTranslateWithGeminiMock.mockResolvedValue(null);
+  checkAutoTranslateQuotaMock.mockReset();
+  checkAutoTranslateQuotaMock.mockImplementation((...args: any[]) => realCheckAutoTranslateQuota(...args));
+  commitAutoTranslateQuotaMock.mockReset();
+  commitAutoTranslateQuotaMock.mockImplementation((...args: any[]) => realCommitAutoTranslateQuota(...args));
 });
 
 afterAll(async () => {
@@ -133,11 +153,77 @@ describe('bot extended flows', () => {
     await bot.handleUpdate(makeCallbackUpdate('lang:uz', 2), {} as any);
 
     const user = await prisma.user.findUnique({ where: { id: BigInt(userId) } });
+    const session = await prisma.userSession.findUnique({ where: { userId: BigInt(userId) } });
     expect(user?.language).toBe('uz');
+    expect(session?.state).toBe('IDLE');
+    expect((session?.payload as any)?.onboarding?.step).toBe('intro');
+    expect((session?.payload as any)?.onboarding?.lang).toBe('uz');
 
     const answerCb = callApiSpy.mock.calls.find(([method]: any[]) => method === 'answerCallbackQuery');
     expect(answerCb).toBeTruthy();
     expect(sentTexts(callApiSpy)).toContain(t('uz', 'hint'));
+  });
+
+  it('does not accept plain text before language is chosen', async () => {
+    await prisma.user.create({ data: { id: BigInt(userId) } });
+    await setState(BigInt(userId), 'IDLE', { payload: { onboarding: { step: 'lang' } } });
+    const callApiSpy = vi
+      .spyOn(Object.getPrototypeOf(bot.telegram), 'callApi')
+      .mockResolvedValue({} as any);
+
+    await bot.handleUpdate(makeMessageUpdate('hello', 20), {} as any);
+
+    const texts = sentTexts(callApiSpy);
+    expect(texts.some((text) => text.includes(t('ru', 'chooseLang')))).toBe(true);
+    expect(texts.some((text) => text.includes(t('uz', 'chooseLang')))).toBe(true);
+    expect(translateAutoMock).not.toHaveBeenCalled();
+    expect(await prisma.word.count({ where: { userId: BigInt(userId) } })).toBe(0);
+  });
+
+  it('does not accept plain text before onboarding next is pressed', async () => {
+    await prisma.user.create({ data: { id: BigInt(userId), language: 'ru' } });
+    await setState(BigInt(userId), 'IDLE', { payload: { onboarding: { step: 'intro', lang: 'ru' } } });
+    const callApiSpy = vi
+      .spyOn(Object.getPrototypeOf(bot.telegram), 'callApi')
+      .mockResolvedValue({} as any);
+
+    await bot.handleUpdate(makeMessageUpdate('hello', 21), {} as any);
+
+    const session = await prisma.userSession.findUnique({ where: { userId: BigInt(userId) } });
+    expect(session?.state).toBe('IDLE');
+    expect((session?.payload as any)?.onboarding?.step).toBe('intro');
+    expect(sentTexts(callApiSpy)).toContain(t('ru', 'hint'));
+    expect(translateAutoMock).not.toHaveBeenCalled();
+    expect(await prisma.word.count({ where: { userId: BigInt(userId) } })).toBe(0);
+  });
+
+  it('blocks /add until onboarding next is pressed', async () => {
+    await prisma.user.create({ data: { id: BigInt(userId), language: 'ru' } });
+    await setState(BigInt(userId), 'IDLE', { payload: { onboarding: { step: 'intro', lang: 'ru' } } });
+    const callApiSpy = vi
+      .spyOn(Object.getPrototypeOf(bot.telegram), 'callApi')
+      .mockResolvedValue({} as any);
+
+    await bot.handleUpdate(makeMessageUpdate('/add', 22), {} as any);
+
+    const session = await prisma.userSession.findUnique({ where: { userId: BigInt(userId) } });
+    expect(session?.state).toBe('IDLE');
+    expect(sentTexts(callApiSpy)).toContain(t('ru', 'hint'));
+    expect(sentTexts(callApiSpy)).not.toContain(t('ru', 'add.enter'));
+  });
+
+  it('blocks quiz entry until onboarding next is pressed', async () => {
+    await prisma.user.create({ data: { id: BigInt(userId), language: 'ru' } });
+    await setState(BigInt(userId), 'IDLE', { payload: { onboarding: { step: 'intro', lang: 'ru' } } });
+    const callApiSpy = vi
+      .spyOn(Object.getPrototypeOf(bot.telegram), 'callApi')
+      .mockResolvedValue({} as any);
+
+    await bot.handleUpdate(makeMessageUpdate('\u{1F9E0} Quiz', 23), {} as any);
+
+    const session = await prisma.userSession.findUnique({ where: { userId: BigInt(userId) } });
+    expect(session?.state).toBe('IDLE');
+    expect(sentTexts(callApiSpy)).toContain(t('ru', 'hint'));
   });
 
   it('onboarding next moves to SETTINGS_WAIT_GOAL', async () => {
@@ -189,6 +275,33 @@ describe('bot extended flows', () => {
     expect(sentTexts(callApiSpy)).toContain(t('ru', 'intervalNeedNumber'));
   });
 
+  it('SETTINGS_WAIT_INTERVAL in onboarding sends finished message with hidden guide text', async () => {
+    await prisma.user.create({ data: { id: BigInt(userId), language: 'uz', notificationIntervalMinutes: 15 } });
+    await setState(BigInt(userId), 'SETTINGS_WAIT_INTERVAL', { payload: { onboarding: { lang: 'uz' } } });
+    const callApiSpy = vi
+      .spyOn(Object.getPrototypeOf(bot.telegram), 'callApi')
+      .mockResolvedValue({} as any);
+
+    await bot.handleUpdate(makeMessageUpdate('10', 41), {} as any);
+
+    const user = await prisma.user.findUnique({ where: { id: BigInt(userId) } });
+    const session = await prisma.userSession.findUnique({ where: { userId: BigInt(userId) } });
+    const texts = sentTexts(callApiSpy);
+
+    expect(user?.notificationIntervalMinutes).toBe(10);
+    expect(session?.state).toBe('IDLE');
+    expect(texts).toContain(t('uz', 'onboarding.finished', {
+      value: 10,
+      guideLink:
+        '<a href="https://example.test/app?tab=settings&flow=stages"><tg-spoiler>Bosqichlar qanday ishlaydi?</tg-spoiler></a>',
+    }));
+    expect(
+      texts.some((text) =>
+        text.includes('<a href="https://example.test/app?tab=settings&flow=stages"><tg-spoiler>Bosqichlar qanday ishlaydi?</tg-spoiler></a>')
+      )
+    ).toBe(true);
+    expect(texts).not.toContain(t('uz', 'reviewFlowHint'));
+  });
   it('SETTINGS_WAIT_INTERVAL saves value in regular settings flow', async () => {
     await prisma.user.create({ data: { id: BigInt(userId), language: 'ru', notificationIntervalMinutes: 15 } });
     await setState(BigInt(userId), 'SETTINGS_WAIT_INTERVAL');
@@ -285,6 +398,32 @@ describe('bot extended flows', () => {
     expect(suggestTranslationMock).not.toHaveBeenCalled();
     const duplicateMsg = sentTexts(callApiSpy).find(
       (text) => text.includes('apple') && text.includes('яблоко')
+    );
+    expect(duplicateMsg).toBeTruthy();
+  });
+
+  it('treats normalized unicode variants as duplicates before translation API', async () => {
+    await prisma.user.create({ data: { id: BigInt(userId), language: 'ru' } });
+    await prisma.word.create({
+      data: {
+        userId: BigInt(userId),
+        wordEn: 'CAF\u00C9',
+        translationRu: '\u043a\u043e\u0444\u0435',
+      },
+    });
+    await setState(BigInt(userId), 'ADDING_WORD_WAIT_EN');
+
+    const callApiSpy = vi
+      .spyOn(Object.getPrototypeOf(bot.telegram), 'callApi')
+      .mockResolvedValue({} as any);
+
+    suggestTranslationMock.mockResolvedValue('\u043d\u0435-\u0434\u043e\u043b\u0436\u043d\u043e-\u0432\u044b\u0437\u0432\u0430\u0442\u044c\u0441\u044f');
+
+    await bot.handleUpdate(makeMessageUpdate('cafe\u0301', 601), {} as any);
+
+    expect(suggestTranslationMock).not.toHaveBeenCalled();
+    const duplicateMsg = sentTexts(callApiSpy).find(
+      (text) => text.includes('CAF\u00C9') && text.includes('\u043a\u043e\u0444\u0435')
     );
     expect(duplicateMsg).toBeTruthy();
   });
@@ -611,7 +750,41 @@ describe('bot extended flows', () => {
     }
   });
 
-  it('add_change callback switches to manual translation state', async () => {
+  it('tells the user when quota is taken by another request after a successful check', async () => {
+    await prisma.user.create({ data: { id: BigInt(userId), language: 'ru' } });
+    await setState(BigInt(userId), 'ADDING_WORD_WAIT_EN');
+
+    checkAutoTranslateQuotaMock.mockResolvedValue({
+      allowed: true,
+      unlimited: false,
+      limit: 1,
+      used: 0,
+      remaining: 1,
+    });
+    commitAutoTranslateQuotaMock.mockResolvedValue({
+      allowed: false,
+      unlimited: false,
+      limit: 1,
+      used: 1,
+      remaining: 0,
+    });
+    suggestTranslationMock.mockResolvedValueOnce('\u0430\u043b\u044c\u0444\u0430');
+
+    const callApiSpy = vi
+      .spyOn(Object.getPrototypeOf(bot.telegram), 'callApi')
+      .mockResolvedValue({} as any);
+
+    await bot.handleUpdate(makeMessageUpdate('alpha', 602), {} as any);
+
+    const texts = sentTexts(callApiSpy);
+    expect(texts).toContain(t('ru', 'add.apiLimitReachedNow', { limit: 1 }));
+    expect(texts.some((text) => text.includes('alpha') && text.includes('\u0430\u043b\u044c\u0444\u0430'))).toBe(true);
+
+    const session = await prisma.userSession.findUnique({ where: { userId: BigInt(userId) } });
+    expect(session?.state).toBe('ADDING_WORD_CONFIRM_TRANSLATION');
+  });
+
+  it('add_change callback opens edit choice menu', async () => {
     await prisma.user.create({ data: { id: BigInt(userId), language: 'ru' } });
     await setState(BigInt(userId), 'ADDING_WORD_CONFIRM_TRANSLATION', {
       payload: { wordEn: 'dog', translationRu: 'собака' },
@@ -621,6 +794,39 @@ describe('bot extended flows', () => {
       .mockResolvedValue({} as any);
 
     await bot.handleUpdate(makeCallbackUpdate('add_change', 7), {} as any);
+
+    const session = await prisma.userSession.findUnique({ where: { userId: BigInt(userId) } });
+    expect(session?.state).toBe('ADDING_WORD_CONFIRM_TRANSLATION');
+    expect((session?.payload as any)?.wordEn).toBe('dog');
+    expect(editedTexts(callApiSpy)).toContain(t('ru', 'add.editChoice'));
+  });
+
+  it('add_change_word callback switches to english word input state', async () => {
+    await prisma.user.create({ data: { id: BigInt(userId), language: 'ru' } });
+    await setState(BigInt(userId), 'ADDING_WORD_CONFIRM_TRANSLATION', {
+      payload: { wordEn: 'dog', translationRu: 'СЃРѕР±Р°РєР°' },
+    });
+    const callApiSpy = vi
+      .spyOn(Object.getPrototypeOf(bot.telegram), 'callApi')
+      .mockResolvedValue({} as any);
+
+    await bot.handleUpdate(makeCallbackUpdate('add_change_word', 77), {} as any);
+
+    const session = await prisma.userSession.findUnique({ where: { userId: BigInt(userId) } });
+    expect(session?.state).toBe('ADDING_WORD_WAIT_EN');
+    expect(editedTexts(callApiSpy)).toContain(t('ru', 'add.manualEnglish'));
+  });
+
+  it('add_change_translation callback switches to manual translation state', async () => {
+    await prisma.user.create({ data: { id: BigInt(userId), language: 'ru' } });
+    await setState(BigInt(userId), 'ADDING_WORD_CONFIRM_TRANSLATION', {
+      payload: { wordEn: 'dog', translationRu: 'СЃРѕР±Р°РєР°' },
+    });
+    const callApiSpy = vi
+      .spyOn(Object.getPrototypeOf(bot.telegram), 'callApi')
+      .mockResolvedValue({} as any);
+
+    await bot.handleUpdate(makeCallbackUpdate('add_change_translation', 78), {} as any);
 
     const session = await prisma.userSession.findUnique({ where: { userId: BigInt(userId) } });
     expect(session?.state).toBe('ADDING_WORD_WAIT_RU_MANUAL');
@@ -845,6 +1051,41 @@ describe('bot extended flows', () => {
     expect(edits.some((text) => text.includes('💡 <b>'))).toBe(false);
   });
 
+  it('hint callback returns unavailable for very short words', async () => {
+    await prisma.user.create({ data: { id: BigInt(userId), language: 'ru' } });
+    const reviewId = 777;
+
+    await setState(BigInt(userId), 'WAITING_ANSWER', {
+      reviewId,
+      wordId: 1,
+      direction: 'RU_TO_EN',
+      sentAt: new Date(),
+      reminderStep: 0,
+      payload: {
+        cardBaseText: 'card text',
+        hintTarget: 'go',
+        hintPresses: 0,
+        hintReviewId: reviewId,
+        swapData: null,
+      },
+    });
+
+    const callApiSpy = vi
+      .spyOn(Object.getPrototypeOf(bot.telegram), 'callApi')
+      .mockResolvedValue({} as any);
+
+    await bot.handleUpdate(makeCallbackUpdate(`hint:${reviewId}`, 576), {} as any);
+
+    const answers = callApiSpy.mock.calls
+      .filter(([method]: any[]) => method === 'answerCallbackQuery')
+      .map(([, payload]: any[]) => String(payload?.text ?? ''));
+    expect(answers).toContain(t('ru', 'worker.hintUnavailable'));
+    expect(callApiSpy.mock.calls.some(([method]: any[]) => method === 'editMessageText')).toBe(false);
+
+    const session = await prisma.userSession.findUnique({ where: { userId: BigInt(userId) } });
+    expect((session?.payload as any)?.hintPresses).toBe(0);
+  });
+
   it('WAITING_ANSWER text transitions to WAITING_GRADE', async () => {
     await prisma.user.create({ data: { id: BigInt(userId), language: 'ru' } });
     const created = await prisma.word.create({
@@ -888,6 +1129,110 @@ describe('bot extended flows', () => {
     expect(sentTexts(callApiSpy).some((text) => text.includes(t('ru', 'answer.pickGrade')))).toBe(true);
   });
 
+  it('grade callback shows review flow button up to two times without url after initial pair', async () => {
+    await prisma.user.create({
+      data: {
+        id: BigInt(userId),
+        language: 'uz',
+        maxNotificationsPerDay: 30,
+      },
+    });
+    const createStageZeroPair = () =>
+      prisma.word.create({
+        data: {
+          userId: BigInt(userId),
+          wordEn: `word-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+          translationRu: 'tarjima',
+          reviews: {
+            create: [
+              {
+                direction: 'EN_TO_RU',
+                userId: BigInt(userId),
+                stage: 1,
+                intervalMinutes: 25,
+                nextReviewAt: new Date(Date.now() + 25 * 60 * 1000),
+                lastReviewAt: new Date(Date.now() - 60 * 1000),
+              },
+              {
+                direction: 'RU_TO_EN',
+                userId: BigInt(userId),
+                stage: 0,
+                intervalMinutes: 5,
+                nextReviewAt: new Date(Date.now() - 1000),
+              },
+            ],
+          },
+        },
+        include: { reviews: true },
+      });
+
+    const callApiSpy = vi
+      .spyOn(Object.getPrototypeOf(bot.telegram), 'callApi')
+      .mockResolvedValue({} as any);
+
+    const finishInitialPair = async (messageId: number) => {
+      const word = await createStageZeroPair();
+      const review = word.reviews.find((item) => item.direction === 'RU_TO_EN');
+      expect(review).toBeTruthy();
+
+      await setState(BigInt(userId), 'WAITING_GRADE', {
+        reviewId: review!.id,
+        wordId: word.id,
+        direction: 'RU_TO_EN',
+        sentAt: new Date(),
+        answerText: 'word',
+        payload: { correct: true },
+      });
+
+      await bot.handleUpdate(makeCallbackUpdate('grade:GOOD', messageId), {} as any);
+      const editCall = callApiSpy.mock.calls.find(([method]: any[]) => method === 'editMessageText');
+      const editPayload = editCall?.[1] as any;
+      expect(String(editPayload?.text ?? '')).toContain(t('uz', 'grade.accepted'));
+      callApiSpy.mockClear();
+      return editPayload;
+    };
+
+    const firstEditPayload = await finishInitialPair(11);
+    expect(String(firstEditPayload?.text ?? '')).not.toContain(t('uz', 'reviewFlowHint'));
+    expect(firstEditPayload?.reply_markup?.inline_keyboard?.[0]?.[0]?.callback_data).toBeUndefined();
+    expect(firstEditPayload?.reply_markup?.inline_keyboard?.[0]?.[0]?.text).toContain(t('uz', 'btn.openGuide'));
+    expect(firstEditPayload?.reply_markup?.inline_keyboard?.[0]?.[0]?.url).toBeUndefined();
+    expect(firstEditPayload?.reply_markup?.inline_keyboard?.[0]?.[0]?.web_app?.url)
+      .toBe('https://example.test/app?tab=settings&flow=stages');
+
+    const userAfterFirstHint = await prisma.user.findUnique({ where: { id: BigInt(userId) } });
+    expect(userAfterFirstHint?.reviewFlowHintShownAt).not.toBeNull();
+
+    const secondEditPayload = await finishInitialPair(12);
+    expect(secondEditPayload?.reply_markup?.inline_keyboard?.[0]?.[0]?.web_app?.url)
+      .toBe('https://example.test/app?tab=settings&flow=stages');
+
+    const thirdEditPayload = await finishInitialPair(13);
+    expect(String(thirdEditPayload?.text ?? '')).not.toContain(t('uz', 'reviewFlowHint'));
+    expect(thirdEditPayload?.reply_markup).toBeUndefined();
+
+    const countRows = await prisma.$queryRaw<Array<{ reviewFlowHintShownCount: number }>>`
+      SELECT "reviewFlowHintShownCount"
+      FROM "User"
+      WHERE "id" = ${BigInt(userId)}
+    `;
+    expect(Number(countRows[0]?.reviewFlowHintShownCount ?? -1)).toBe(2);
+  });
+
+  it('review flow hint button answers via callback alert without url', async () => {
+    await prisma.user.create({ data: { id: BigInt(userId), language: 'uz' } });
+    const callApiSpy = vi
+      .spyOn(Object.getPrototypeOf(bot.telegram), 'callApi')
+      .mockResolvedValue({} as any);
+
+    await bot.handleUpdate(makeCallbackUpdate('review_flow_hint', 13), {} as any);
+
+    const answerCbCall = callApiSpy.mock.calls.find(([method]: any[]) => method === 'answerCallbackQuery');
+    expect(answerCbCall).toBeTruthy();
+    expect(String((answerCbCall?.[1] as any)?.text ?? '')).toBe(t('uz', 'reviewFlowHint'));
+    expect((answerCbCall?.[1] as any)?.show_alert).toBe(true);
+  });
+
   it('grade callback in non-active state returns noActive message', async () => {
     await prisma.user.create({ data: { id: BigInt(userId), language: 'ru' } });
     await setState(BigInt(userId), 'IDLE');
@@ -900,6 +1245,59 @@ describe('bot extended flows', () => {
     const answerCbCall = callApiSpy.mock.calls.find(([method]: any[]) => method === 'answerCallbackQuery');
     expect(answerCbCall).toBeTruthy();
     expect(String((answerCbCall?.[1] as any)?.text ?? '')).toBe(t('ru', 'grade.noActive'));
+  });
+
+  it('grade callback rejects invalid rating without clearing active review session', async () => {
+    await prisma.user.create({ data: { id: BigInt(userId), language: 'ru' } });
+    const word = await prisma.word.create({
+      data: {
+        userId: BigInt(userId),
+        wordEn: 'rating-check',
+        translationRu: 'проверка',
+        reviews: {
+          create: [
+            {
+              direction: 'EN_TO_RU',
+              userId: BigInt(userId),
+              stage: 2,
+              intervalMinutes: 90,
+              nextReviewAt: new Date(Date.now() - 1000),
+              lastReviewAt: new Date(Date.now() - 60_000),
+            },
+          ],
+        },
+      },
+      include: { reviews: true },
+    });
+    const review = word.reviews[0];
+    expect(review).toBeTruthy();
+
+    await setState(BigInt(userId), 'WAITING_GRADE', {
+      reviewId: review!.id,
+      wordId: word.id,
+      direction: 'EN_TO_RU',
+      sentAt: new Date(),
+      answerText: 'check',
+      payload: { correct: true },
+    });
+
+    const callApiSpy = vi
+      .spyOn(Object.getPrototypeOf(bot.telegram), 'callApi')
+      .mockResolvedValue({} as any);
+
+    await bot.handleUpdate(makeCallbackUpdate('grade:INVALID', 91), {} as any);
+
+    const answerCbCall = callApiSpy.mock.calls.find(([method]: any[]) => method === 'answerCallbackQuery');
+    expect(String((answerCbCall?.[1] as any)?.text ?? '')).toBe(t('ru', 'grade.noActive'));
+
+    const session = await prisma.userSession.findUnique({ where: { userId: BigInt(userId) } });
+    expect(session?.state).toBe('WAITING_GRADE');
+    expect(session?.reviewId).toBe(review!.id);
+    expect((session?.payload as any)?.correct).toBe(true);
+
+    const freshReview = await prisma.review.findUnique({ where: { id: review!.id } });
+    expect(freshReview?.stage).toBe(2);
+    expect(freshReview?.lastResult).toBeNull();
   });
 
   it('WAITING_GRADE text keeps asking for grade', async () => {
@@ -928,3 +1326,4 @@ describe('bot extended flows', () => {
     expect(String((answerCbCall?.[1] as any)?.text ?? '')).toBe(t('ru', 'notify.toggled'));
   });
 });
+

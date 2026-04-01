@@ -1,5 +1,5 @@
 import { Book, Bell, RotateCcw, Search, Shield, UserPlus, Users, Zap } from 'lucide-react';
-import { AdminOverview, AdminUserSummary } from '../api';
+import type { AdminOverview, AdminUserSummary } from '../api';
 
 type TranslateFn = (key: string, params?: Record<string, string | number>) => string;
 

@@ -40,8 +40,8 @@ describe('reviewScheduler', () => {
 
   it('skipped resets to stage 0 with 60 minutes', () => {
     const now = dayjs('2024-01-01T00:00:00Z');
-    const schedule = scheduleSkipped(now);
-    expect(schedule.stage).toBe(0);
+    const schedule = scheduleSkipped({ stage: 6 }, now);
+    expect(schedule.stage).toBe(6);
     expect(schedule.intervalMinutes).toBe(60);
   });
 });

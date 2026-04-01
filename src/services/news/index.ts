@@ -8,5 +8,7 @@ export * from './providers/rss';
 export * from './providers/gdelt';
 export * from './providers/newsdata';
 export * from './providers/guardian';
+export * from './maintenanceService';
 export * from './resolveService';
+export * from './sourceLinkService';
 export * from './digestService';

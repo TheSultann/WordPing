@@ -1,5 +1,5 @@
 import { beforeAll, afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { PrismaClient } from '../src/generated/prisma';
+import { PrismaClient } from '../src/generated/prisma/client';
 import { prepareTestDatabase } from './helpers/testDb';
 import { cleanupUserData } from './helpers/cleanup';
 
@@ -274,7 +274,52 @@ describe('worker integration', () => {
     expect(telegram.sendMessage).not.toHaveBeenCalled();
   });
 
-  it('auto-closes WAITING_GRADE after 20 minutes with GOOD for correct answer', async () => {
+  it('does not send when session is QUIZ_ACTIVE', async () => {
+    vi.spyOn(telegram, 'sendMessage').mockResolvedValue({} as any);
+
+    await prisma.user.create({
+      data: {
+        id: userId,
+        notificationsEnabled: true,
+        quietHoursStartMinutes: 0,
+        quietHoursEndMinutes: 0,
+        timezone: 'UTC',
+        notificationIntervalMinutes: 5,
+        maxNotificationsPerDay: 100,
+      },
+    });
+
+    await prisma.word.create({
+      data: {
+        userId,
+        wordEn: 'quiz-pause',
+        translationRu: 'quiz-pause-native',
+        reviews: {
+          create: {
+            direction: 'EN_TO_RU',
+            userId,
+            stage: 3,
+            intervalMinutes: 30,
+            nextReviewAt: new Date(Date.now() - 1000),
+          },
+        },
+      },
+    });
+
+    await prisma.userSession.create({
+      data: {
+        userId,
+        state: 'QUIZ_ACTIVE',
+      },
+    });
+
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+    await processUser(user);
+
+    expect(telegram.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it('requeues WAITING_GRADE after 20 minutes without changing stage', async () => {
     vi.spyOn(telegram, 'sendMessage').mockResolvedValue({} as any);
 
     await prisma.user.create({
@@ -328,16 +373,17 @@ describe('worker integration', () => {
     expect(session?.state).toBe('IDLE');
 
     const updatedReview = await prisma.review.findUnique({ where: { id: review.id } });
-    expect(updatedReview?.lastResult).toBe('CORRECT');
-    expect(updatedReview?.stage).toBe(3);
+    expect(updatedReview?.lastResult).toBeNull();
+    expect(updatedReview?.stage).toBe(2);
+    expect(updatedReview?.intervalMinutes).toBe(60);
 
     const updatedUser = await prisma.user.findUnique({ where: { id: userId } });
-    expect(updatedUser?.doneTodayCount).toBe(1);
-    expect(updatedUser?.correctTodayCount).toBe(1);
+    expect(updatedUser?.doneTodayCount).toBe(0);
+    expect(updatedUser?.correctTodayCount).toBe(0);
     expect(telegram.sendMessage).not.toHaveBeenCalled();
   });
 
-  it('auto-closes WAITING_GRADE after 20 minutes with HARD for incorrect answer', async () => {
+  it('requeues WAITING_GRADE after 20 minutes without auto-rating incorrect answers', async () => {
     vi.spyOn(telegram, 'sendMessage').mockResolvedValue({} as any);
 
     await prisma.user.create({
@@ -391,11 +437,12 @@ describe('worker integration', () => {
     expect(session?.state).toBe('IDLE');
 
     const updatedReview = await prisma.review.findUnique({ where: { id: review.id } });
-    expect(updatedReview?.lastResult).toBe('INCORRECT');
-    expect(updatedReview?.stage).toBe(1);
+    expect(updatedReview?.lastResult).toBeNull();
+    expect(updatedReview?.stage).toBe(2);
+    expect(updatedReview?.intervalMinutes).toBe(60);
 
     const updatedUser = await prisma.user.findUnique({ where: { id: userId } });
-    expect(updatedUser?.doneTodayCount).toBe(1);
+    expect(updatedUser?.doneTodayCount).toBe(0);
     expect(updatedUser?.correctTodayCount).toBe(0);
     expect(telegram.sendMessage).not.toHaveBeenCalled();
   });
@@ -554,6 +601,21 @@ describe('worker integration', () => {
     const [, prompt, options] = sendSpy.mock.calls[0] as [number, string, any];
     expect(prompt).not.toContain('Подсказка💡');
     expect(String(options?.reply_markup?.inline_keyboard?.[0]?.[0]?.callback_data ?? '')).toContain('hint:');
+  });
+
+  it('does not show hint button for words shorter than 4 letters', async () => {
+    const sendSpy = vi.spyOn(telegram, 'sendMessage').mockResolvedValue({} as any);
+
+    await seedHintUser();
+    await seedHintReview(1, 'go', 'идти', 'RU_TO_EN');
+
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+    await processUser(user);
+
+    expect(sendSpy).toHaveBeenCalledTimes(1);
+    const [, prompt, options] = sendSpy.mock.calls[0] as [number, string, any];
+    expect(prompt).not.toContain('РџРѕРґСЃРєР°Р·РєР°рџ’Ў');
+    expect(options?.reply_markup).toBeUndefined();
   });
 
   it('does not auto-show hint text after second hard for RU_TO_EN', async () => {
@@ -919,6 +981,54 @@ describe('worker integration', () => {
     expect(telegram.sendMessage).not.toHaveBeenCalled();
   });
 
+  it('does not send when quiz claims the session during the idle-to-card race', async () => {
+    vi.spyOn(telegram, 'sendMessage').mockResolvedValue({} as any);
+    const sessionService = await import('../src/services/sessionService');
+    vi.spyOn(sessionService, 'setSessionActiveIfIdle').mockImplementation(async () => {
+      await prisma.userSession.upsert({
+        where: { userId },
+        update: { state: 'QUIZ_ACTIVE' },
+        create: { userId, state: 'QUIZ_ACTIVE' },
+      });
+      return false;
+    });
+
+    await prisma.user.create({
+      data: {
+        id: userId,
+        notificationsEnabled: true,
+        quietHoursStartMinutes: 0,
+        quietHoursEndMinutes: 0,
+        timezone: 'UTC',
+        notificationIntervalMinutes: 5,
+        maxNotificationsPerDay: 100,
+      },
+    });
+    await prisma.word.create({
+      data: {
+        userId,
+        wordEn: 'quiz-race',
+        translationRu: 'квиз гонка',
+        reviews: {
+          create: {
+            direction: 'EN_TO_RU',
+            userId,
+            stage: 0,
+            intervalMinutes: 5,
+            nextReviewAt: new Date(Date.now() - 1000),
+          },
+        },
+      },
+    });
+
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+    await processUser(user);
+
+    expect(telegram.sendMessage).not.toHaveBeenCalled();
+    const session = await prisma.userSession.findUnique({ where: { userId } });
+    expect(session?.state).toBe('QUIZ_ACTIVE');
+  });
+
   it('reverts state to IDLE when message send fails', async () => {
     vi.spyOn(telegram, 'sendMessage').mockRejectedValue(new Error('telegram down'));
 
@@ -1122,7 +1232,7 @@ describe('worker integration', () => {
     expect(telegram.sendMessage).not.toHaveBeenCalled();
   });
 
-  it('sends reminder after 5 minutes and skips after 20 minutes', async () => {
+  it('sends reminder after 5 minutes and requeues skipped card without dropping stage', async () => {
     vi.spyOn(telegram, 'sendMessage').mockResolvedValue({} as any);
 
     await prisma.user.create({
@@ -1143,8 +1253,8 @@ describe('worker integration', () => {
           data: { userId, wordEn: 'rem', translationRu: 'напоминание' },
         })).id,
         direction: 'EN_TO_RU',
-        stage: 0,
-        intervalMinutes: 5,
+        stage: 6,
+        intervalMinutes: 20160,
         nextReviewAt: new Date(Date.now() - 1000),
       },
     });
@@ -1179,6 +1289,8 @@ describe('worker integration', () => {
 
     const updatedReview = await prisma.review.findUnique({ where: { id: review.id } });
     expect(updatedReview?.lastResult).toBe('SKIPPED');
+    expect(updatedReview?.stage).toBe(6);
+    expect(updatedReview?.intervalMinutes).toBe(60);
   });
 
   it('does not send reminder outside quiet hours', async () => {

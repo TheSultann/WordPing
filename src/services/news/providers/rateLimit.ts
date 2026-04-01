@@ -1,5 +1,5 @@
 import { prisma } from '../../../db/client';
-import { ProviderName, ProviderPermitRules, ProviderPermit } from '../types';
+import type { ProviderName, ProviderPermitRules, ProviderPermit } from '../types';
 import { nextUtcDayStart, utcDayStart } from '../utils';
 
 export const providerReason = (provider: ProviderName, suffix: string): string =>

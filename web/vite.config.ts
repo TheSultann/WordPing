@@ -9,7 +9,7 @@ export default defineConfig({
     host: true,
     allowedHosts: true,
     proxy: {
-      '/api': 'http://localhost:3001',
+      '/api': 'http://127.0.0.1:3001',
     },
   },
 });

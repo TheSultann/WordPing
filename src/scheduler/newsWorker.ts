@@ -1,6 +1,9 @@
 import 'dotenv/config';
 import cron from 'node-cron';
 import { prisma } from '../db/client';
+import { validateRuntimeEnv } from '../utils/env';
+import { createLogger } from '../utils/logger';
+import { createRuntimeHealthReporter } from '../utils/runtimeHealth';
 import {
   enqueueWordsNeedingNewsResolve,
   markBrokenNewsSourcesForRefresh,
@@ -13,6 +16,10 @@ import {
   refreshNewsCacheFromRss,
   resolvePendingNewsExamples,
 } from '../services/newsFallbackService';
+
+validateRuntimeEnv('news-worker');
+const newsWorkerLogger = createLogger('news-worker');
+const newsWorkerHealth = createRuntimeHealthReporter('news-worker');
 
 const RSS_REFRESH_CRON = process.env.NEWS_RSS_REFRESH_CRON ?? '0 * * * *';
 const ENQUEUE_CRON = process.env.NEWS_ENQUEUE_CRON ?? '0 * * * *';
@@ -47,13 +54,15 @@ const runEnqueue = async () => {
     const enqueued = await enqueueWordsNeedingNewsResolve();
     const durationMs = performance.now() - start;
     if (rearmed > 0) {
-      console.log(`[news-worker] rearmed exhausted jobs: ${rearmed}`);
+      newsWorkerLogger.info('rearmed exhausted jobs', { rearmed });
     }
     if (enqueued > 0) {
-      console.log(`[news-worker] enqueued words: ${enqueued} (took ${Math.round(durationMs)}ms)`);
+      newsWorkerLogger.info('enqueued words', { enqueued, durationMs: Math.round(durationMs) });
     }
+    newsWorkerHealth.markTask('enqueue', 'ok');
   } catch (error) {
-    console.error('[news-worker] enqueue failed', error);
+    newsWorkerHealth.markTask('enqueue', 'error', error instanceof Error ? error.message : 'enqueue failed');
+    newsWorkerLogger.error('enqueue failed', { error });
   }
 };
 
@@ -64,12 +73,17 @@ const runRssRefresh = async () => {
     const durationMs = performance.now() - start;
     if (processed.totalProcessed > 0) {
       metrics.rssUpsertsHour += processed.totalProcessed;
-      console.log(
-        `[news-worker] rss cache updated: inserted=${processed.inserted}, updated=${processed.updated}, total=${processed.totalProcessed} (took ${Math.round(durationMs)}ms)`
-      );
+      newsWorkerLogger.info('rss cache updated', {
+        inserted: processed.inserted,
+        updated: processed.updated,
+        totalProcessed: processed.totalProcessed,
+        durationMs: Math.round(durationMs),
+      });
     }
+    newsWorkerHealth.markTask('rss-refresh', 'ok');
   } catch (error) {
-    console.error('[news-worker] rss refresh failed', error);
+    newsWorkerHealth.markTask('rss-refresh', 'error', error instanceof Error ? error.message : 'rss refresh failed');
+    newsWorkerLogger.error('rss refresh failed', { error });
   }
 };
 
@@ -80,12 +94,18 @@ const runResolve = async () => {
     const durationMs = performance.now() - start;
     if (result.claimed > 0) {
       metrics.resolvedHour += result.resolved;
-      console.log(
-        `[news-worker] resolve cycle: claimed=${result.claimed}, resolved=${result.resolved}, failed=${result.failed}, deferred=${result.deferred} (took ${Math.round(durationMs)}ms)`
-      );
+      newsWorkerLogger.info('resolve cycle completed', {
+        claimed: result.claimed,
+        resolved: result.resolved,
+        failed: result.failed,
+        deferred: result.deferred,
+        durationMs: Math.round(durationMs),
+      });
     }
+    newsWorkerHealth.markTask('resolve', 'ok');
   } catch (error) {
-    console.error('[news-worker] resolve cycle failed', error);
+    newsWorkerHealth.markTask('resolve', 'error', error instanceof Error ? error.message : 'resolve failed');
+    newsWorkerLogger.error('resolve cycle failed', { error });
   }
 };
 
@@ -96,10 +116,12 @@ const runMarkOldForRefresh = async () => {
     const durationMs = performance.now() - start;
     metrics.staleMarkedHour += marked;
     if (marked > 0) {
-      console.log(`[news-worker] marked stale news for refresh: ${marked} (took ${Math.round(durationMs)}ms)`);
+      newsWorkerLogger.info('marked stale news for refresh', { marked, durationMs: Math.round(durationMs) });
     }
+    newsWorkerHealth.markTask('mark-old', 'ok');
   } catch (error) {
-    console.error('[news-worker] mark-old-for-refresh failed', error);
+    newsWorkerHealth.markTask('mark-old', 'error', error instanceof Error ? error.message : 'mark-old failed');
+    newsWorkerLogger.error('mark-old-for-refresh failed', { error });
   }
 };
 
@@ -110,10 +132,12 @@ const runSourceLinkHealthCheck = async () => {
     const durationMs = performance.now() - start;
     metrics.brokenLinksHour += marked;
     if (marked > 0) {
-      console.log(`[news-worker] broken source links marked for refresh: ${marked} (took ${Math.round(durationMs)}ms)`);
+      newsWorkerLogger.info('broken source links marked for refresh', { marked, durationMs: Math.round(durationMs) });
     }
+    newsWorkerHealth.markTask('source-link-check', 'ok');
   } catch (error) {
-    console.error('[news-worker] source link health-check failed', error);
+    newsWorkerHealth.markTask('source-link-check', 'error', error instanceof Error ? error.message : 'source link check failed');
+    newsWorkerLogger.error('source link health-check failed', { error });
   }
 };
 
@@ -141,23 +165,37 @@ const runMetricsSnapshot = async () => {
       duration_ms: durationMs,
     };
 
-    console.log(`[news-worker] metrics ${JSON.stringify(snapshot)}`);
+    newsWorkerLogger.info('metrics snapshot', snapshot);
     resetMetrics();
+    newsWorkerHealth.markTask('metrics', 'ok');
   } catch (error) {
-    console.error('[news-worker] metrics snapshot failed', error);
+    newsWorkerHealth.markTask('metrics', 'error', error instanceof Error ? error.message : 'metrics failed');
+    newsWorkerLogger.error('metrics snapshot failed', { error });
   }
 };
 
 const runPrune = async () => {
   try {
     await pruneExpiredNewsCacheAndOldJobs();
+    newsWorkerHealth.markTask('prune', 'ok');
   } catch (error) {
-    console.error('[news-worker] prune failed', error);
+    newsWorkerHealth.markTask('prune', 'error', error instanceof Error ? error.message : 'prune failed');
+    newsWorkerLogger.error('prune failed', { error });
   }
 };
 
 export const startNewsWorker = () => {
-  console.log('News worker started.');
+  newsWorkerHealth.start();
+  newsWorkerHealth.markOk('news worker started');
+  newsWorkerLogger.info('news worker started', {
+    rssRefreshCron: RSS_REFRESH_CRON,
+    enqueueCron: ENQUEUE_CRON,
+    resolveCron: RESOLVE_CRON,
+    markOldCron: MARK_OLD_CRON,
+    metricsCron: METRICS_CRON,
+    sourceLinkCheckCron: SOURCE_LINK_CHECK_CRON,
+    pruneCron: PRUNE_CRON,
+  });
 
   cron.schedule(RSS_REFRESH_CRON, runRssRefresh);
   cron.schedule(ENQUEUE_CRON, runEnqueue);

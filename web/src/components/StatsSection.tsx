@@ -1,5 +1,5 @@
 import { Bell, CheckCircle2, Flame, Hourglass, Target, TrendingUp, UserPlus } from 'lucide-react';
-import { Stats } from '../api';
+import type { Stats } from '../api';
 
 type TranslateFn = (key: string, params?: Record<string, string | number>) => string;
 

@@ -1,0 +1,145 @@
+name: Deploy To AWS EC2
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      target_ref:
+        description: Deploy target (`main` or `release-*` tag)
+        required: true
+        default: main
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: production-operations
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment:
+      name: production
+      url: ${{ vars.PUBLIC_URL }}
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      AWS_EC2_INSTANCE_ID: ${{ vars.AWS_EC2_INSTANCE_ID }}
+      AWS_DEPLOY_ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+      AWS_DEPLOY_USER: ${{ vars.AWS_DEPLOY_USER }}
+      AWS_APP_DIR: ${{ vars.AWS_APP_DIR }}
+      PUBLIC_URL: ${{ vars.PUBLIC_URL }}
+      TARGET_REF_INPUT: ${{ github.event.inputs.target_ref }}
+    steps:
+      - name: Validate deploy target
+        id: target
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            case "${TARGET_REF_INPUT}" in
+              main)
+                DEPLOY_REF="origin/main"
+                ;;
+              release-*)
+                if [[ ! "${TARGET_REF_INPUT}" =~ ^release-[A-Za-z0-9._-]+$ ]]; then
+                  echo "Unsupported deploy target: ${TARGET_REF_INPUT}"
+                  exit 1
+                fi
+                DEPLOY_REF="refs/tags/${TARGET_REF_INPUT}"
+                ;;
+              *)
+                echo "Unsupported deploy target: ${TARGET_REF_INPUT}"
+                exit 1
+                ;;
+            esac
+          else
+            DEPLOY_REF="${GITHUB_SHA}"
+          fi
+
+          echo "deploy_ref=${DEPLOY_REF}" >> "$GITHUB_OUTPUT"
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: ${{ env.AWS_DEPLOY_ROLE_ARN }}
+
+      - name: Send deploy command through SSM
+        id: deploy
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          DEPLOY_USER="${AWS_DEPLOY_USER:-ubuntu}"
+          APP_DIR="${AWS_APP_DIR:-/home/${DEPLOY_USER}/apps/WordPing}"
+
+          cat > ssm-commands.json <<EOF
+          {
+            "commands": [
+              "sudo -iu ${DEPLOY_USER} bash -lc 'cd ${APP_DIR} && chmod +x scripts/*.sh && PUBLIC_URL=${PUBLIC_URL} ./scripts/deploy-prod.sh ${{ steps.target.outputs.deploy_ref }}'"
+            ]
+          }
+          EOF
+
+          COMMAND_ID="$(
+            aws ssm send-command \
+              --instance-ids "${AWS_EC2_INSTANCE_ID}" \
+              --document-name "AWS-RunShellScript" \
+              --comment "Deploy WordPing ${{ steps.target.outputs.deploy_ref }}" \
+              --parameters file://ssm-commands.json \
+              --query 'Command.CommandId' \
+              --output text
+          )"
+
+          echo "command_id=${COMMAND_ID}" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for deploy result
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          for _ in $(seq 1 90); do
+            STATUS="$(
+              aws ssm get-command-invocation \
+                --command-id "${{ steps.deploy.outputs.command_id }}" \
+                --instance-id "${AWS_EC2_INSTANCE_ID}" \
+                --query 'Status' \
+                --output text
+            )"
+
+            case "$STATUS" in
+              Pending|InProgress|Delayed)
+                sleep 10
+                ;;
+              Success)
+                aws ssm get-command-invocation \
+                  --command-id "${{ steps.deploy.outputs.command_id }}" \
+                  --instance-id "${AWS_EC2_INSTANCE_ID}" \
+                  --query '{Status:Status,StandardOutputContent:StandardOutputContent}' \
+                  --output json
+                exit 0
+                ;;
+              *)
+                aws ssm get-command-invocation \
+                  --command-id "${{ steps.deploy.outputs.command_id }}" \
+                  --instance-id "${AWS_EC2_INSTANCE_ID}" \
+                  --query '{Status:Status,StandardOutputContent:StandardOutputContent,StandardErrorContent:StandardErrorContent}' \
+                  --output json
+                exit 1
+                ;;
+            esac
+          done
+
+          echo 'Timed out waiting for deploy to finish'
+          exit 1
+
+      - name: Check public URL
+        if: ${{ vars.PUBLIC_URL != '' }}
+        run: curl --fail --silent --show-error --head "${PUBLIC_URL}"

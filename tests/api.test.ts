@@ -1,8 +1,11 @@
+import { writeFile } from 'node:fs/promises';
+import path from 'node:path';
 import { beforeAll, afterAll, beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 import request from 'supertest';
-import { PrismaClient } from '../src/generated/prisma';
+import { PrismaClient } from '../src/generated/prisma/client';
 import { prepareTestDatabase } from './helpers/testDb';
 import { cleanupUserData } from './helpers/cleanup';
+import { createRuntimeHealthReporter, readRuntimeHealth } from '../src/utils/runtimeHealth';
 
 let app: any;
 let prisma: PrismaClient;
@@ -11,6 +14,30 @@ const otherUserId = BigInt(900000010);
 const seenUserId = BigInt(900000011);
 const unseenUserId = BigInt(900000012);
 const hugeUserId = BigInt('9007199254740993');
+const runtimeHealthDir = path.join(process.cwd(), '.runtime', 'health');
+
+const waitForRuntimeStatus = async (
+  service: 'bot' | 'worker' | 'news-worker',
+  status: 'ok' | 'error',
+) => {
+  const deadline = Date.now() + 2_000;
+  while (Date.now() < deadline) {
+    const health = await readRuntimeHealth([service]);
+    if (health[service].status === status) return;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(`Timed out waiting for ${service} status ${status}`);
+};
+
+const waitForRuntimeDegraded = async (service: 'bot' | 'worker' | 'news-worker') => {
+  const deadline = Date.now() + 2_000;
+  while (Date.now() < deadline) {
+    const health = await readRuntimeHealth([service]);
+    if (health[service].status !== 'ok') return;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(`Timed out waiting for ${service} runtime degradation`);
+};
 
 beforeAll(async () => {
   const testUrl = await prepareTestDatabase();
@@ -32,6 +59,10 @@ beforeEach(async () => {
   await cleanupUserData(prisma, seenUserId);
   await cleanupUserData(prisma, unseenUserId);
   await cleanupUserData(prisma, hugeUserId);
+
+  createRuntimeHealthReporter('bot').markOk('bot ready for test');
+  createRuntimeHealthReporter('worker').markOk('worker ready for test');
+  createRuntimeHealthReporter('news-worker').markOk('news worker ready for test');
 });
 
 afterAll(async () => {
@@ -64,6 +95,101 @@ describe('API integration', () => {
     const res = await request(app).get('/api/health');
     expect(res.status).toBe(200);
     expect(res.body.ok).toBe(true);
+    expect(res.body.runtimeOk).toEqual(expect.any(Boolean));
+    expect(res.body.database).toEqual({ ok: true });
+    expect(res.body.services.api).toMatchObject({
+      service: 'api',
+      status: expect.any(String),
+      stale: expect.any(Boolean),
+    });
+    expect(res.body.services.bot).toMatchObject({
+      service: 'bot',
+      status: expect.any(String),
+      stale: expect.any(Boolean),
+    });
+    expect(res.body.services.worker).toMatchObject({
+      service: 'worker',
+      status: expect.any(String),
+      stale: expect.any(Boolean),
+    });
+    expect(res.body.services['news-worker']).toMatchObject({
+      service: 'news-worker',
+      status: expect.any(String),
+      stale: expect.any(Boolean),
+    });
+  });
+
+  it('GET /api/health returns 503 in production when runtime services are degraded', async () => {
+    const previousNodeEnv = process.env.NODE_ENV;
+    process.env.NODE_ENV = 'production';
+    try {
+      createRuntimeHealthReporter('worker').markError('worker failed');
+      await waitForRuntimeDegraded('worker');
+
+      const res = await request(app).get('/api/health');
+      expect(res.status).toBe(503);
+      expect(res.body.ok).toBe(false);
+      expect(res.body.runtimeOk).toBe(false);
+      expect(res.body.services.worker.status).not.toBe('ok');
+    } finally {
+      process.env.NODE_ENV = previousNodeEnv;
+      createRuntimeHealthReporter('worker').markOk('worker restored');
+    }
+  });
+
+  it('GET /api/ready returns 200 when background worker heartbeat is fresh even after task error', async () => {
+    createRuntimeHealthReporter('worker').markError('worker failed');
+    await waitForRuntimeDegraded('worker');
+
+    const res = await request(app).get('/api/ready');
+    expect(res.status).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.runtimeReady).toBe(true);
+    expect(res.body.services.worker.status).toBe('error');
+  });
+
+  it('GET /api/ready returns 503 when runtime heartbeat is stale', async () => {
+    await waitForRuntimeStatus('worker', 'ok');
+    await writeFile(
+      path.join(runtimeHealthDir, 'worker.json'),
+      JSON.stringify({
+        service: 'worker',
+        pid: 123,
+        startedAt: '2026-03-28T00:00:00.000Z',
+        updatedAt: '2026-03-28T00:00:00.000Z',
+        state: 'ok',
+      }, null, 2),
+      'utf8',
+    );
+
+    const res = await request(app).get('/api/ready');
+    expect(res.status).toBe(503);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.runtimeReady).toBe(false);
+    expect(res.body.services.worker.status).toBe('stale');
+  });
+
+  it('GET /api/ready returns 503 when worker error heartbeat is stale', async () => {
+    await waitForRuntimeStatus('worker', 'ok');
+    await writeFile(
+      path.join(runtimeHealthDir, 'worker.json'),
+      JSON.stringify({
+        service: 'worker',
+        pid: 123,
+        startedAt: '2026-03-28T00:00:00.000Z',
+        updatedAt: '2026-03-28T00:00:00.000Z',
+        state: 'error',
+        note: 'worker failed',
+      }, null, 2),
+      'utf8',
+    );
+
+    const res = await request(app).get('/api/ready');
+    expect(res.status).toBe(503);
+    expect(res.body.ok).toBe(false);
+    expect(res.body.runtimeReady).toBe(false);
+    expect(res.body.services.worker.status).toBe('error');
+    expect(res.body.services.worker.stale).toBe(true);
   });
 
   it('GET /api/settings returns defaults', async () => {
@@ -335,6 +461,52 @@ describe('API integration', () => {
       .set('x-dev-user-id', userId.toString());
     expect(listAfter.body.items.length).toBe(0);
     expect(listAfter.body.hasMore).toBe(false);
+  });
+
+  it('DELETE /api/words/:id resets active session when deleted word is open in review', async () => {
+    await prisma.user.create({ data: { id: userId } });
+    const created = await prisma.word.create({
+      data: {
+        userId,
+        wordEn: 'active-delete',
+        translationRu: 'активное удаление',
+        reviews: {
+          create: {
+            direction: 'EN_TO_RU',
+            userId,
+            stage: 2,
+            intervalMinutes: 30,
+            nextReviewAt: new Date(),
+          },
+        },
+      },
+      include: { reviews: true },
+    });
+
+    await prisma.userSession.create({
+      data: {
+        userId,
+        state: 'WAITING_ANSWER',
+        reviewId: created.reviews[0]!.id,
+        wordId: created.id,
+        direction: 'EN_TO_RU',
+        sentAt: new Date(),
+        reminderStep: 0,
+      },
+    });
+
+    const del = await request(app)
+      .delete(`/api/words/${created.id}`)
+      .set('x-dev-user-id', userId.toString());
+
+    expect(del.status).toBe(200);
+    expect(del.body.ok).toBe(true);
+
+    const session = await prisma.userSession.findUnique({ where: { userId } });
+    expect(session?.state).toBe('IDLE');
+    expect(session?.reviewId).toBeNull();
+    expect(session?.wordId).toBeNull();
+    expect(session?.direction).toBeNull();
   });
 
   it('DELETE /api/words/:id rejects non-integer ids', async () => {
@@ -708,8 +880,15 @@ describe('API integration', () => {
         quietHoursStartMinutes: 600,
         quietHoursEndMinutes: 650,
       });
-    expect(res.status).toBe(200);
-    expect(res.body.quietHoursStartMinutes).toBe(600);
-    expect(res.body.quietHoursEndMinutes).toBe(1080);
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('quiet_hours_span_too_short');
+    expect(res.body.minSpanMinutes).toBe(480);
+
+    const settings = await request(app)
+      .get('/api/settings')
+      .set('x-dev-user-id', userId.toString());
+    expect(settings.status).toBe(200);
+    expect(settings.body.quietHoursStartMinutes).toBe(480);
+    expect(settings.body.quietHoursEndMinutes).toBe(1380);
   });
 });

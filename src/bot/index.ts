@@ -1124,12 +1124,17 @@ export const startBot = async () => {
   botHealth.markError('bot starting');
   botLogger.info('bot starting', { webAppConfigured: Boolean(webAppUrl) });
   try {
-    await bot.launch();
+    await bot.telegram.getMe();
   } catch (error) {
     botHealth.markError(error instanceof Error ? error.message : 'bot launch failed');
     botLogger.error('bot launch failed', { error });
     throw error;
   }
+
+  void bot.launch().catch((error) => {
+    botHealth.markError(error instanceof Error ? error.message : 'bot launch failed');
+    botLogger.error('bot launch failed', { error });
+  });
 
   botHealth.markOk('bot launched');
   botLogger.info('bot launched', { webAppConfigured: Boolean(webAppUrl) });

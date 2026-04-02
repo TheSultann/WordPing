@@ -137,13 +137,21 @@ sync_frontend_dist() {
 pm2_reload_release() {
   local release_path="$1"
   local ecosystem_path="${release_path}/ecosystem.config.cjs"
+  local -a app_names=(
+    "wordping-api"
+    "wordping-bot"
+    "wordping-worker"
+    "wordping-news-worker"
+  )
 
   if [[ ! -f "$ecosystem_path" ]]; then
     log "Missing PM2 ecosystem file at ${ecosystem_path}"
     return 1
   fi
 
-  pm2 startOrReload "$ecosystem_path" --update-env
+  # Recreate managed apps so PM2 refreshes cwd/script paths to the new release.
+  pm2 delete "${app_names[@]}" >/dev/null 2>&1 || true
+  pm2 start "$ecosystem_path" --update-env
   pm2 save >/dev/null
 }
 

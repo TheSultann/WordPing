@@ -134,18 +134,12 @@ const reviewFlowHintKeyboard = (lang: Lang) =>
   ?? Markup.inlineKeyboard([[Markup.button.callback(`ℹ️ ${t(lang, 'btn.openGuide')}`, REVIEW_FLOW_HINT_CALLBACK)]]);
 const buildGuideSpoilerText = (lang: Lang) => `<tg-spoiler>${t(lang, 'btn.openGuide')}</tg-spoiler>`;
 const buildGuideSpoilerLinkText = (lang: Lang) => {
-  const guideUrl = buildWebAppUrl({ tab: 'settings', flow: 'stages' });
-  if (guideUrl) {
-    return `<a href="${guideUrl}">${buildGuideSpoilerText(lang)}</a>`;
-  }
-  return buildGuideSpoilerText(lang);
+  const guideUrl = 'https://t.me/WordPing_bot/app?startapp=stages';
+  return `<a href="${guideUrl}">${buildGuideSpoilerText(lang)}</a>`;
 };
 const buildGuideLinkText = (lang: Lang) => {
-  const guideUrl = buildWebAppUrl({ tab: 'settings', flow: 'stages' });
-  if (guideUrl) {
-    return `<a href="${guideUrl}">${t(lang, 'btn.openGuide')}</a>`;
-  }
-  return buildGuideSpoilerText(lang);
+  const guideUrl = 'https://t.me/WordPing_bot/app?startapp=stages';
+  return `<a href="${guideUrl}">${t(lang, 'btn.openGuide')}</a>`;
 };
 const newsDigestRuntime = createNewsDigestRuntime({ mainReplyKeyboard, buildGuideLinkText });
 const settingsRuntime = createSettingsRuntime({

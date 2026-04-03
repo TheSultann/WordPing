@@ -306,6 +306,9 @@ const getStoredLang = (): Lang | null => {
 
 const getInitialTab = (): AppTab => {
   if (typeof window === 'undefined') return 'stats';
+  const startParam = (window as any)?.Telegram?.WebApp?.initDataUnsafe?.start_param;
+  if (startParam === 'stages') return 'settings';
+  
   const tab = new URLSearchParams(window.location.search).get('tab');
   if (tab === 'settings' || tab === 'stats' || tab === 'words' || tab === 'admin') {
     return tab;
@@ -315,7 +318,9 @@ const getInitialTab = (): AppTab => {
 
 const getInitialSettingsFlowRequestId = (): number => {
   if (typeof window === 'undefined') return 0;
-  return new URLSearchParams(window.location.search).get('flow') === 'stages' ? 1 : 0;
+  const startParam = (window as any)?.Telegram?.WebApp?.initDataUnsafe?.start_param;
+  const flow = new URLSearchParams(window.location.search).get('flow');
+  return (flow === 'stages' || startParam === 'stages') ? 1 : 0;
 };
 
 const normalizeUserId = (value: unknown): string | null => {

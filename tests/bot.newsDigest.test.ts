@@ -138,12 +138,9 @@ describe('bot news digest button', () => {
       ? JSON.parse(payload.reply_markup)
       : payload?.reply_markup;
     const buttons = replyMarkup?.inline_keyboard?.[0] ?? [];
-    expect(buttons[0]?.text).toBe('⬅️ Назад');
-    expect(buttons[0]?.callback_data).toBe(NEWS_NAV_PREV);
-    expect(buttons[1]?.text).toBe('1 / 1');
-    expect(buttons[1]?.callback_data).toBe(NEWS_NAV_NOOP);
-    expect(buttons[2]?.text).toBe('Вперёд ➡️');
-    expect(buttons[2]?.callback_data).toBe(NEWS_NAV_NEXT);
+    expect(buttons.length).toBe(1);
+    expect(buttons[0]?.text).toBe('1/1');
+    expect(buttons[0]?.callback_data).toBe(NEWS_NAV_NOOP);
 
     const user = await prisma.user.findUnique({ where: { id: BigInt(userId) } });
     expect(user?.newsDigestLastOpenedAt).toBeTruthy();
@@ -276,9 +273,8 @@ describe('bot news digest button', () => {
       ? JSON.parse(digestPayload.reply_markup)
       : digestPayload?.reply_markup;
     const buttons = replyMarkup?.inline_keyboard?.[0] ?? [];
-    expect(buttons[0]?.text).toBe('⬅️ Orqaga');
-    expect(buttons[1]?.text).toBe('1 / 1');
-    expect(buttons[2]?.text).toBe('Oldinga ➡️');
+    expect(buttons.length).toBe(1);
+    expect(buttons[0]?.text).toBe('1/1');
   });
 
   it('sends one digest card with arrows when there are five or fewer cards', async () => {
@@ -359,11 +355,11 @@ describe('bot news digest button', () => {
       ? JSON.parse(payload.reply_markup)
       : payload?.reply_markup;
     const buttons = replyMarkup?.inline_keyboard?.[0] ?? [];
-    expect(buttons[0]?.text).toBe('⬅️ Назад');
-    expect(buttons[0]?.callback_data).toBe(NEWS_NAV_PREV);
-    expect(buttons[1]?.text).toBe('1 / 3');
+    expect(buttons[0]?.text).toBe('⬅️');
+    expect(buttons[0]?.callback_data).toBe(NEWS_NAV_NOOP);
+    expect(buttons[1]?.text).toBe('1/3');
     expect(buttons[1]?.callback_data).toBe(NEWS_NAV_NOOP);
-    expect(buttons[2]?.text).toBe('Вперёд ➡️');
+    expect(buttons[2]?.text).toBe('➡️');
     expect(buttons[2]?.callback_data).toBe(NEWS_NAV_NEXT);
   });
 
@@ -430,7 +426,10 @@ describe('bot news digest button', () => {
       ? JSON.parse(firstPayload.reply_markup)
       : firstPayload?.reply_markup;
     const firstButtons = firstReplyMarkup?.inline_keyboard?.[0] ?? [];
-    expect(firstButtons[1]?.text).toBe('1 / 2');
+    expect(firstButtons[0]?.text).toBe('⬅️');
+    expect(firstButtons[0]?.callback_data).toBe(NEWS_NAV_NOOP);
+    expect(firstButtons[1]?.text).toBe('1/2');
+    expect(firstButtons[2]?.text).toBe('➡️');
 
     await bot.handleUpdate(makeCallbackUpdate(NEWS_NAV_NEXT, 50), {} as any);
 
@@ -446,15 +445,26 @@ describe('bot news digest button', () => {
       ? JSON.parse(editPayload.reply_markup)
       : editPayload?.reply_markup;
     const buttons = editedReplyMarkup?.inline_keyboard?.[0] ?? [];
-    expect(buttons[0]?.text).toBe('⬅️ Назад');
+    expect(buttons[0]?.text).toBe('⬅️');
     expect(buttons[0]?.callback_data).toBe(NEWS_NAV_PREV);
-    expect(buttons[1]?.text).toBe('2 / 2');
+    expect(buttons[1]?.text).toBe('2/2');
     expect(buttons[1]?.callback_data).toBe(NEWS_NAV_NOOP);
-    expect(buttons[2]?.text).toBe('Вперёд ➡️');
-    expect(buttons[2]?.callback_data).toBe(NEWS_NAV_NEXT);
+
+    await bot.handleUpdate(makeCallbackUpdate(NEWS_NAV_NEXT, 50), {} as any);
+
+    const nextEditPayload = callApiSpy.mock.calls.filter(([method]) => method === 'editMessageText')[1]?.[1] as any;
+    const nextEditedText = String(nextEditPayload?.text ?? '');
+    const nextReplyMarkup = typeof nextEditPayload?.reply_markup === 'string'
+      ? JSON.parse(nextEditPayload.reply_markup)
+      : nextEditPayload?.reply_markup;
+    const nextButtons = nextReplyMarkup?.inline_keyboard?.[0] ?? [];
+
+    expect(nextEditedText).toBe(editedText);
+    expect(nextButtons[0]?.text).toBe('⬅️');
+    expect(nextButtons[1]?.text).toBe('2/2');
   });
 
-  it('shows jump button for batches larger than five and moves to the next batch', async () => {
+  it('shows jump button on the fifth card and moves to the next batch', async () => {
     await prisma.user.create({
       data: {
         id: BigInt(userId),
@@ -504,26 +514,115 @@ describe('bot news digest button', () => {
     const firstReplyMarkup = typeof firstPayload?.reply_markup === 'string'
       ? JSON.parse(firstPayload.reply_markup)
       : firstPayload?.reply_markup;
-    const firstButtonsRow1 = firstReplyMarkup?.inline_keyboard?.[0] ?? [];
-    const firstButtonsRow2 = firstReplyMarkup?.inline_keyboard?.[1] ?? [];
-    expect(firstButtonsRow1[1]?.text).toBe('1 / 10');
-    expect(firstButtonsRow2[0]?.text).toBe('Ещё 5');
-    expect(firstButtonsRow2[0]?.callback_data).toBe(NEWS_NAV_MORE);
+    const firstButtons = firstReplyMarkup?.inline_keyboard?.[0] ?? [];
+    expect(firstButtons[0]?.text).toBe('⬅️');
+    expect(firstButtons[0]?.callback_data).toBe(NEWS_NAV_NOOP);
+    expect(firstButtons[1]?.text).toBe('1/5');
+    expect(firstButtons[2]?.text).toBe('➡️');
+    expect(firstReplyMarkup?.inline_keyboard?.length).toBe(1);
+
+    await bot.handleUpdate(makeCallbackUpdate(NEWS_NAV_NEXT, 60), {} as any);
+    await bot.handleUpdate(makeCallbackUpdate(NEWS_NAV_NEXT, 60), {} as any);
+    await bot.handleUpdate(makeCallbackUpdate(NEWS_NAV_NEXT, 60), {} as any);
+    await bot.handleUpdate(makeCallbackUpdate(NEWS_NAV_NEXT, 60), {} as any);
+
+    const editCalls = callApiSpy.mock.calls.filter(([method]) => method === 'editMessageText');
+    expect(editCalls.length).toBeGreaterThanOrEqual(4);
+
+    const fifthPayload = editCalls[3]?.[1] as any;
+    const fifthText = String(fifthPayload?.text ?? '');
+    const fifthReplyMarkup = typeof fifthPayload?.reply_markup === 'string'
+      ? JSON.parse(fifthPayload.reply_markup)
+      : fifthPayload?.reply_markup;
+    const fifthButtonsRow1 = fifthReplyMarkup?.inline_keyboard?.[0] ?? [];
+
+    expect(fifthText).not.toBe(String(firstPayload?.text ?? ''));
+    expect(fifthButtonsRow1.length).toBe(2);
+    expect(fifthButtonsRow1[0]?.text).toBe('⬅️');
+    expect(fifthButtonsRow1[0]?.callback_data).toBe(NEWS_NAV_PREV);
+    expect(fifthButtonsRow1[1]?.text).toBe('📚 Ещё 5 • 5/10');
+    expect(fifthButtonsRow1[1]?.callback_data).toBe(NEWS_NAV_MORE);
+    expect(fifthReplyMarkup?.inline_keyboard?.length).toBe(1);
 
     await bot.handleUpdate(makeCallbackUpdate(NEWS_NAV_MORE, 60), {} as any);
 
-    const editCalls = callApiSpy.mock.calls.filter(([method]) => method === 'editMessageText');
-    expect(editCalls.length).toBeGreaterThan(0);
-    const editPayload = editCalls[0]?.[1] as any;
-    const editedText = String(editPayload?.text ?? '');
-    const editedReplyMarkup = typeof editPayload?.reply_markup === 'string'
-      ? JSON.parse(editPayload.reply_markup)
-      : editPayload?.reply_markup;
-    const editedButtonsRow1 = editedReplyMarkup?.inline_keyboard?.[0] ?? [];
-    const editedButtonsRow2 = editedReplyMarkup?.inline_keyboard?.[1] ?? [];
+    const morePayload = callApiSpy.mock.calls.filter(([method]) => method === 'editMessageText')[4]?.[1] as any;
+    const moreText = String(morePayload?.text ?? '');
+    const moreReplyMarkup = typeof morePayload?.reply_markup === 'string'
+      ? JSON.parse(morePayload.reply_markup)
+      : morePayload?.reply_markup;
+    const moreButtons = moreReplyMarkup?.inline_keyboard?.[0] ?? [];
 
-    expect(editedText).toContain('<b>word5</b>');
-    expect(editedButtonsRow1[1]?.text).toBe('6 / 10');
-    expect(editedButtonsRow2.length).toBe(0);
+    expect(moreText).not.toBe(fifthText);
+    expect(moreButtons[0]?.text).toBe('⬅️');
+    expect(moreButtons[0]?.callback_data).toBe(NEWS_NAV_PREV);
+    expect(moreButtons[1]?.text).toBe('1/5');
+    expect(moreButtons[1]?.callback_data).toBe(NEWS_NAV_NOOP);
+    expect(moreButtons[2]?.text).toBe('➡️');
+    expect(moreButtons[2]?.callback_data).toBe(NEWS_NAV_NEXT);
+    expect(moreReplyMarkup?.inline_keyboard?.length).toBe(1);
+  });
+
+  it('uses the actual size for the last partial batch', async () => {
+    await prisma.user.create({
+      data: {
+        id: BigInt(userId),
+        language: 'ru',
+      },
+    });
+
+    await prisma.word.createMany({
+      data: Array.from({ length: 7 }, (_, index) => ({
+        userId: BigInt(userId),
+        wordEn: `term${index + 1}`,
+        translationRu: `slovo${index + 1}`,
+        newsExampleText: `The term${index + 1} appears in this article.`,
+        newsExampleTier: 'CACHE',
+        newsExampleSourceUrl: `https://news.example/term${index + 1}`,
+        newsExampleSourceTitle: `Term ${index + 1} report`,
+        newsExamplePreparedAt: new Date(Date.now() + index * 1000),
+      })),
+    });
+
+    const words = await prisma.word.findMany({
+      where: { userId: BigInt(userId) },
+      select: { id: true },
+    });
+
+    await prisma.review.createMany({
+      data: words.map((word) => ({
+        userId: BigInt(userId),
+        wordId: word.id,
+        direction: 'EN_TO_RU',
+        stage: 4,
+        intervalMinutes: 3600,
+        nextReviewAt: new Date(Date.now() - 1000),
+      })),
+    });
+
+    const callApiSpy = vi
+      .spyOn(Object.getPrototypeOf(bot.telegram), 'callApi')
+      .mockResolvedValue({} as any);
+
+    await bot.handleUpdate(makeMessageUpdate(NEWS_BUTTON_RU, 70), {} as any);
+    await bot.handleUpdate(makeCallbackUpdate(NEWS_NAV_NEXT, 70), {} as any);
+    await bot.handleUpdate(makeCallbackUpdate(NEWS_NAV_NEXT, 70), {} as any);
+    await bot.handleUpdate(makeCallbackUpdate(NEWS_NAV_NEXT, 70), {} as any);
+    await bot.handleUpdate(makeCallbackUpdate(NEWS_NAV_NEXT, 70), {} as any);
+    await bot.handleUpdate(makeCallbackUpdate(NEWS_NAV_MORE, 70), {} as any);
+
+    const morePayload = callApiSpy.mock.calls.filter(([method]) => method === 'editMessageText')[4]?.[1] as any;
+    const moreReplyMarkup = typeof morePayload?.reply_markup === 'string'
+      ? JSON.parse(morePayload.reply_markup)
+      : morePayload?.reply_markup;
+    const moreButtons = moreReplyMarkup?.inline_keyboard?.[0] ?? [];
+
+    expect(String(morePayload?.text ?? '')).not.toBe(String(callApiSpy.mock.calls.filter(([method]) => method === 'sendMessage')[0]?.[1]?.text ?? ''));
+    expect(moreButtons[0]?.text).toBe('⬅️');
+    expect(moreButtons[0]?.callback_data).toBe(NEWS_NAV_PREV);
+    expect(moreButtons[1]?.text).toBe('1/2');
+    expect(moreButtons[1]?.callback_data).toBe(NEWS_NAV_NOOP);
+    expect(moreButtons[2]?.text).toBe('➡️');
+    expect(moreButtons[2]?.callback_data).toBe(NEWS_NAV_NEXT);
   });
 });

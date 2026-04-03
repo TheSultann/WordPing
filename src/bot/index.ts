@@ -112,6 +112,7 @@ if (rawWebAppUrl && !webAppUrl) {
 }
 const webAppLabel = (lang: Lang) => (lang === 'uz' ? 'Ilova' : 'Приложение');
 
+
 const QUIZ_BUTTON_BY_LANG: Record<Lang, string> = {
   ru: '\u{1F9E0} Quiz',
   uz: '\u{1F9E0} Quiz',
@@ -339,6 +340,7 @@ bot.command('stats', async (ctx) => {
     ...openWebAppKeyboard(lang),
   });
 });
+
 
 
 bot.hears(QUIZ_BUTTONS, async (ctx) => {
@@ -1131,10 +1133,13 @@ export const startBot = async () => {
     throw error;
   }
 
-  void bot.launch().catch((error) => {
+  try {
+    await bot.launch();
+  } catch (error) {
     botHealth.markError(error instanceof Error ? error.message : 'bot launch failed');
     botLogger.error('bot launch failed', { error });
-  });
+    throw error;
+  }
 
   botHealth.markOk('bot launched');
   botLogger.info('bot launched', { webAppConfigured: Boolean(webAppUrl) });
@@ -1154,5 +1159,6 @@ if (require.main === module) {
 }
 
 export { bot };
+
 
 

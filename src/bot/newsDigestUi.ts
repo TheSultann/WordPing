@@ -30,13 +30,13 @@ const NEWS_DIGEST_STALE_TEXT_BY_LANG: Record<Lang, string> = {
 };
 
 const NEWS_NAV_PREV_LABEL_BY_LANG: Record<Lang, string> = {
-  ru: '\u2B05\uFE0F \u041D\u0430\u0437\u0430\u0434',
-  uz: '\u2B05\uFE0F Orqaga',
+  ru: '\u2B05\uFE0F',
+  uz: '\u2B05\uFE0F',
 };
 
 const NEWS_NAV_NEXT_LABEL_BY_LANG: Record<Lang, string> = {
-  ru: '\u0412\u043F\u0435\u0440\u0451\u0434 \u27A1\uFE0F',
-  uz: 'Oldinga \u27A1\uFE0F',
+  ru: '\u27A1\uFE0F',
+  uz: '\u27A1\uFE0F',
 };
 
 export const NEWS_DIGEST_BUTTON_BY_LANG: Record<Lang, string> = {
@@ -52,30 +52,58 @@ export type NewsDigestNavItem = Pick<
   'wordId' | 'wordEn' | 'translation' | 'highlightedText' | 'sourceUrl' | 'sourceTitle'
 >;
 
-const newsNavMoreLabel = (lang: Lang, count: number): string =>
+export type NewsDigestBatchState = {
+  safeTotal: number;
+  safeIndex: number;
+  batchStart: number;
+  batchSize: number;
+  batchPosition: number;
+  remainingAfterBatch: number;
+};
+
+const newsNavMoreLabel = (lang: Lang, count: number, counter: string): string =>
   lang === 'uz'
-    ? `Yana ${count} ta`
-    : `Ещё ${count}`;
+    ? `\u{1F4DA} Yana ${count} ta ko'rish \u2022 ${counter}`
+    : `\u{1F4DA} \u0415\u0449\u0451 ${count} \u2022 ${counter}`;
+
+const newsDigestBatchCounterText = (position: number, size: number): string => `${position}/${size}`;
+const newsDigestOverallCounterText = (index: number, total: number): string => `${index + 1}/${total}`;
 
 export const newsDigestFallbackText = (lang: Lang, guideLinkText: string): string => {
   if (lang === 'uz') {
-    return `📰 <b>Yangiliklar hozircha mavjud emas</b>
+    return `\u{1F4F0} <b>Yangiliklar hozircha mavjud emas</b>
 
 So'zlar Stage 4 ga yetganda yangiliklarda paydo bo'ladi.
-Eslatmalarga javob berishda davom eting! 💪
+Eslatmalarga javob berishda davom eting! \u{1F4AA}
 
-📈 ${guideLinkText}`;
+\u{1F4C8} ${guideLinkText}`;
   }
 
-  return `📰 <b>Новости пока недоступны</b>
+  return `\u{1F4F0} <b>\u041D\u043E\u0432\u043E\u0441\u0442\u0438 \u043F\u043E\u043A\u0430 \u043D\u0435\u0434\u043E\u0441\u0442\u0443\u043F\u043D\u044B</b>
 
-Слова появятся в новостях когда достигнут Stage 4.
-Продолжай отвечать на напоминания! 💪
+\u0421\u043B\u043E\u0432\u0430 \u043F\u043E\u044F\u0432\u044F\u0442\u0441\u044F \u0432 \u043D\u043E\u0432\u043E\u0441\u0442\u044F\u0445, \u043A\u043E\u0433\u0434\u0430 \u0434\u043E\u0441\u0442\u0438\u0433\u043D\u0443\u0442 Stage 4.
+\u041F\u0440\u043E\u0434\u043E\u043B\u0436\u0430\u0439 \u043E\u0442\u0432\u0435\u0447\u0430\u0442\u044C \u043D\u0430 \u043D\u0430\u043F\u043E\u043C\u0438\u043D\u0430\u043D\u0438\u044F! \u{1F4AA}
 
-📈 ${guideLinkText}`;
+\u{1F4C8} ${guideLinkText}`;
 };
 
 export const newsDigestStaleText = (lang: Lang): string => NEWS_DIGEST_STALE_TEXT_BY_LANG[lang];
+
+export const getNewsDigestBatchState = (index: number, total: number): NewsDigestBatchState => {
+  const safeTotal = Math.max(1, total);
+  const safeIndex = Math.max(0, Math.min(safeTotal - 1, index));
+  const batchStart = Math.floor(safeIndex / NEWS_DIGEST_BATCH_SIZE) * NEWS_DIGEST_BATCH_SIZE;
+  const batchSize = Math.min(NEWS_DIGEST_BATCH_SIZE, safeTotal - batchStart);
+
+  return {
+    safeTotal,
+    safeIndex,
+    batchStart,
+    batchSize,
+    batchPosition: safeIndex - batchStart + 1,
+    remainingAfterBatch: Math.max(0, safeTotal - (batchStart + batchSize)),
+  };
+};
 
 export const isNewsDigestNavItem = (value: unknown): value is NewsDigestNavItem => {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
@@ -91,24 +119,33 @@ export const isNewsDigestNavItem = (value: unknown): value is NewsDigestNavItem 
 };
 
 export const newsDigestInlineKeyboard = (lang: Lang, index: number, total: number) => {
-  const safeTotal = Math.max(1, total);
-  const safeIndex = Math.max(0, Math.min(safeTotal - 1, index));
-  const batchStart = Math.floor(safeIndex / NEWS_DIGEST_BATCH_SIZE) * NEWS_DIGEST_BATCH_SIZE;
-  const remainingAfterBatch = Math.max(0, safeTotal - (batchStart + NEWS_DIGEST_BATCH_SIZE));
-  const rows = [[
-    Markup.button.callback(NEWS_NAV_PREV_LABEL_BY_LANG[lang], NEWS_NAV_PREV_CALLBACK),
-    Markup.button.callback(`${safeIndex + 1} / ${safeTotal}`, NEWS_NAV_NOOP_CALLBACK),
-    Markup.button.callback(NEWS_NAV_NEXT_LABEL_BY_LANG[lang], NEWS_NAV_NEXT_CALLBACK),
-  ]];
+  const { safeIndex, safeTotal, batchPosition, batchSize, remainingAfterBatch } = getNewsDigestBatchState(index, total);
+  const batchCounterText = newsDigestBatchCounterText(batchPosition, batchSize);
+  const overallCounterText = newsDigestOverallCounterText(safeIndex, safeTotal);
+  const hasPrev = safeIndex > 0;
+  const hasNextInBatch = batchPosition < batchSize;
+  const hasMore = !hasNextInBatch && remainingAfterBatch > 0;
+  const rows = [];
 
-  if (remainingAfterBatch > 0) {
-    rows.push([
-      Markup.button.callback(
-        newsNavMoreLabel(lang, Math.min(NEWS_DIGEST_BATCH_SIZE, remainingAfterBatch)),
-        NEWS_NAV_MORE_CALLBACK,
-      ),
-    ]);
+  const navRow = [];
+  if (safeTotal > 1) {
+    navRow.push(Markup.button.callback(
+      NEWS_NAV_PREV_LABEL_BY_LANG[lang],
+      hasPrev ? NEWS_NAV_PREV_CALLBACK : NEWS_NAV_NOOP_CALLBACK,
+    ));
   }
+  if (hasMore) {
+    navRow.push(Markup.button.callback(
+      newsNavMoreLabel(lang, Math.min(NEWS_DIGEST_BATCH_SIZE, remainingAfterBatch), overallCounterText),
+      NEWS_NAV_MORE_CALLBACK,
+    ));
+  } else {
+    navRow.push(Markup.button.callback(batchCounterText, NEWS_NAV_NOOP_CALLBACK));
+  }
+  if (hasNextInBatch) {
+    navRow.push(Markup.button.callback(NEWS_NAV_NEXT_LABEL_BY_LANG[lang], NEWS_NAV_NEXT_CALLBACK));
+  }
+  rows.push(navRow);
 
   return Markup.inlineKeyboard(rows);
 };

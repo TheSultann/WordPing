@@ -9,6 +9,7 @@ import { createLogger } from '../utils/logger';
 import { parseNewsDigestCallbackData, type NewsDigestNavAction } from './newsDigestCallbackData';
 import {
   NEWS_DIGEST_BATCH_SIZE,
+  getNewsDigestBatchState,
   isNewsDigestNavItem,
   newsDigestFallbackText,
   newsDigestInlineKeyboard,
@@ -75,26 +76,27 @@ export const getNextNewsDigestIndex = (
   currentIndex: number,
   total: number,
 ): number => {
-  const safeTotal = Math.max(1, total);
-  const safeIndex = Math.max(0, Math.min(safeTotal - 1, currentIndex));
+  const { safeTotal, safeIndex, batchStart, batchSize } = getNewsDigestBatchState(currentIndex, total);
+  const batchEnd = batchStart + batchSize - 1;
 
   if (action === 'more') {
-    return Math.min(
-      safeTotal - 1,
-      Math.floor(safeIndex / NEWS_DIGEST_BATCH_SIZE) * NEWS_DIGEST_BATCH_SIZE + NEWS_DIGEST_BATCH_SIZE,
-    );
+    return Math.min(safeTotal - 1, batchStart + NEWS_DIGEST_BATCH_SIZE);
   }
 
-  const step = action === 'next' ? 1 : -1;
-  return (safeIndex + step + safeTotal) % safeTotal;
+  if (action === 'next') {
+    return Math.min(batchEnd, safeIndex + 1);
+  }
+
+  return Math.max(0, safeIndex - 1);
 };
 
 export const createNewsDigestRuntime = ({ mainReplyKeyboard, buildGuideLinkText }: NewsDigestRuntimeOptions) => {
   const handleNewsDigestStart = async (ctx: Context, userId: bigint, lang: Lang) => {
     try {
       const digest = await buildUserNewsDigest(userId);
+      const digestItems = mapNewsDigestItems(digest);
 
-      if (!digest.length) {
+      if (!digestItems.length) {
         await ctx.reply(newsDigestFallbackText(lang, buildGuideLinkText(lang)), {
           parse_mode: 'HTML',
           ...mainReplyKeyboard(lang),
@@ -104,7 +106,6 @@ export const createNewsDigestRuntime = ({ mainReplyKeyboard, buildGuideLinkText 
 
       const session = await ensureSession(userId);
       const payloadBase = asRecord(session.payload) ?? {};
-      const digestItems = mapNewsDigestItems(digest);
 
       await prisma.userSession.update({
         where: { userId },
@@ -144,7 +145,11 @@ export const createNewsDigestRuntime = ({ mainReplyKeyboard, buildGuideLinkText 
     }
 
     if (action === 'noop') {
-      await ctx.answerCbQuery(`${currentIndex + 1}/${items.length}`);
+      const { safeIndex, safeTotal, batchPosition, batchSize } = getNewsDigestBatchState(currentIndex, items.length);
+      const progressText = safeTotal > batchSize
+        ? `${batchPosition}/${batchSize} \u2022 ${safeIndex + 1}/${safeTotal}`
+        : `${batchPosition}/${batchSize}`;
+      await ctx.answerCbQuery(progressText);
       return;
     }
 
@@ -162,7 +167,7 @@ export const createNewsDigestRuntime = ({ mainReplyKeyboard, buildGuideLinkText 
       link_preview_options: { is_disabled: true },
       ...newsDigestInlineKeyboard(lang, nextIndex, items.length),
     });
-    await ctx.answerCbQuery(`${nextIndex + 1}/${items.length}`);
+    await ctx.answerCbQuery();
   };
 
   return {

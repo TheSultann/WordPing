@@ -634,6 +634,7 @@ export const createQuizRuntime = ({ bot, mainReplyKeyboard, buildGuideLinkText }
       const guideLinkText = buildGuideLinkText(lang);
       await ctx.reply(quizInsufficientWordsText(lang, result.minRequiredWords ?? 4, guideLinkText), {
         parse_mode: 'HTML',
+        link_preview_options: { is_disabled: true },
         ...mainReplyKeyboard(lang),
       });
       return;

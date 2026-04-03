@@ -99,6 +99,7 @@ export const createNewsDigestRuntime = ({ mainReplyKeyboard, buildGuideLinkText 
       if (!digestItems.length) {
         await ctx.reply(newsDigestFallbackText(lang, buildGuideLinkText(lang)), {
           parse_mode: 'HTML',
+          link_preview_options: { is_disabled: true },
           ...mainReplyKeyboard(lang),
         });
         return;
@@ -123,6 +124,7 @@ export const createNewsDigestRuntime = ({ mainReplyKeyboard, buildGuideLinkText 
       newsDigestLogger.error('news digest failed', { userId: userId.toString(), error });
       await ctx.reply(newsDigestFallbackText(lang, buildGuideLinkText(lang)), {
         parse_mode: 'HTML',
+        link_preview_options: { is_disabled: true },
         ...mainReplyKeyboard(lang),
       });
     }

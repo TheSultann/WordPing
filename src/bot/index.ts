@@ -584,6 +584,7 @@ bot.on('text', async (ctx) => {
           guideLink: buildGuideSpoilerLinkText(effectiveLang),
         }), {
           parse_mode: 'HTML',
+          link_preview_options: { is_disabled: true },
           ...mainReplyKeyboard(effectiveLang),
         });
         // Do NOT send settings menu here

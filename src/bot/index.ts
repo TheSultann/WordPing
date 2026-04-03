@@ -1134,13 +1134,17 @@ export const startBot = async () => {
   }
 
   try {
-    await bot.launch();
+    await Promise.race([
+      bot.launch(),
+      new Promise((resolve) => setTimeout(resolve, 50))
+    ]);
   } catch (error) {
     botHealth.markError(error instanceof Error ? error.message : 'bot launch failed');
     botLogger.error('bot launch failed', { error });
     throw error;
   }
 
+  // We only run this after a short delay so that synchronous errors from launch (in tests or bad webhooks) throw first
   botHealth.markOk('bot launched');
   botLogger.info('bot launched', { webAppConfigured: Boolean(webAppUrl) });
   void restoreActiveQuizTimeouts().catch((error) => {

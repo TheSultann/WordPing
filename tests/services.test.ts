@@ -88,13 +88,15 @@ describe('service integration', () => {
     const reviews = await prisma.review.findMany({
       where: { wordId },
       orderBy: { direction: 'asc' },
-      select: { direction: true, stage: true, intervalMinutes: true },
+      select: { direction: true, stage: true, intervalMinutes: true, initialAutoReviewPending: true },
     });
 
     expect(reviews).toHaveLength(2);
     expect(reviews.map((review) => review.direction).sort()).toEqual(['EN_TO_RU', 'RU_TO_EN']);
     expect(reviews.every((review) => review.stage === 0)).toBe(true);
     expect(reviews.every((review) => review.intervalMinutes === 5)).toBe(true);
+    expect(reviews.find((review) => review.direction === 'EN_TO_RU')?.initialAutoReviewPending).toBe(true);
+    expect(reviews.find((review) => review.direction === 'RU_TO_EN')?.initialAutoReviewPending).toBe(true);
   });
 
   it('addWordForUser throws DuplicateWordError if word exists', async () => {

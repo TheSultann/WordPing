@@ -1233,6 +1233,82 @@ describe('bot extended flows', () => {
     expect((answerCbCall?.[1] as any)?.show_alert).toBe(true);
   });
 
+  it('grade callback immediately sends the second initial direction without waiting for interval', async () => {
+    await prisma.user.create({
+      data: {
+        id: BigInt(userId),
+        language: 'ru',
+        notificationsEnabled: true,
+        quietHoursStartMinutes: 0,
+        quietHoursEndMinutes: 0,
+        timezone: 'UTC',
+        notificationIntervalMinutes: 60,
+        lastNotificationAt: new Date(),
+        maxNotificationsPerDay: 30,
+      },
+    });
+
+    const word = await prisma.word.create({
+      data: {
+        userId: BigInt(userId),
+        wordEn: 'bridge',
+        translationRu: 'мост',
+        reviews: {
+          create: [
+            {
+              direction: 'EN_TO_RU',
+              userId: BigInt(userId),
+              initialAutoReviewPending: true,
+              stage: 0,
+              intervalMinutes: 5,
+              nextReviewAt: new Date(Date.now() - 1000),
+            },
+            {
+              direction: 'RU_TO_EN',
+              userId: BigInt(userId),
+              initialAutoReviewPending: true,
+              stage: 0,
+              intervalMinutes: 5,
+              nextReviewAt: new Date(Date.now() - 1000),
+            },
+          ],
+        },
+      },
+      include: { reviews: true },
+    });
+
+    const firstReview = word.reviews.find((item) => item.direction === 'EN_TO_RU');
+    const secondReview = word.reviews.find((item) => item.direction === 'RU_TO_EN');
+    expect(firstReview).toBeTruthy();
+    expect(secondReview).toBeTruthy();
+
+    await setState(BigInt(userId), 'WAITING_GRADE', {
+      reviewId: firstReview!.id,
+      wordId: word.id,
+      direction: 'EN_TO_RU',
+      sentAt: new Date(),
+      answerText: 'мост',
+      payload: { correct: true },
+    });
+
+    const callApiSpy = vi
+      .spyOn(Object.getPrototypeOf(bot.telegram), 'callApi')
+      .mockResolvedValue({} as any);
+
+    await bot.handleUpdate(makeCallbackUpdate('grade:GOOD', 21), {} as any);
+
+    const sendCalls = callApiSpy.mock.calls.filter(([method]: any[]) => method === 'sendMessage');
+    expect(sendCalls).toHaveLength(1);
+    expect(String((sendCalls[0]?.[1] as any)?.text ?? '')).toContain('мост');
+
+    const session = await prisma.userSession.findUnique({ where: { userId: BigInt(userId) } });
+    expect(session?.state).toBe('WAITING_ANSWER');
+    expect(session?.reviewId).toBe(secondReview!.id);
+
+    const updatedSecondReview = await prisma.review.findUnique({ where: { id: secondReview!.id } });
+    expect(updatedSecondReview?.initialAutoReviewPending).toBe(false);
+  });
+
   it('grade callback in non-active state returns noActive message', async () => {
     await prisma.user.create({ data: { id: BigInt(userId), language: 'ru' } });
     await setState(BigInt(userId), 'IDLE');

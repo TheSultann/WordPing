@@ -134,8 +134,7 @@ const reviewFlowHintKeyboard = (lang: Lang) =>
   openWebAppKeyboard(lang, { tab: 'settings', flow: 'stages' }, `ℹ️ ${t(lang, 'btn.openGuide')}`)
   ?? Markup.inlineKeyboard([[Markup.button.callback(`ℹ️ ${t(lang, 'btn.openGuide')}`, REVIEW_FLOW_HINT_CALLBACK)]]);
 const buildGuideSpoilerText = (lang: Lang) => `<tg-spoiler>${t(lang, 'btn.openGuide')}</tg-spoiler>`;
-const buildGuideUrl = () =>
-  buildWebAppUrl({ tab: 'settings', flow: 'stages' }) ?? 'https://t.me/WordPing_bot/app?startapp=stages';
+const buildGuideUrl = () => 'https://t.me/WordPing_bot/app?startapp=stages';
 const buildGuideSpoilerLinkText = (lang: Lang) => {
   const guideUrl = buildGuideUrl();
   return `<a href="${guideUrl}">${buildGuideSpoilerText(lang)}</a>`;

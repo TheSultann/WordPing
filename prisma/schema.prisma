@@ -162,6 +162,7 @@ model Review {
   userId          BigInt
   wordId          Int
   direction       CardDirection
+  initialAutoReviewPending Boolean @default(false)
   hardStreak      Int            @default(0)
   lastReviewAt    DateTime?
   nextReviewAt    DateTime?
@@ -176,6 +177,8 @@ model Review {
   word            Word           @relation(fields: [wordId], references: [id], onDelete: Cascade)
 
   @@unique([wordId, direction])
+  @@index([userId, nextReviewAt])
+  @@index([userId, initialAutoReviewPending, nextReviewAt])
   @@index([userId, direction, nextReviewAt])
   @@index([wordId])
 }

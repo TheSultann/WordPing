@@ -1,5 +1,5 @@
 import { PrismaClientKnownRequestError } from '@prisma/client/runtime/library';
-import type { CardDirection, Review, ReviewResult } from '../generated/prisma/client';
+import type { CardDirection, Review, ReviewResult, Word } from '../generated/prisma/client';
 import { prisma } from '../db/client';
 import type { Rating} from './reviewScheduler';
 import { initialReviewSchedule, scheduleNextReview, scheduleSkipped, scheduleUnrated } from './reviewScheduler';
@@ -153,6 +153,7 @@ export const addWordForUser = async (
             create: CARD_DIRECTIONS.map((direction) => ({
               userId,
               direction,
+              initialAutoReviewPending: true,
               stage: schedule.stage,
               intervalMinutes: schedule.intervalMinutes,
               nextReviewAt: schedule.nextReviewAt,
@@ -214,20 +215,193 @@ export const findDueReviewByStage = async (userId: bigint, stage: number, now = 
   });
 };
 
-export const findDueFirstExposureStageZeroReview = async (userId: bigint, now = nowUtc()) => {
-  return prisma.review.findFirst({
+export type DueReviewWithWord = NonNullable<Awaited<ReturnType<typeof findDueReview>>>;
+export type DueReviewForNotification = Pick<
+  DueReviewWithWord,
+  'id' | 'userId' | 'wordId' | 'direction' | 'initialAutoReviewPending' | 'stage' | 'nextReviewAt'
+> & {
+  word: Pick<DueReviewWithWord['word'], 'wordEn' | 'translationRu' | 'exampleSentences' | 'sentenceIndex'>;
+};
+
+type DueReviewNotificationComparable = Pick<
+  Review,
+  'id' | 'userId' | 'wordId' | 'direction' | 'initialAutoReviewPending' | 'stage' | 'nextReviewAt' | 'hardStreak' | 'lastResult'
+> & {
+  word: Pick<Word, 'createdAt' | 'wordEn' | 'translationRu' | 'exampleSentences' | 'sentenceIndex'>;
+};
+
+const comparePendingInitialReviews = (
+  left: DueReviewNotificationComparable,
+  right: DueReviewNotificationComparable,
+) => {
+  const createdAtDiff = right.word.createdAt.getTime() - left.word.createdAt.getTime();
+  if (createdAtDiff !== 0) return createdAtDiff;
+
+  const nextReviewDiff = left.nextReviewAt!.getTime() - right.nextReviewAt!.getTime();
+  if (nextReviewDiff !== 0) return nextReviewDiff;
+
+  if (left.wordId === right.wordId && left.direction !== right.direction) {
+    return left.direction === 'EN_TO_RU' ? -1 : 1;
+  }
+
+  return left.id - right.id;
+};
+
+export const findDuePendingInitialAutoReview = async (userId: bigint, now = nowUtc()) => {
+  const dueReviews = await prisma.review.findMany({
     where: {
       userId,
-      stage: 0,
-      lastReviewAt: null,
+      initialAutoReviewPending: true,
       nextReviewAt: { lte: now.toDate() },
     },
-    orderBy: [{ nextReviewAt: 'asc' }, { id: 'asc' }],
     include: { word: true },
   });
+
+  // Prefer recently added words so the promised "remind in 5 minutes"
+  // is not buried behind an older pending first-review queue.
+  dueReviews.sort(comparePendingInitialReviews);
+
+  return dueReviews[0] ?? null;
 };
 
 /** Find the weakest due word — hardStreak >= minStreak, ordered by worst first. */
+const reviewResultPriority = (result: ReviewResult | null | undefined): number => {
+  if (result === 'INCORRECT') return 2;
+  if (result === 'SKIPPED') return 1;
+  return 0;
+};
+
+const learningStagePriority = (stage: number): number => {
+  if (stage <= 1) return 3;
+  if (stage <= 3) return 2;
+  if (stage <= 5) return 1;
+  return 0;
+};
+
+const overduePriority = (review: Pick<Review, 'nextReviewAt'>, now: ReturnType<typeof nowUtc>): number => {
+  if (!review.nextReviewAt) return 0;
+  const overdueMinutes = Math.max(0, now.diff(review.nextReviewAt, 'minute'));
+  if (overdueMinutes >= 24 * 60) return 3;
+  if (overdueMinutes >= 6 * 60) return 2;
+  if (overdueMinutes >= 60) return 1;
+  return 0;
+};
+
+const compareDueReviewsForNotification = (
+  left: DueReviewNotificationComparable,
+  right: DueReviewNotificationComparable,
+  now: ReturnType<typeof nowUtc>,
+) => {
+  if (left.initialAutoReviewPending && right.initialAutoReviewPending) {
+    return comparePendingInitialReviews(left, right);
+  }
+  if (left.initialAutoReviewPending !== right.initialAutoReviewPending) {
+    return left.initialAutoReviewPending ? -1 : 1;
+  }
+
+  if (right.hardStreak !== left.hardStreak) {
+    return right.hardStreak - left.hardStreak;
+  }
+
+  const resultDiff = reviewResultPriority(right.lastResult) - reviewResultPriority(left.lastResult);
+  if (resultDiff !== 0) return resultDiff;
+
+  const overdueDiff = overduePriority(right, now) - overduePriority(left, now);
+  if (overdueDiff !== 0) return overdueDiff;
+
+  const stageDiff = learningStagePriority(right.stage) - learningStagePriority(left.stage);
+  if (stageDiff !== 0) return stageDiff;
+
+  const nextReviewDiff = left.nextReviewAt!.getTime() - right.nextReviewAt!.getTime();
+  if (nextReviewDiff !== 0) return nextReviewDiff;
+
+  if (left.wordId === right.wordId && left.direction !== right.direction) {
+    return left.direction === 'EN_TO_RU' ? -1 : 1;
+  }
+
+  return left.id - right.id;
+};
+
+export const findBestDueReviewForNotification = async (userId: bigint, now = nowUtc()) => {
+  const pendingInitialReview = await findDuePendingInitialAutoReview(userId, now);
+  if (pendingInitialReview) return pendingInitialReview;
+
+  const dueReviews = await prisma.review.findMany({
+    where: {
+      userId,
+      initialAutoReviewPending: false,
+      nextReviewAt: { lte: now.toDate() },
+    },
+    include: { word: true },
+  });
+
+  dueReviews.sort((left, right) => compareDueReviewsForNotification(left, right, now));
+  return dueReviews[0] ?? null;
+};
+
+const mapDueReviewForNotification = (review: DueReviewNotificationComparable): DueReviewForNotification => ({
+  id: review.id,
+  userId: review.userId,
+  wordId: review.wordId,
+  direction: review.direction,
+  initialAutoReviewPending: review.initialAutoReviewPending,
+  stage: review.stage,
+  nextReviewAt: review.nextReviewAt,
+  word: {
+    wordEn: review.word.wordEn,
+    translationRu: review.word.translationRu,
+    exampleSentences: review.word.exampleSentences,
+    sentenceIndex: review.word.sentenceIndex,
+  },
+});
+
+export const findBestDueReviewsForNotification = async (
+  userIds: readonly bigint[],
+  now = nowUtc(),
+): Promise<Map<string, DueReviewForNotification>> => {
+  if (userIds.length === 0) return new Map();
+
+  const dueReviews = await prisma.review.findMany({
+    where: {
+      userId: { in: [...userIds] },
+      nextReviewAt: { lte: now.toDate() },
+    },
+    select: {
+      id: true,
+      userId: true,
+      wordId: true,
+      direction: true,
+      initialAutoReviewPending: true,
+      stage: true,
+      nextReviewAt: true,
+      hardStreak: true,
+      lastResult: true,
+      word: {
+        select: {
+          createdAt: true,
+          wordEn: true,
+          translationRu: true,
+          exampleSentences: true,
+          sentenceIndex: true,
+        },
+      },
+    },
+  });
+
+  const bestByUserId = new Map<string, DueReviewNotificationComparable>();
+  for (const review of dueReviews) {
+    const userKey = review.userId.toString();
+    const currentBest = bestByUserId.get(userKey);
+    if (!currentBest || compareDueReviewsForNotification(review, currentBest, now) < 0) {
+      bestByUserId.set(userKey, review);
+    }
+  }
+
+  return new Map(
+    Array.from(bestByUserId.entries(), ([userKey, review]) => [userKey, mapDueReviewForNotification(review)] as const),
+  );
+};
+
 export const findWeakDueReview = async (userId: bigint, now = nowUtc(), minStreak = 2) => {
   return prisma.review.findFirst({
     where: {
@@ -262,6 +436,7 @@ export const applyRating = async (
   const updated = await prisma.review.update({
     where: { id: review.id },
     data: {
+      initialAutoReviewPending: false,
       stage: schedule.stage,
       intervalMinutes: schedule.intervalMinutes,
       nextReviewAt: schedule.nextReviewAt,
@@ -288,6 +463,7 @@ export const markSkipped = async (review: Review) => {
   return prisma.review.update({
     where: { id: review.id },
     data: {
+      initialAutoReviewPending: false,
       stage: schedule.stage,
       intervalMinutes: schedule.intervalMinutes,
       nextReviewAt: schedule.nextReviewAt,
@@ -309,6 +485,7 @@ export const markPendingGradeExpired = async (
   return prisma.review.update({
     where: { id: review.id },
     data: {
+      initialAutoReviewPending: false,
       stage: schedule.stage,
       intervalMinutes: schedule.intervalMinutes,
       nextReviewAt: schedule.nextReviewAt,

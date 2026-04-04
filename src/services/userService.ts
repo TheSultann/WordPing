@@ -79,6 +79,25 @@ export class QuietHoursSpanError extends Error {
   }
 }
 
+export const normalizeQuietHoursWindow = (startMinutes: number, endMinutes: number) => {
+  const normalizedStartMinutes = normalizeMinutes(startMinutes);
+  const normalizedEndMinutes = normalizeMinutes(endMinutes);
+  const span = calculateWindowSpanMinutes(normalizedStartMinutes, normalizedEndMinutes);
+  if (span < MIN_QUIET_SPAN_MINUTES) {
+    throw new QuietHoursSpanError();
+  }
+  return {
+    quietHoursStartMinutes: normalizedStartMinutes,
+    quietHoursEndMinutes: normalizedEndMinutes,
+  };
+};
+
+export const clampNotificationLimitValue = (maxPerDay: number) =>
+  Math.min(Math.max(maxPerDay, MIN_NOTIFICATIONS_PER_DAY), MAX_NOTIFICATIONS_PER_DAY);
+
+export const clampNotificationIntervalValue = (minutes: number) =>
+  Math.min(Math.max(minutes, MIN_NOTIFICATION_INTERVAL), MAX_NOTIFICATION_INTERVAL);
+
 export const ensureUser = async (telegramId: number, profile?: TelegramProfile): Promise<User> => {
   const id = toId(telegramId);
   const profileData = buildProfileData(profile) as Record<string, unknown>;
@@ -105,22 +124,17 @@ export const setNotifications = async (telegramId: number, enabled: boolean) => 
 };
 
 export const setDoNotDisturbHours = async (telegramId: number, startMinutes: number, endMinutes: number) => {
-  const normStart = normalizeMinutes(startMinutes);
-  const normEnd = normalizeMinutes(endMinutes);
-  const span = calculateWindowSpanMinutes(normStart, normEnd);
-  if (span < MIN_QUIET_SPAN_MINUTES) {
-    throw new QuietHoursSpanError();
-  }
+  const window = normalizeQuietHoursWindow(startMinutes, endMinutes);
   return prisma.user.update({
     where: { id: toId(telegramId) },
-    data: { quietHoursStartMinutes: normStart, quietHoursEndMinutes: normEnd },
+    data: window,
   });
 };
 
 export const setQuietHours = setDoNotDisturbHours;
 
 export const setNotificationLimit = async (telegramId: number, maxPerDay: number) => {
-  const clamped = Math.min(Math.max(maxPerDay, MIN_NOTIFICATIONS_PER_DAY), MAX_NOTIFICATIONS_PER_DAY);
+  const clamped = clampNotificationLimitValue(maxPerDay);
   return prisma.user.update({
     where: { id: toId(telegramId) },
     data: { maxNotificationsPerDay: clamped },
@@ -128,7 +142,7 @@ export const setNotificationLimit = async (telegramId: number, maxPerDay: number
 };
 
 export const setNotificationInterval = async (telegramId: number, minutes: number) => {
-  const clamped = Math.min(Math.max(minutes, MIN_NOTIFICATION_INTERVAL), MAX_NOTIFICATION_INTERVAL);
+  const clamped = clampNotificationIntervalValue(minutes);
   return prisma.user.update({
     where: { id: toId(telegramId) },
     data: { notificationIntervalMinutes: clamped },

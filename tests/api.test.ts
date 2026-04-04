@@ -891,4 +891,31 @@ describe('API integration', () => {
     expect(settings.body.quietHoursStartMinutes).toBe(480);
     expect(settings.body.quietHoursEndMinutes).toBe(1380);
   });
+
+  it('PATCH /api/settings does not partially persist when quiet hours are invalid', async () => {
+    const res = await request(app)
+      .patch('/api/settings')
+      .set('x-dev-user-id', userId.toString())
+      .send({
+        notificationsEnabled: false,
+        notificationIntervalMinutes: 45,
+        maxNotificationsPerDay: 10,
+        quietHoursStartMinutes: 600,
+        quietHoursEndMinutes: 650,
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('quiet_hours_span_too_short');
+
+    const settings = await request(app)
+      .get('/api/settings')
+      .set('x-dev-user-id', userId.toString());
+
+    expect(settings.status).toBe(200);
+    expect(settings.body.notificationsEnabled).toBe(true);
+    expect(settings.body.notificationIntervalMinutes).toBe(30);
+    expect(settings.body.maxNotificationsPerDay).toBe(20);
+    expect(settings.body.quietHoursStartMinutes).toBe(480);
+    expect(settings.body.quietHoursEndMinutes).toBe(1380);
+  });
 });

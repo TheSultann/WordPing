@@ -2,6 +2,7 @@ import 'dotenv/config';
 import { escapeHtml } from '../utils/html';
 import type { Context } from 'telegraf';
 import { Markup, Telegraf } from 'telegraf';
+import { tryDeliverInitialAutoReview } from '../scheduler/worker';
 import { isAddConfirmCallbackData } from './addConfirmCallbackData';
 import { createAddConfirmRuntime } from './addConfirmRuntime';
 import { addConfirmKeyboard } from './addConfirmUi';
@@ -133,12 +134,14 @@ const reviewFlowHintKeyboard = (lang: Lang) =>
   openWebAppKeyboard(lang, { tab: 'settings', flow: 'stages' }, `ℹ️ ${t(lang, 'btn.openGuide')}`)
   ?? Markup.inlineKeyboard([[Markup.button.callback(`ℹ️ ${t(lang, 'btn.openGuide')}`, REVIEW_FLOW_HINT_CALLBACK)]]);
 const buildGuideSpoilerText = (lang: Lang) => `<tg-spoiler>${t(lang, 'btn.openGuide')}</tg-spoiler>`;
+const buildGuideUrl = () =>
+  buildWebAppUrl({ tab: 'settings', flow: 'stages' }) ?? 'https://t.me/WordPing_bot/app?startapp=stages';
 const buildGuideSpoilerLinkText = (lang: Lang) => {
-  const guideUrl = 'https://t.me/WordPing_bot/app?startapp=stages';
+  const guideUrl = buildGuideUrl();
   return `<a href="${guideUrl}">${buildGuideSpoilerText(lang)}</a>`;
 };
 const buildGuideLinkText = (lang: Lang) => {
-  const guideUrl = 'https://t.me/WordPing_bot/app?startapp=stages';
+  const guideUrl = buildGuideUrl();
   return `<a href="${guideUrl}">${t(lang, 'btn.openGuide')}</a>`;
 };
 const newsDigestRuntime = createNewsDigestRuntime({ mainReplyKeyboard, buildGuideLinkText });
@@ -988,6 +991,7 @@ bot.on('callback_query', async (ctx) => {
       ...(showReviewFlowHintButton ? reviewFlowHintKeyboard(lang) : {}),
     });
     await ctx.answerCbQuery(t(lang, 'grade.saved'));
+    await tryDeliverInitialAutoReview(freshUser);
     return;
   }
 

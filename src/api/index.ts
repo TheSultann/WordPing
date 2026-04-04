@@ -14,16 +14,15 @@ import {
   resetProgressIfNeeded,
   resetNotificationCountersIfNeeded,
   setLanguage,
-  setNotificationInterval,
-  setNotificationLimit,
-  setNotifications,
   QuietHoursSpanError,
-  setDoNotDisturbHours,
   countReferrals,
   MIN_NOTIFICATION_INTERVAL,
   MAX_NOTIFICATION_INTERVAL,
   MIN_NOTIFICATIONS_PER_DAY,
   MAX_NOTIFICATIONS_PER_DAY,
+  clampNotificationIntervalValue,
+  clampNotificationLimitValue,
+  normalizeQuietHoursWindow,
 } from '../services/userService';
 import { resetState } from '../services/sessionService';
 import { trimEnv, validateRuntimeEnv } from '../utils/env';
@@ -486,16 +485,18 @@ app.patch('/api/settings', async (req, res) => {
     quietHoursEndMinutes,
   } = req.body ?? {};
 
+  const settingsUpdate: Prisma.UserUpdateInput = {};
+
   if (typeof notificationsEnabled === 'boolean') {
-    await setNotifications(Number(userId), notificationsEnabled);
+    settingsUpdate.notificationsEnabled = notificationsEnabled;
   }
 
   if (typeof notificationIntervalMinutes === 'number' && Number.isFinite(notificationIntervalMinutes)) {
-    await setNotificationInterval(Number(userId), notificationIntervalMinutes);
+    settingsUpdate.notificationIntervalMinutes = clampNotificationIntervalValue(notificationIntervalMinutes);
   }
 
   if (typeof maxNotificationsPerDay === 'number' && Number.isFinite(maxNotificationsPerDay)) {
-    await setNotificationLimit(Number(userId), maxNotificationsPerDay);
+    settingsUpdate.maxNotificationsPerDay = clampNotificationLimitValue(maxNotificationsPerDay);
   }
 
   if (
@@ -505,7 +506,7 @@ app.patch('/api/settings', async (req, res) => {
     Number.isFinite(quietHoursEndMinutes)
   ) {
     try {
-      await setDoNotDisturbHours(Number(userId), quietHoursStartMinutes, quietHoursEndMinutes);
+      Object.assign(settingsUpdate, normalizeQuietHoursWindow(quietHoursStartMinutes, quietHoursEndMinutes));
     } catch (error) {
       if (error instanceof QuietHoursSpanError) {
         return res.status(400).json({
@@ -517,7 +518,12 @@ app.patch('/api/settings', async (req, res) => {
     }
   }
 
-  const user = await ensureUser(Number(userId));
+  const user = Object.keys(settingsUpdate).length > 0
+    ? await prisma.user.update({
+      where: { id: userId },
+      data: settingsUpdate,
+    })
+    : await ensureUser(Number(userId));
   res.json({
     notificationsEnabled: user.notificationsEnabled,
     notificationIntervalMinutes: user.notificationIntervalMinutes,

@@ -40,6 +40,7 @@ describe('bot startup', () => {
     });
 
     vi.spyOn(process, 'once').mockImplementation((() => process) as any);
+    vi.spyOn(mod.bot.telegram, 'getMe').mockResolvedValue({ id: 1, is_bot: true, first_name: 'WordPing', username: 'wordping_test_bot' } as any);
     vi.spyOn(mod.bot, 'launch').mockReturnValue(launchPromise as any);
 
     const startPromise = mod.startBot();
@@ -62,6 +63,7 @@ describe('bot startup', () => {
     const launchError = new Error('bad token');
 
     vi.spyOn(process, 'once').mockImplementation((() => process) as any);
+    vi.spyOn(mod.bot.telegram, 'getMe').mockResolvedValue({ id: 1, is_bot: true, first_name: 'WordPing', username: 'wordping_test_bot' } as any);
     vi.spyOn(mod.bot, 'launch').mockRejectedValue(launchError);
 
     await expect(mod.startBot()).rejects.toThrow('bad token');

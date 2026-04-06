@@ -303,7 +303,7 @@ describe('API integration', () => {
     expect(res.body.dueNowTotal).toBe(1);
   });
 
-  it('GET /api/stats separates dueNowTotal from dueTodayCount', async () => {
+  it('GET /api/stats includes overdue words in dueTodayCount', async () => {
     await prisma.user.create({ data: { id: userId } });
     await prisma.word.create({
       data: {
@@ -327,7 +327,7 @@ describe('API integration', () => {
       .set('x-dev-user-id', userId.toString());
     expect(res.status).toBe(200);
     expect(res.body.dueNowTotal).toBe(1);
-    expect(res.body.dueTodayCount).toBe(0);
+    expect(res.body.dueTodayCount).toBe(1);
   });
 
   it('GET /api/stats returns learnedTotal based on stage >= 4', async () => {

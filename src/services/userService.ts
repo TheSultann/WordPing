@@ -295,7 +295,9 @@ export const countUserWords = async (userId: bigint) => {
 };
 
 export const countDueToday = async (userId: bigint, todayStartUtc: Date, tomorrowStartUtc: Date) => {
-  // Count unique words that have at least one due review in today's window.
+  // Count unique words that have at least one due review up to end of today.
+  // This includes overdue (past-due) words so the UI counter matches what
+  // the user will actually receive during the day.
   // This keeps UI "На повтор" on word-level (not doubled by two directions).
   return prisma.word.count({
     where: {
@@ -303,7 +305,6 @@ export const countDueToday = async (userId: bigint, todayStartUtc: Date, tomorro
       reviews: {
         some: {
           nextReviewAt: {
-            gte: todayStartUtc,
             lt: tomorrowStartUtc,
           },
         },

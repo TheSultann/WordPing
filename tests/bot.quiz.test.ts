@@ -166,7 +166,7 @@ describe('bot quiz integration', () => {
     const finalText = sentTexts(callApiSpy).at(-1) ?? '';
     expect(finalText).toContain('Quiz для старта требует минимум 4 слова на Stage 2+');
     expect(finalText).toContain('Как работают этапы?');
-    expect(finalText).toContain('https://example.test/app?tab=settings&flow=stages');
+    expect(finalText).toContain('https://t.me/WordPing_bot/app?startapp=stages');
   });
 
   it('starts quiz from keyboard button and enters QUIZ_ACTIVE', async () => {

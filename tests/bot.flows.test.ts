@@ -293,11 +293,11 @@ describe('bot extended flows', () => {
     expect(texts).toContain(t('uz', 'onboarding.finished', {
       value: 10,
       guideLink:
-        '<a href="https://example.test/app?tab=settings&flow=stages"><tg-spoiler>Bosqichlar qanday ishlaydi?</tg-spoiler></a>',
+        '<a href="https://t.me/WordPing_bot/app?startapp=stages"><tg-spoiler>Bosqichlar qanday ishlaydi?</tg-spoiler></a>',
     }));
     expect(
       texts.some((text) =>
-        text.includes('<a href="https://example.test/app?tab=settings&flow=stages"><tg-spoiler>Bosqichlar qanday ishlaydi?</tg-spoiler></a>')
+        text.includes('<a href="https://t.me/WordPing_bot/app?startapp=stages"><tg-spoiler>Bosqichlar qanday ishlaydi?</tg-spoiler></a>')
       )
     ).toBe(true);
     expect(texts).not.toContain(t('uz', 'reviewFlowHint'));
@@ -941,7 +941,7 @@ describe('bot extended flows', () => {
     expect(String((answerCbCall?.[1] as any)?.text ?? '')).toContain('Пример заменён');
   });
 
-  it('hint callback reveals letters in 3 steps per card and then stops', async () => {
+  it('hint callback reveals letters in 4 steps per card and then stops', async () => {
     await prisma.user.create({ data: { id: BigInt(userId), language: 'ru' } });
     const created = await prisma.word.create({
       data: {
@@ -985,22 +985,25 @@ describe('bot extended flows', () => {
     await bot.handleUpdate(makeCallbackUpdate(`hint:${reviewId}`, 572), {} as any);
     await bot.handleUpdate(makeCallbackUpdate(`hint:${reviewId}`, 573), {} as any);
     await bot.handleUpdate(makeCallbackUpdate(`hint:${reviewId}`, 574), {} as any);
+    await bot.handleUpdate(makeCallbackUpdate(`hint:${reviewId}`, 575), {} as any);
 
     const edits = editedTexts(callApiSpy);
-    expect(edits.some((text) => text.includes('💡 <b>a____</b>'))).toBe(true);
-    expect(edits.some((text) => text.includes('💡 <b>a___e</b>'))).toBe(true);
-    expect(edits.some((text) => text.includes('💡 <b>ap__e</b>'))).toBe(true);
+    expect(edits.some((text) => text.includes('<b>a____</b>'))).toBe(true);
+    expect(edits.some((text) => text.includes('<b>ap___</b>'))).toBe(true);
+    expect(edits.some((text) => text.includes('<b>ap__e</b>'))).toBe(true);
+    expect(edits.some((text) => text.includes('<b>app_e</b>'))).toBe(true);
 
     const answers = callApiSpy.mock.calls
       .filter(([method]: any[]) => method === 'answerCallbackQuery')
       .map(([, payload]: any[]) => String(payload?.text ?? ''));
-    expect(answers.some((text) => text.includes('1/3'))).toBe(true);
-    expect(answers.some((text) => text.includes('2/3'))).toBe(true);
-    expect(answers.some((text) => text.includes('3/3'))).toBe(true);
-    expect(answers).toContain(t('ru', 'worker.hintLimit'));
+    expect(answers.some((text) => text.includes('1/4'))).toBe(true);
+    expect(answers.some((text) => text.includes('2/4'))).toBe(true);
+    expect(answers.some((text) => text.includes('3/4'))).toBe(true);
+    expect(answers.some((text) => text.includes('4/4'))).toBe(true);
+    expect(answers).toContain(t('ru', 'worker.hintLimit', { count: 4 }));
 
     const session = await prisma.userSession.findUnique({ where: { userId: BigInt(userId) } });
-    expect((session?.payload as any)?.hintPresses).toBe(3);
+    expect((session?.payload as any)?.hintPresses).toBe(4);
   });
 
   it('hint callback can inject masked letters into sentence blank for stage 7 style cards', async () => {

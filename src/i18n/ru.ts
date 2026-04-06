@@ -102,7 +102,7 @@ const ru = {
   'worker.answerTarget.uzbek': '✍️ → 🇺🇿',
   'worker.answerTarget.english': '✍️ → 🇬🇧',
   'worker.hintReveal': '💡 <b>{masked}</b>',
-  'worker.hintLimit': 'Подсказки закончились (3/3)',
+  'worker.hintLimit': 'Подсказки закончились ({count}/{count})',
   'worker.hintUnavailable': 'Для очень коротких слов подсказка отключена.',
   'worker.answerPrompt': '👇 Пиши перевод:',
   'worker.reminder': '⏰ <b>Тик-так!</b> Не забывай отвечать.',

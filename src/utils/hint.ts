@@ -30,7 +30,8 @@ export const buildHintMaskByPress = (value: string, press: number): string | nul
   if (!isHintAvailable(value)) return null;
   if (!chars.length) return null;
   const reveal = [0];
-  if (press >= 2 && chars.length > 1) reveal.push(chars.length - 1);
-  if (press >= 3 && chars.length > 2) reveal.push(1);
+  if (press >= 2 && chars.length > 1) reveal.push(1);
+  if (press >= 3 && chars.length > 2) reveal.push(chars.length - 1);
+  if (press >= 4 && chars.length > 3) reveal.push(2);
   return buildMaskedHint(value.trim(), reveal);
 };

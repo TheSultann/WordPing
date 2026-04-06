@@ -105,7 +105,7 @@ const uz = {
   'worker.answerTarget.uzbek': '\u270D\uFE0F -> ozbekcha',
   'worker.answerTarget.english': '\u270D\uFE0F -> inglizcha',
   'worker.hintReveal': '\u{1F4A1} <b>{masked}</b>',
-  'worker.hintLimit': 'Ishoralar tugadi (3/3)',
+  'worker.hintLimit': 'Ishoralar tugadi ({count}/{count})',
   'worker.hintUnavailable': 'Juda qisqa so‘zlar uchun ishora o‘chirilgan.',
   'worker.answerPrompt': '\u{1F447} Tarjimani yozing:',
   'worker.reminder': '\u23F0 <b>Eslatma!</b> Javob berishni unutmang.',

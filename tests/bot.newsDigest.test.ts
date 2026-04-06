@@ -174,7 +174,7 @@ describe('bot news digest button', () => {
     expect(text).toContain('📰 <b>Новости пока недоступны</b>');
     expect(text).toContain('Stage 4');
     expect(text).toContain('Как работают этапы?');
-    expect(text).toContain('https://example.test/app?tab=settings&flow=stages');
+    expect(text).toContain('https://t.me/WordPing_bot/app?startapp=stages');
     expect(firstButtonText).toBe(NEWS_BUTTON_RU);
   });
 

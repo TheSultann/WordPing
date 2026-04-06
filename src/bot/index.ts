@@ -215,7 +215,7 @@ const shouldTryGeminiDisambiguation = (input: string, detectedLang: 'ru' | 'uz' 
   return true;
 };
 
-const MAX_HINT_PRESSES_PER_CARD = 3;
+const MAX_HINT_PRESSES_PER_CARD = 4;
 const isRating = (value: string): value is Rating => value === 'HARD' || value === 'GOOD' || value === 'EASY';
 
 const cardInlineKeyboard = (reviewId: number, swapData?: string | null, hintEnabled = true) => {
@@ -852,7 +852,7 @@ bot.on('callback_query', async (ctx) => {
     const payload = (session.payload as any) || {};
     const currentPresses = Math.max(0, Number(payload.hintPresses ?? 0) || 0);
     if (currentPresses >= MAX_HINT_PRESSES_PER_CARD) {
-      await ctx.answerCbQuery(t(lang, 'worker.hintLimit'));
+      await ctx.answerCbQuery(t(lang, 'worker.hintLimit', { count: MAX_HINT_PRESSES_PER_CARD }));
       return;
     }
 

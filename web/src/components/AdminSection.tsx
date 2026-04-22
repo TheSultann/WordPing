@@ -1,5 +1,5 @@
 import { Book, Bell, RotateCcw, Search, Shield, UserPlus, Users, Zap } from 'lucide-react';
-import type { AdminOverview, AdminUserSummary } from '../api';
+import type { AdminBlockedUserSummary, AdminOverview, AdminUserSummary } from '../api';
 
 type TranslateFn = (key: string, params?: Record<string, string | number>) => string;
 
@@ -9,6 +9,8 @@ type AdminSectionProps = {
   adminOverview: AdminOverview | null;
   adminOverviewLoading: boolean;
   adminOverviewError: string;
+  adminBlockedUsers: AdminBlockedUserSummary[];
+  adminBlockedUsersCount: number;
   adminQuery: string;
   setAdminQuery: (value: string) => void;
   adminNotFound: boolean;
@@ -41,6 +43,7 @@ type AdminSectionProps = {
   onSendAdminBroadcast: () => void;
   formatAdminCardPrimaryName: (user: AdminUserSummary) => string;
   formatAdminName: (user: AdminUserSummary) => string;
+  formatBlockedName: (user: AdminBlockedUserSummary) => string;
   formatDateTime: (value?: string | null) => string;
   formatDateOnly: (value?: string | null) => string;
 };
@@ -51,6 +54,8 @@ const AdminSection = ({
   adminOverview,
   adminOverviewLoading,
   adminOverviewError,
+  adminBlockedUsers,
+  adminBlockedUsersCount,
   adminQuery,
   setAdminQuery,
   adminNotFound,
@@ -83,6 +88,7 @@ const AdminSection = ({
   onSendAdminBroadcast,
   formatAdminCardPrimaryName,
   formatAdminName,
+  formatBlockedName,
   formatDateTime,
   formatDateOnly,
 }: AdminSectionProps) => {
@@ -135,6 +141,55 @@ const AdminSection = ({
                 <div className="admin-metric-icon"><Bell size={18} strokeWidth={2.2} /></div>
                 <span>{t('adminNotificationsToday')}</span>
                 <strong>{adminOverview.totals.notificationsSentToday}</strong>
+              </div>
+              <div className="admin-metric admin-metric--blocked admin-metric--blocked-card">
+                <div className="admin-metric-icon"><Shield size={18} strokeWidth={2.2} /></div>
+                <span>{t('adminBlockedTitle')}</span>
+                <strong>{adminBlockedUsersCount}</strong>
+                <div className="admin-metric-details">
+                  {adminOverviewError ? (
+                    <div className="admin-state admin-state--error">{adminOverviewError}</div>
+                  ) : adminOverviewLoading && !adminOverview ? (
+                    <div className="admin-state admin-state--loading">{t('adminOverviewLoading')}</div>
+                  ) : adminBlockedUsers.length > 0 ? (
+                    <div className="admin-recent-list-clean">
+                      {adminBlockedUsers.map((item) => (
+                        <button
+                          key={item.id}
+                          type="button"
+                          className="admin-recent-row-clean"
+                          onClick={() => {
+                            setAdminQuery(item.id);
+                            onOpenAdminUser(item.id);
+                          }}
+                        >
+                          <div className="admin-recent-col">
+                            <span>Name</span>
+                            <strong>{formatBlockedName(item)}</strong>
+                          </div>
+                          <div className="admin-recent-col">
+                            <span>@</span>
+                            <strong>{item.tgUsername ? `@${item.tgUsername}` : '-'}</strong>
+                          </div>
+                          <div className="admin-recent-col admin-recent-col--id">
+                            <span>{t('adminFieldId')}</span>
+                            <strong>{item.id}</strong>
+                          </div>
+                          <div className="admin-recent-col admin-recent-col--date">
+                            <span>{t('adminFieldBlockedAt')}</span>
+                            <strong>{formatDateTime(item.blockedAt)}</strong>
+                          </div>
+                          <div className="admin-recent-col">
+                            <span>{t('adminFieldWords')}</span>
+                            <strong>{item.wordsCount}</strong>
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="admin-state">{t('adminBlockedEmpty')}</div>
+                  )}
+                </div>
               </div>
             </div>
           ) : (

@@ -39,6 +39,7 @@ export type WordItem = {
   id: number;
   wordEn: string;
   translationRu: string;
+  translationNative?: string;
   createdAt: string;
   stage?: number | null;
   nextReviewAt?: string | null;
@@ -61,14 +62,26 @@ export type AdminUserSummary = {
   postponedCount: number;
 };
 
+export type AdminBlockedUserSummary = {
+  id: string;
+  blockedAt: string;
+  displayName?: string | null;
+  tgUsername?: string | null;
+  tgFirstName?: string | null;
+  tgLastName?: string | null;
+  wordsCount: number;
+};
+
 export type AdminOverview = {
   totals: {
     users: number;
     words: number;
     notificationsSentToday: number;
+    blockedUsers: number;
   };
   activeToday: number;
   newLast7Days: number;
+  blockedUsers: AdminBlockedUserSummary[];
   recentUsers: AdminUserSummary[];
 };
 

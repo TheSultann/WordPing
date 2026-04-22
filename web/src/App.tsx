@@ -1,15 +1,17 @@
 import { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react';
-import type { Settings, Stats, WordItem, Me, AdminOverview, AdminUserSummary } from './api';
+import type { Settings, Stats, WordItem, Me, AdminBlockedUserSummary, AdminOverview, AdminUserSummary } from './api';
 import { api } from './api';
 import {
   Settings as SettingsIcon,
   BookOpen,
   House,
+  Rocket,
   Shield,
   CheckCircle2,
   AlertCircle
 } from 'lucide-react';
 import StatsSection from './components/StatsSection';
+import RocketGame from './pages/RocketGame';
 
 const minutesToTime = (minutes: number) => {
   const m = ((minutes % 1440) + 1440) % 1440;
@@ -113,6 +115,8 @@ const COPY = {
     adminNew7Days: 'Новые за 7 дней',
     adminTotalWords: 'Слов всего',
     adminNotificationsToday: 'Уведомлений сегодня',
+    adminBlockedTitle: 'Заблокировали бота',
+    adminBlockedEmpty: 'Пока никто не блокировал',
     adminLookupTitle: 'Поиск пользователя',
     adminLookupHint: 'Ищи по Telegram ID',
     adminSearchPlaceholder: 'Telegram ID',
@@ -129,6 +133,7 @@ const COPY = {
     adminUserDetails: 'Карточка пользователя',
     adminFieldId: 'ID',
     adminFieldCreated: 'Создан',
+    adminFieldBlockedAt: 'Заблокировал',
     adminFieldWords: 'Слов',
     adminFieldLearned: 'Изучил',
     adminFieldPostponed: 'Отложил',
@@ -148,6 +153,56 @@ const COPY = {
     adminBroadcastConfirmCount: 'Отправить сообщение всем пользователям? Получателей: {count}.',
     adminBroadcastPreview: 'Предпросмотр',
     adminBroadcastPreviewEmpty: 'Текст сообщения появится здесь.',
+    gameTitle: 'Rocket Run',
+    gameDistance: 'Дистанция',
+    gameDistanceUnit: 'м',
+    gameMenu: 'Меню',
+    gameRefresh: 'Обновить',
+    gameUnsupportedBadge: 'Голос недоступен',
+    gameUnsupportedTitle: 'Этот браузер не поддерживает голосовую игру.',
+    gameUnsupportedBody: 'Открой Mini App в Telegram на Android или iOS.',
+    gameLoadingBadge: 'Загрузка слов',
+    gameLoadingTitle: 'Готовим запуск',
+    gameLoadingBody: 'Загружаем знакомые слова из твоего словаря.',
+    gameNeedWordsBadge: 'Нужно больше слов',
+    gameNeedWordsTitle: 'Добавь минимум {count} слов',
+    gameNeedWordsBody: 'Сейчас готово: {countReady}.',
+    gameStartBody: 'Произнеси падающее слово раньше, чем оно долетит до ракеты.',
+    gameStartReady: 'Готово слов: {count}',
+    gameStartButton: 'Старт',
+    gameLoadFailedBadge: 'Не загрузилось',
+    gameTryAgain: 'Попробовать снова',
+    gameBack: 'Назад',
+    gameBackToMenu: 'Назад в меню',
+    gameMicRequiredBadge: 'Нужен микрофон',
+    gameMicRequiredTitle: 'Разреши доступ к микрофону',
+    gameMicRequiredBody: 'Игра слушает произношение. Разреши микрофон в Telegram и попробуй снова.',
+    gameClose: 'Закрыть',
+    gameMicStatusReady: 'Готов',
+    gameMicStatusListening: 'Слушаю',
+    gameMicStatusProcessing: 'Проверяю произношение',
+    gameMicStatusError: 'Проблема с микрофоном',
+    gameMicStatusLocked: 'Слишком поздно',
+    gameMicHintIos: 'Нажми и держи, пока произносишь слово.',
+    gameMicHintAuto: 'Автопрослушивание включено.',
+    gameMicHintTap: 'Нажми, чтобы снова включить микрофон.',
+    gameAutoMode: 'Авто режим',
+    gameHoldToSpeak: 'Говорить',
+    gameStartMic: 'Включить',
+    gameRetryMic: 'Повторить',
+    gameWords: 'Слова',
+    gameCombo: 'Комбо',
+    gameSpeed: 'Скорость',
+    gameResultBadge: 'Забег завершён',
+    gameResultSubtitle: 'Запусти ещё раз и побей своё лучшее комбо.',
+    gameResultDistance: 'Дистанция',
+    gameResultWords: 'Сбито слов',
+    gameResultBestCombo: 'Лучшее комбо',
+    gamePlayAgain: 'Ещё раз',
+    gameMicErrorDenied: 'Доступ к микрофону запрещён.',
+    gameMicErrorUnavailable: 'Микрофон недоступен.',
+    gameMicErrorNetwork: 'Ошибка сети распознавания.',
+    gameMicErrorGeneric: 'Не удалось запустить распознавание.',
   },
   uz: {
     tagline: "Aqlliroq o'rgan",
@@ -232,6 +287,8 @@ const COPY = {
     adminNew7Days: '7 kunda yangi',
     adminTotalWords: "Jami so'zlar",
     adminNotificationsToday: 'Bugungi bildirishnomalar',
+    adminBlockedTitle: 'Botni bloklaganlar',
+    adminBlockedEmpty: "Hozircha botni bloklagan yo'q",
     adminLookupTitle: 'Foydalanuvchini qidirish',
     adminLookupHint: 'Telegram ID bo‘yicha',
     adminSearchPlaceholder: 'Telegram ID',
@@ -248,6 +305,7 @@ const COPY = {
     adminUserDetails: 'Foydalanuvchi kartasi',
     adminFieldId: 'ID',
     adminFieldCreated: 'Yaratilgan',
+    adminFieldBlockedAt: 'Bloklagan vaqti',
     adminFieldWords: "So'zlar",
     adminFieldLearned: 'O‘rgangan',
     adminFieldPostponed: 'Kechiktirgan',
@@ -267,13 +325,63 @@ const COPY = {
     adminBroadcastConfirmCount: 'Barchaga yuborilsinmi? Qabul qiluvchilar soni: {count}.',
     adminBroadcastPreview: 'Oldindan ko‘rish',
     adminBroadcastPreviewEmpty: 'Xabar matni shu yerda ko‘rinadi.',
+    gameTitle: 'Rocket Run',
+    gameDistance: 'Masofa',
+    gameDistanceUnit: 'm',
+    gameMenu: 'Menyu',
+    gameRefresh: 'Yangilash',
+    gameUnsupportedBadge: 'Ovoz ishlamaydi',
+    gameUnsupportedTitle: 'Bu brauzer ovozli o‘yinni qo‘llamaydi.',
+    gameUnsupportedBody: 'Mini Appni Telegram ichida Android yoki iOS’da oching.',
+    gameLoadingBadge: 'So‘zlar yuklanmoqda',
+    gameLoadingTitle: 'Startga tayyorlayapmiz',
+    gameLoadingBody: 'Lug‘atingizdagi tanish so‘zlar yuklanmoqda.',
+    gameNeedWordsBadge: 'Yana so‘z kerak',
+    gameNeedWordsTitle: 'Kamida {count} ta so‘z qo‘shing',
+    gameNeedWordsBody: 'Hozir tayyor: {countReady}.',
+    gameStartBody: 'Tushayotgan so‘zni raketaga yetib kelishidan oldin ayting.',
+    gameStartReady: 'Tayyor so‘zlar: {count}',
+    gameStartButton: 'Boshlash',
+    gameLoadFailedBadge: 'Yuklanmadi',
+    gameTryAgain: 'Qayta urinish',
+    gameBack: 'Orqaga',
+    gameBackToMenu: 'Menyuga qaytish',
+    gameMicRequiredBadge: 'Mikrofon kerak',
+    gameMicRequiredTitle: 'Mikrofon ruxsatini yoqing',
+    gameMicRequiredBody: 'O‘yin talaffuzni tinglaydi. Telegram ichida mikrofonga ruxsat bering va yana urinib ko‘ring.',
+    gameClose: 'Yopish',
+    gameMicStatusReady: 'Tayyor',
+    gameMicStatusListening: 'Tinglayapman',
+    gameMicStatusProcessing: 'Talaffuz tekshirilmoqda',
+    gameMicStatusError: 'Mikrofon muammosi',
+    gameMicStatusLocked: 'Kech bo‘ldi',
+    gameMicHintIos: 'So‘zni aytayotganda bosib turing.',
+    gameMicHintAuto: 'Avto tinglash yoqilgan.',
+    gameMicHintTap: 'Mikrofonni qayta yoqish uchun bosing.',
+    gameAutoMode: 'Avto rejim',
+    gameHoldToSpeak: 'Gapirish',
+    gameStartMic: 'Yoqish',
+    gameRetryMic: 'Qayta urinish',
+    gameWords: 'So‘zlar',
+    gameCombo: 'Kombo',
+    gameSpeed: 'Tezlik',
+    gameResultBadge: 'Yugurish tugadi',
+    gameResultSubtitle: 'Yana urinib, eng yaxshi kombongizni yangilang.',
+    gameResultDistance: 'Masofa',
+    gameResultWords: 'Urilgan so‘zlar',
+    gameResultBestCombo: 'Eng yaxshi kombo',
+    gamePlayAgain: 'Yana o‘ynash',
+    gameMicErrorDenied: 'Mikrofon ruxsati berilmadi.',
+    gameMicErrorUnavailable: 'Mikrofon mavjud emas.',
+    gameMicErrorNetwork: 'Ovozni tanish tarmog‘ida xatolik.',
+    gameMicErrorGeneric: 'Ovozni tanishni ishga tushirib bo‘lmadi.',
   },
 } as const;
 
 type Lang = keyof typeof COPY;
 type CopyKey = keyof (typeof COPY)['ru'];
 type WordStatus = 'learned' | 'due' | 'new';
-type AppTab = 'settings' | 'stats' | 'words' | 'admin';
+type AppTab = 'settings' | 'stats' | 'words' | 'admin' | 'game';
 
 const LANG_STORAGE_KEY = 'wordping.lang';
 const ADMIN_CACHE_KEY_PREFIX = 'wordping.is_admin.';
@@ -306,11 +414,12 @@ const getStoredLang = (): Lang | null => {
 
 const getInitialTab = (): AppTab => {
   if (typeof window === 'undefined') return 'stats';
+  if (window.location.pathname === '/game') return 'game';
   const startParam = (window as any)?.Telegram?.WebApp?.initDataUnsafe?.start_param;
   if (startParam === 'stages') return 'settings';
   
   const tab = new URLSearchParams(window.location.search).get('tab');
-  if (tab === 'settings' || tab === 'stats' || tab === 'words' || tab === 'admin') {
+  if (tab === 'settings' || tab === 'stats' || tab === 'words' || tab === 'admin' || tab === 'game') {
     return tab;
   }
   return 'stats';
@@ -433,14 +542,46 @@ const App = () => {
     window.history.replaceState({}, '', nextUrl);
   }, []);
 
-  const t = (key: CopyKey, params?: Record<string, string | number>) => {
-    let result: string = COPY[lang]?.[key] ?? COPY.ru[key];
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    const handlePopState = () => {
+      setTab(getInitialTab());
+    };
+
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
+
+  const t = (key: string, params?: Record<string, string | number>) => {
+    const copyKey = key as CopyKey;
+    let result: string = COPY[lang]?.[copyKey] ?? COPY.ru[copyKey] ?? key;
     if (params) {
       Object.entries(params).forEach(([k, v]) => {
-        result = result.replaceAll(`{${k}}`, String(v));
+        result = result.split(`{${k}}`).join(String(v));
       });
     }
     return result;
+  };
+  const gameTabLabel = lang === 'uz' ? "O'yin" : 'Игра';
+  const syncTabWithLocation = (nextTab: AppTab, mode: 'push' | 'replace' = 'push') => {
+    setTab(nextTab);
+    if (typeof window === 'undefined') return;
+
+    const url = new URL(window.location.href);
+    url.pathname = nextTab === 'game' ? '/game' : '/';
+    url.searchParams.delete('tab');
+
+    const nextUrl = `${url.pathname}${url.search}${url.hash}`;
+    const currentUrl = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+    if (nextUrl === currentUrl) return;
+
+    if (mode === 'replace') {
+      window.history.replaceState({}, '', nextUrl);
+      return;
+    }
+
+    window.history.pushState({}, '', nextUrl);
   };
   const getWordStatusLabel = (status: WordStatus) => {
     if (status === 'learned') return t('learned');
@@ -462,6 +603,15 @@ const App = () => {
   };
 
   const formatAdminName = (user: AdminUserSummary) => {
+    const display = (user.displayName ?? '').trim();
+    if (display) return display;
+    const firstLast = `${user.tgFirstName ?? ''} ${user.tgLastName ?? ''}`.trim();
+    if (firstLast) return firstLast;
+    if (user.tgUsername) return `@${user.tgUsername}`;
+    return lang === 'uz' ? 'Nomsiz' : 'Без имени';
+  };
+
+  const formatBlockedName = (user: AdminBlockedUserSummary) => {
     const display = (user.displayName ?? '').trim();
     if (display) return display;
     const firstLast = `${user.tgFirstName ?? ''} ${user.tgLastName ?? ''}`.trim();
@@ -1089,23 +1239,27 @@ const App = () => {
     : adminCandidateId
       ? `${isAdmin ? t('adminLabel') : t('userIdLabel')} #${adminCandidateId}`
       : t('userFallback');
+  const isGameTabActive = tab === 'game';
   const adminUsersTitle = adminQuery.trim()
     ? (lang === 'uz' ? 'Qidiruv natijalari' : 'Результаты поиска')
     : (lang === 'uz' ? 'Foydalanuvchilar' : 'Пользователи');
 
   return (
-
-    <div className="app">
-      <div className="header">
-        <div className="header-right">
-          <div className="brand">
-            <img src="/logo.svg" className="brand-logo" alt="WordPing" />
+    <div className={`app ${tab === 'game' ? 'app--game' : ''}`}>
+      {tab !== 'game' && (
+        <div className="header">
+          <div className="header-right">
+            <div className="brand">
+              <img src="/logo.svg" className="brand-logo" alt="WordPing" />
+            </div>
+            {tab === 'stats' && <div className="user-pill">{displayName}</div>}
           </div>
-          {tab === 'stats' && <div className="user-pill">{displayName}</div>}
         </div>
-      </div>
+      )}
 
       <>
+        {tab === 'game' && <RocketGame onBackToMenu={() => syncTabWithLocation('stats')} lang={lang} t={t} />}
+
         {tab === 'stats' && (
           <StatsSection
             t={t}
@@ -1196,6 +1350,8 @@ const App = () => {
               adminOverview={adminOverview}
               adminOverviewLoading={adminOverviewLoading}
               adminOverviewError={adminOverviewError}
+              adminBlockedUsers={adminOverview?.blockedUsers ?? []}
+              adminBlockedUsersCount={adminOverview?.totals.blockedUsers ?? 0}
               adminQuery={adminQuery}
               setAdminQuery={setAdminQuery}
               adminNotFound={adminNotFound}
@@ -1228,6 +1384,7 @@ const App = () => {
               onSendAdminBroadcast={() => { void sendAdminBroadcast(); }}
               formatAdminCardPrimaryName={formatAdminCardPrimaryName}
               formatAdminName={formatAdminName}
+              formatBlockedName={formatBlockedName}
               formatDateTime={formatDateTime}
               formatDateOnly={formatDateOnly}
             />
@@ -1235,47 +1392,56 @@ const App = () => {
         )}
       </>
 
-      {notice && (
-        <div
-          className="notice"
-        >
-          <CheckCircle2 size={16} style={{ display: 'inline', marginRight: 8, verticalAlign: 'text-bottom' }} />
-          {notice}
-        </div>
-      )}
-      {error && (
-        <div
-          className="notice"
-          style={{ color: '#ef4444', borderColor: '#ef4444', backgroundColor: 'rgba(239,68,68,0.1)' }}
-        >
-          <AlertCircle size={16} style={{ display: 'inline', marginRight: 8, verticalAlign: 'text-bottom' }} />
-          {error}
-        </div>
-      )}
+      {tab !== 'game' && (
+        <>
+          {notice && (
+            <div
+              className="notice"
+            >
+              <CheckCircle2 size={16} style={{ display: 'inline', marginRight: 8, verticalAlign: 'text-bottom' }} />
+              {notice}
+            </div>
+          )}
+          {error && (
+            <div
+              className="notice"
+              style={{ color: '#ef4444', borderColor: '#ef4444', backgroundColor: 'rgba(239,68,68,0.1)' }}
+            >
+              <AlertCircle size={16} style={{ display: 'inline', marginRight: 8, verticalAlign: 'text-bottom' }} />
+              {error}
+            </div>
+          )}
 
-      <div className="tabs-container">
-        <button type="button" className={`tab-btn ${tab === 'stats' ? 'active' : ''}`} onClick={() => setTab('stats')}>
-          <span className="tab-icon"><House size={20} strokeWidth={2.1} /></span>
-          <span className="tab-label">{t('tabHome')}</span>
-        </button>
-        <button type="button" className={`tab-btn ${tab === 'words' ? 'active' : ''}`} onClick={() => setTab('words')}>
-          <span className="tab-icon"><BookOpen size={20} strokeWidth={2.1} /></span>
-          <span className="tab-label">{t('tabDictionary')}</span>
-        </button>
-        <button type="button" className={`tab-btn ${tab === 'settings' ? 'active' : ''}`} onClick={() => setTab('settings')}>
-          <span className="tab-icon"><SettingsIcon size={20} strokeWidth={2.1} /></span>
-          <span className="tab-label">{t('tabSettings')}</span>
-        </button>
-        {isAdmin && (
-          <button type="button" className={`tab-btn ${tab === 'admin' ? 'active' : ''}`} onClick={() => setTab('admin')}>
-            <span className="tab-icon"><Shield size={20} strokeWidth={2.1} /></span>
-            <span className="tab-label">{t('tabAdmin')}</span>
-          </button>
-        )}
-      </div>
+          <div className="tabs-container">
+            <button type="button" className={`tab-btn ${tab === 'stats' ? 'active' : ''}`} onClick={() => syncTabWithLocation('stats')}>
+              <span className="tab-icon"><House size={20} strokeWidth={2.1} /></span>
+              <span className="tab-label">{t('tabHome')}</span>
+            </button>
+            <button type="button" className={`tab-btn ${tab === 'words' ? 'active' : ''}`} onClick={() => syncTabWithLocation('words')}>
+              <span className="tab-icon"><BookOpen size={20} strokeWidth={2.1} /></span>
+              <span className="tab-label">{t('tabDictionary')}</span>
+            </button>
+            <button type="button" className={`tab-btn ${isGameTabActive ? 'active' : ''}`} onClick={() => syncTabWithLocation('game')}>
+              <span className="tab-icon"><Rocket size={20} strokeWidth={2.1} /></span>
+              <span className="tab-label">{gameTabLabel}</span>
+            </button>
+            <button type="button" className={`tab-btn ${tab === 'settings' ? 'active' : ''}`} onClick={() => syncTabWithLocation('settings')}>
+              <span className="tab-icon"><SettingsIcon size={20} strokeWidth={2.1} /></span>
+              <span className="tab-label">{t('tabSettings')}</span>
+            </button>
+            {isAdmin && (
+              <button type="button" className={`tab-btn ${tab === 'admin' ? 'active' : ''}`} onClick={() => syncTabWithLocation('admin')}>
+                <span className="tab-icon"><Shield size={20} strokeWidth={2.1} /></span>
+                <span className="tab-label">{t('tabAdmin')}</span>
+              </button>
+            )}
+          </div>
+        </>
+      )}
     </div>
   );
 };
 
 export default App;
+
 

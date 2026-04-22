@@ -120,9 +120,24 @@ const QUIZ_BUTTON_BY_LANG: Record<Lang, string> = {
 };
 const QUIZ_BUTTONS = Object.values(QUIZ_BUTTON_BY_LANG);
 
+const ROCKET_GAME_BUTTON_BY_LANG: Record<Lang, string> = {
+  ru: '\u{1F680} Rocket Game',
+  uz: '\u{1F680} Rocket Game',
+};
+const ROCKET_GAME_BUTTONS = Object.values(ROCKET_GAME_BUTTON_BY_LANG);
+
+const rocketGameReplyButton = (lang: Lang) => {
+  const url = buildWebAppUrl({ tab: 'game' });
+  return webAppUrl && url
+    ? { text: ROCKET_GAME_BUTTON_BY_LANG[lang], web_app: { url } }
+    : ROCKET_GAME_BUTTON_BY_LANG[lang];
+};
 
 const mainReplyKeyboard = (lang: Lang) =>
-  Markup.keyboard([[NEWS_DIGEST_BUTTON_BY_LANG[lang], QUIZ_BUTTON_BY_LANG[lang]]]).resize().persistent(true);
+  Markup.keyboard([
+    [NEWS_DIGEST_BUTTON_BY_LANG[lang], QUIZ_BUTTON_BY_LANG[lang]],
+    [rocketGameReplyButton(lang)],
+  ]).resize().persistent(true);
 const openWebAppKeyboard = (lang: Lang, params?: Record<string, string>, label?: string) => {
   const url = buildWebAppUrl(params);
   if (!url) return undefined;
@@ -298,6 +313,19 @@ bot.command('app', async (ctx) => {
   });
 });
 
+bot.command('menu', async (ctx) => {
+  if (!ctx.from) return;
+  const user = await ensureUser(ctx.from.id, toTelegramProfile(ctx.from));
+  const lang = (user.language as Lang) || 'ru';
+  const session = await getSession(BigInt(user.id));
+  if (await replyIfOnboardingPending(ctx, session, lang)) return;
+
+  await ctx.reply(lang === 'uz' ? 'Menyu yangilandi' : '\u041C\u0435\u043D\u044E \u043E\u0431\u043D\u043E\u0432\u043B\u0435\u043D\u043E', {
+    parse_mode: 'HTML',
+    ...mainReplyKeyboard(lang),
+  });
+});
+
 bot.command('add', async (ctx) => {
   if (!ctx.from) return;
   const userId = ctx.from.id;
@@ -357,6 +385,25 @@ bot.hears(NEWS_DIGEST_BUTTONS, async (ctx) => {
   const session = await getSession(BigInt(user.id));
   if (await replyIfOnboardingPending(ctx, session, lang)) return;
   await newsDigestRuntime.handleNewsDigestStart(ctx, BigInt(user.id), lang);
+});
+
+bot.hears(ROCKET_GAME_BUTTONS, async (ctx) => {
+  if (!ctx.from) return;
+
+  const user = await ensureUser(ctx.from.id, toTelegramProfile(ctx.from));
+  const lang = ((user.language as Lang) || 'ru');
+  const session = await getSession(BigInt(user.id));
+  if (await replyIfOnboardingPending(ctx, session, lang)) return;
+
+  if (!webAppUrl) {
+    await ctx.reply(webAppUnavailableText, { parse_mode: 'HTML' });
+    return;
+  }
+
+  await ctx.reply(lang === 'uz' ? 'O\u2018yinni oching' : '\u041E\u0442\u043A\u0440\u043E\u0439 \u0438\u0433\u0440\u0443', {
+    parse_mode: 'HTML',
+    ...openWebAppKeyboard(lang, { tab: 'game' }, ROCKET_GAME_BUTTON_BY_LANG[lang]),
+  });
 });
 
 bot.on('text', async (ctx) => {

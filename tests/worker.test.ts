@@ -18,6 +18,7 @@ const userId = BigInt(900000004);
 
 beforeAll(async () => {
   process.env.BOT_TOKEN = process.env.BOT_TOKEN ?? 'test_bot_token';
+  process.env.LOG_FORMAT = 'pretty';
 
   const testUrl = await prepareTestDatabase();
   process.env.DATABASE_URL = testUrl;

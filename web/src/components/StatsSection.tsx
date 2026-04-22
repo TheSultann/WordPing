@@ -60,7 +60,9 @@ const StatsSection = ({ t, lang, stats, referralCount, onInvite }: StatsSectionP
               <span className="stats-section-title__icon" aria-hidden="true">
                 <TrendingUp size={16} strokeWidth={2.4} />
               </span>
-              {lang === 'uz' ? 'Bugungi statistika' : 'Прогресс за сегодня'}
+              {lang === 'uz'
+                ? 'Bugungi statistika'
+                : '\u041f\u0440\u043e\u0433\u0440\u0435\u0441\u0441 \u0437\u0430 \u0441\u0435\u0433\u043e\u0434\u043d\u044f'}
             </h2>
             <div className="stat-grid">
               <div className="stat-card stat-card--due">
@@ -86,7 +88,7 @@ const StatsSection = ({ t, lang, stats, referralCount, onInvite }: StatsSectionP
             </div>
           </div>
 
-          <div className="invite-row">
+          <div>
             <button className="invite-cta invite-cta--full" onClick={onInvite}>
               <span className="invite-cta-main">
                 <UserPlus size={18} />

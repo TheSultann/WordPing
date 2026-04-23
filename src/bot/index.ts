@@ -127,10 +127,7 @@ const ROCKET_GAME_BUTTON_BY_LANG: Record<Lang, string> = {
 const ROCKET_GAME_BUTTONS = Object.values(ROCKET_GAME_BUTTON_BY_LANG);
 
 const rocketGameReplyButton = (lang: Lang) => {
-  const url = buildWebAppUrl({ tab: 'game' });
-  return webAppUrl && url
-    ? { text: ROCKET_GAME_BUTTON_BY_LANG[lang], web_app: { url } }
-    : ROCKET_GAME_BUTTON_BY_LANG[lang];
+  return ROCKET_GAME_BUTTON_BY_LANG[lang];
 };
 
 const mainReplyKeyboard = (lang: Lang) =>
@@ -145,11 +142,14 @@ const openWebAppKeyboard = (lang: Lang, params?: Record<string, string>, label?:
     ? Markup.inlineKeyboard([[Markup.button.webApp(label ?? webAppLabel(lang), url)]])
     : Markup.inlineKeyboard([[Markup.button.url(label ?? webAppLabel(lang), url)]]);
 };
+const normalizeBotUsername = (value?: string) => (value ?? '').trim().replace(/^@+/, '');
+const botUsername = normalizeBotUsername(process.env.BOT_USERNAME ?? process.env.VITE_BOT_USERNAME) || 'WordPing_bot';
+const buildMiniAppUrl = (startApp: 'stages' | 'game') => `https://t.me/${botUsername}/app?startapp=${startApp}`;
 const reviewFlowHintKeyboard = (lang: Lang) =>
   openWebAppKeyboard(lang, { tab: 'settings', flow: 'stages' }, `ℹ️ ${t(lang, 'btn.openGuide')}`)
   ?? Markup.inlineKeyboard([[Markup.button.callback(`ℹ️ ${t(lang, 'btn.openGuide')}`, REVIEW_FLOW_HINT_CALLBACK)]]);
 const buildGuideSpoilerText = (lang: Lang) => `<tg-spoiler>${t(lang, 'btn.openGuide')}</tg-spoiler>`;
-const buildGuideUrl = () => 'https://t.me/WordPing_bot/app?startapp=stages';
+const buildGuideUrl = () => buildMiniAppUrl('stages');
 const buildGuideSpoilerLinkText = (lang: Lang) => {
   const guideUrl = buildGuideUrl();
   return `<a href="${guideUrl}">${buildGuideSpoilerText(lang)}</a>`;
@@ -377,6 +377,24 @@ bot.hears(QUIZ_BUTTONS, async (ctx) => {
   await quizRuntime.handleQuizStart(ctx, BigInt(user.id), lang);
 });
 
+bot.hears(ROCKET_GAME_BUTTONS, async (ctx) => {
+  if (!ctx.from) return;
+
+  const user = await ensureUser(ctx.from.id, toTelegramProfile(ctx.from));
+  const lang = ((user.language as Lang) || 'ru');
+  const session = await getSession(BigInt(user.id));
+  if (await replyIfOnboardingPending(ctx, session, lang)) return;
+  if (!webAppUrl) {
+    await ctx.reply(webAppUnavailableText, { parse_mode: 'HTML' });
+    return;
+  }
+
+  await ctx.reply(lang === 'uz' ? 'Rocket Game ilovada' : '\u041e\u0442\u043a\u0440\u043e\u0439 Rocket Game', {
+    parse_mode: 'HTML',
+    ...openWebAppKeyboard(lang, { tab: 'game' }, ROCKET_GAME_BUTTON_BY_LANG[lang]),
+  });
+});
+
 bot.hears(NEWS_DIGEST_BUTTONS, async (ctx) => {
   if (!ctx.from) return;
 
@@ -385,25 +403,6 @@ bot.hears(NEWS_DIGEST_BUTTONS, async (ctx) => {
   const session = await getSession(BigInt(user.id));
   if (await replyIfOnboardingPending(ctx, session, lang)) return;
   await newsDigestRuntime.handleNewsDigestStart(ctx, BigInt(user.id), lang);
-});
-
-bot.hears(ROCKET_GAME_BUTTONS, async (ctx) => {
-  if (!ctx.from) return;
-
-  const user = await ensureUser(ctx.from.id, toTelegramProfile(ctx.from));
-  const lang = ((user.language as Lang) || 'ru');
-  const session = await getSession(BigInt(user.id));
-  if (await replyIfOnboardingPending(ctx, session, lang)) return;
-
-  if (!webAppUrl) {
-    await ctx.reply(webAppUnavailableText, { parse_mode: 'HTML' });
-    return;
-  }
-
-  await ctx.reply(lang === 'uz' ? 'O\u2018yinni oching' : '\u041E\u0442\u043A\u0440\u043E\u0439 \u0438\u0433\u0440\u0443', {
-    parse_mode: 'HTML',
-    ...openWebAppKeyboard(lang, { tab: 'game' }, ROCKET_GAME_BUTTON_BY_LANG[lang]),
-  });
 });
 
 bot.on('text', async (ctx) => {

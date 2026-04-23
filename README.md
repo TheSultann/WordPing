@@ -313,7 +313,8 @@
       - `npm run dev:api`
    3. Запусти Web App:
       - `npm run dev:web`
-   4. Для реферальных ссылок укажи `VITE_BOT_USERNAME` в `web/.env`.
+   4. Для ссылок `t.me/<bot>/app` укажи `BOT_USERNAME` в корневом `.env`.
+      Для реферальных ссылок укажи `VITE_BOT_USERNAME` в `web/.env`.
       Опционально для мгновенного показа вкладки админа укажи `VITE_ADMIN_TELEGRAM_ID`.
    5. Укажи `WEBAPP_URL` в `.env`, чтобы бот отправлял кнопку открытия приложения.
    6. Для локального теста без Telegram включи `ALLOW_DEV_AUTH=true` и используй `?devUserId=123`.

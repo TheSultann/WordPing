@@ -69,7 +69,7 @@ describe('bot integration', () => {
     expect(replyMarkup?.inline_keyboard?.[0]?.[0]?.web_app?.url).toBe('https://example.test/app');
   });
 
-  it('/menu keeps Rocket as one-tap web app button', async () => {
+  it('/menu keeps Rocket as a reply keyboard trigger', async () => {
     const callApiSpy = vi
       .spyOn(Object.getPrototypeOf(bot.telegram), 'callApi')
       .mockResolvedValue({} as any);
@@ -82,7 +82,23 @@ describe('bot integration', () => {
     expect(sendCall).toBeTruthy();
     const payload = sendCall?.[1] as any;
     const rocketButton = payload?.reply_markup?.keyboard?.[1]?.[0];
-    expect(rocketButton).toEqual({
+    expect(rocketButton).toBe('🚀 Rocket Game');
+  });
+
+  it('Rocket reply button sends an inline web app launcher', async () => {
+    const callApiSpy = vi
+      .spyOn(Object.getPrototypeOf(bot.telegram), 'callApi')
+      .mockResolvedValue({} as any);
+
+    await bot.handleUpdate(makeMessageUpdate('🚀 Rocket Game', 21), {} as any);
+
+    const sendCall = callApiSpy.mock.calls.find(
+      ([method, payload]) => method === 'sendMessage' && String((payload as any)?.text ?? '').includes('Rocket Game')
+    );
+    expect(sendCall).toBeTruthy();
+    const payload = sendCall?.[1] as any;
+    const rocketButton = payload?.reply_markup?.inline_keyboard?.[0]?.[0];
+    expect(rocketButton).toMatchObject({
       text: '🚀 Rocket Game',
       web_app: { url: 'https://example.test/app?tab=game' },
     });

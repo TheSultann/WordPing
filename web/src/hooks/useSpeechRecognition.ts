@@ -54,6 +54,7 @@ export type UseSpeechRecognitionReturn = {
   isListening: boolean;
   isSupported: boolean;
   isIOS: boolean;
+  requiresManualStart: boolean;
   error: string | null;
   errorCode: SpeechErrorCode | null;
   status: SpeechStatus;
@@ -111,9 +112,13 @@ export const useSpeechRecognition = (
   const micAccessGrantedRef = useRef(false);
   const startRequestIdRef = useRef(0);
   const languageRef = useRef(language);
-  const isIOS = /iPad|iPhone|iPod/i.test(
-    typeof navigator === 'undefined' ? '' : navigator.userAgent
-  );
+  const userAgent = typeof navigator === 'undefined' ? '' : navigator.userAgent;
+  const isIOS = /iPad|iPhone|iPod/i.test(userAgent);
+  const isAndroid = /Android/i.test(userAgent);
+  const hasTelegramWebApp =
+    typeof window !== 'undefined' &&
+    Boolean((window as Window & { Telegram?: { WebApp?: unknown } }).Telegram?.WebApp);
+  const requiresManualStart = isIOS || (isAndroid && hasTelegramWebApp);
   const SpeechRecognitionCtor = getSpeechCtor();
   const isSupported = Boolean(SpeechRecognitionCtor);
 
@@ -211,7 +216,7 @@ export const useSpeechRecognition = (
     setError(null);
     setErrorCode(null);
     manualStopRef.current = false;
-    shouldKeepAliveRef.current = !isIOS;
+    shouldKeepAliveRef.current = !requiresManualStart;
     hadResultRef.current = false;
     lastErrorRef.current = null;
     clearRestartTimer();
@@ -283,7 +288,7 @@ export const useSpeechRecognition = (
           return;
         }
 
-        if (isIOS || !shouldKeepAliveRef.current) {
+        if (requiresManualStart || !shouldKeepAliveRef.current) {
           setStatus((prev) => (prev === 'error' ? prev : 'idle'));
           return;
         }
@@ -344,6 +349,7 @@ export const useSpeechRecognition = (
     isListening,
     isSupported,
     isIOS,
+    requiresManualStart,
     error,
     errorCode,
     status,

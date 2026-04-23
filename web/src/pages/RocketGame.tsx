@@ -536,7 +536,7 @@ const RocketGame = ({ onBackToMenu, lang, t }: RocketGameProps) => {
     }));
     gameStatusRef.current = 'playing';
 
-    if (!speech.isIOS && !speech.isListening) {
+    if (!speech.requiresManualStart && !speech.isListening) {
       speech.startListening();
     }
   };
@@ -722,7 +722,7 @@ const RocketGame = ({ onBackToMenu, lang, t }: RocketGameProps) => {
     }));
     gameStatusRef.current = 'playing';
 
-    if (!speech.isIOS) {
+    if (!speech.requiresManualStart) {
       speech.startListening();
     }
   };
@@ -1187,7 +1187,11 @@ const RocketGame = ({ onBackToMenu, lang, t }: RocketGameProps) => {
 
   const speechActionLabel = !canManuallyControlSpeech
     ? null
-    : speech.isIOS
+    : speech.requiresManualStart
+      ? (speech.isIOS
+        ? (hasSpeechError ? copy.retryMic : copy.holdToSpeak)
+        : (hasSpeechError ? copy.retryMic : copy.startMic))
+      : speech.isIOS
       ? (hasSpeechError ? copy.retryMic : copy.holdToSpeak)
       : !speech.isListening || hasSpeechError
         ? hasSpeechError

@@ -416,6 +416,7 @@ const getInitialTab = (): AppTab => {
   if (typeof window === 'undefined') return 'stats';
   if (window.location.pathname === '/game') return 'game';
   const startParam = (window as any)?.Telegram?.WebApp?.initDataUnsafe?.start_param;
+  if (startParam === 'game') return 'game';
   if (startParam === 'stages') return 'settings';
   
   const tab = new URLSearchParams(window.location.search).get('tab');

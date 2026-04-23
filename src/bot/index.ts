@@ -126,17 +126,10 @@ const ROCKET_GAME_BUTTON_BY_LANG: Record<Lang, string> = {
 };
 const ROCKET_GAME_BUTTONS = Object.values(ROCKET_GAME_BUTTON_BY_LANG);
 
-const rocketGameReplyButton = (lang: Lang) => {
-  const url = buildWebAppUrl({ tab: 'game' });
-  return webAppUrl && url
-    ? { text: ROCKET_GAME_BUTTON_BY_LANG[lang], web_app: { url } }
-    : ROCKET_GAME_BUTTON_BY_LANG[lang];
-};
-
 const mainReplyKeyboard = (lang: Lang) =>
   Markup.keyboard([
     [NEWS_DIGEST_BUTTON_BY_LANG[lang], QUIZ_BUTTON_BY_LANG[lang]],
-    [rocketGameReplyButton(lang)],
+    [ROCKET_GAME_BUTTON_BY_LANG[lang]],
   ]).resize().persistent(true);
 const openWebAppKeyboard = (lang: Lang, params?: Record<string, string>, label?: string) => {
   const url = buildWebAppUrl(params);
@@ -145,11 +138,14 @@ const openWebAppKeyboard = (lang: Lang, params?: Record<string, string>, label?:
     ? Markup.inlineKeyboard([[Markup.button.webApp(label ?? webAppLabel(lang), url)]])
     : Markup.inlineKeyboard([[Markup.button.url(label ?? webAppLabel(lang), url)]]);
 };
+const buildMiniAppUrl = (startApp: 'stages' | 'game') => `https://t.me/WordPing_bot/app?startapp=${startApp}`;
+const rocketGameKeyboard = (lang: Lang) =>
+  Markup.inlineKeyboard([[Markup.button.url(ROCKET_GAME_BUTTON_BY_LANG[lang], buildMiniAppUrl('game'))]]);
 const reviewFlowHintKeyboard = (lang: Lang) =>
   openWebAppKeyboard(lang, { tab: 'settings', flow: 'stages' }, `ℹ️ ${t(lang, 'btn.openGuide')}`)
   ?? Markup.inlineKeyboard([[Markup.button.callback(`ℹ️ ${t(lang, 'btn.openGuide')}`, REVIEW_FLOW_HINT_CALLBACK)]]);
 const buildGuideSpoilerText = (lang: Lang) => `<tg-spoiler>${t(lang, 'btn.openGuide')}</tg-spoiler>`;
-const buildGuideUrl = () => 'https://t.me/WordPing_bot/app?startapp=stages';
+const buildGuideUrl = () => buildMiniAppUrl('stages');
 const buildGuideSpoilerLinkText = (lang: Lang) => {
   const guideUrl = buildGuideUrl();
   return `<a href="${guideUrl}">${buildGuideSpoilerText(lang)}</a>`;
@@ -402,7 +398,7 @@ bot.hears(ROCKET_GAME_BUTTONS, async (ctx) => {
 
   await ctx.reply(lang === 'uz' ? 'O\u2018yinni oching' : '\u041E\u0442\u043A\u0440\u043E\u0439 \u0438\u0433\u0440\u0443', {
     parse_mode: 'HTML',
-    ...openWebAppKeyboard(lang, { tab: 'game' }, ROCKET_GAME_BUTTON_BY_LANG[lang]),
+    ...rocketGameKeyboard(lang),
   });
 });
 

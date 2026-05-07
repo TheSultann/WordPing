@@ -65,6 +65,7 @@ export type UseSpeechRecognitionReturn = {
 type UseSpeechRecognitionOptions = {
   language?: string;
   onResult?: (spoken: string) => void;
+  onInterimResult?: (spoken: string) => void;
   onPermissionDenied?: () => void;
 };
 
@@ -90,10 +91,22 @@ const getMicErrorMessage = (code?: string) => {
   return 'Speech recognition failed.';
 };
 
+/** Delay before restarting after a transient error (no-speech, aborted). */
+const TRANSIENT_RESTART_DELAY_MS = 150;
+
+/** Delay before restarting after a result was delivered. */
+const RESULT_RESTART_DELAY_MS = 0;
+
+/** Delay before restarting when the session ended with no result and no error. */
+const IDLE_RESTART_DELAY_MS = 120;
+
+/** Cooldown after start() to prevent InvalidStateError on double-start. */
+const START_GUARD_MS = 140;
+
 export const useSpeechRecognition = (
   options: UseSpeechRecognitionOptions = {}
 ): UseSpeechRecognitionReturn => {
-  const { language = 'en-US', onResult, onPermissionDenied } = options;
+  const { language = 'en-US', onResult, onInterimResult, onPermissionDenied } = options;
   const [transcript, setTranscript] = useState('');
   const [isListening, setIsListening] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -101,6 +114,7 @@ export const useSpeechRecognition = (
   const [status, setStatus] = useState<SpeechStatus>('idle');
   const recognitionRef = useRef<BrowserSpeechRecognition | null>(null);
   const onResultRef = useRef(onResult);
+  const onInterimResultRef = useRef(onInterimResult);
   const onPermissionDeniedRef = useRef(onPermissionDenied);
   const restartTimerRef = useRef<number | null>(null);
   const shouldKeepAliveRef = useRef(false);
@@ -123,6 +137,7 @@ export const useSpeechRecognition = (
   const isSupported = Boolean(SpeechRecognitionCtor);
 
   onResultRef.current = onResult;
+  onInterimResultRef.current = onInterimResult;
   onPermissionDeniedRef.current = onPermissionDenied;
   languageRef.current = language;
 
@@ -146,7 +161,7 @@ export const useSpeechRecognition = (
     try {
       recognition.stop();
     } catch {
-      // no-op
+      // no-op — may already be stopped
     }
   };
 
@@ -161,17 +176,15 @@ export const useSpeechRecognition = (
       recognition.start();
       setError(null);
       setErrorCode(null);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Speech recognition failed.';
-      setError(message);
-      setErrorCode('unknown');
-      isListeningRef.current = false;
-      setIsListening(false);
-      setStatus('error');
+    } catch {
+      // Guard against InvalidStateError when recognition is already started.
+      // This can happen on fast double-calls (timer + UI). If the engine is
+      // already running, the onstart handler will fire anyway, so we silently
+      // absorb the exception instead of surfacing an error to the user.
     } finally {
       window.setTimeout(() => {
         isStartingRef.current = false;
-      }, 120);
+      }, START_GUARD_MS);
     }
   };
 
@@ -216,7 +229,9 @@ export const useSpeechRecognition = (
     setError(null);
     setErrorCode(null);
     manualStopRef.current = false;
-    shouldKeepAliveRef.current = !requiresManualStart;
+    // Always keep alive — on manual-start platforms onend will still auto-restart
+    // the engine so the user doesn't have to tap the button for every single word.
+    shouldKeepAliveRef.current = true;
     hadResultRef.current = false;
     lastErrorRef.current = null;
     clearRestartTimer();
@@ -227,7 +242,9 @@ export const useSpeechRecognition = (
       const recognition = new SpeechRecognitionCtor();
       recognition.lang = languageRef.current;
       recognition.continuous = false;
-      recognition.interimResults = false;
+      // Enable interim results for instant matching — the game can react to
+      // partial transcripts before the browser marks the result as final.
+      recognition.interimResults = true;
       recognition.maxAlternatives = 1;
       recognition.onstart = () => {
         isListeningRef.current = true;
@@ -237,21 +254,34 @@ export const useSpeechRecognition = (
       };
 
       recognition.onresult = (event) => {
-        let spoken = '';
+        let finalSpoken = '';
+        let interimSpoken = '';
         const startIndex = event.resultIndex ?? 0;
 
         for (let index = startIndex; index < event.results.length; index += 1) {
           const result = event.results[index];
-          if (!result?.isFinal && typeof result?.isFinal !== 'undefined') continue;
-          spoken = result?.[0]?.transcript?.trim() ?? spoken;
+          const text = result?.[0]?.transcript?.trim() ?? '';
+          if (!text) continue;
+
+          if (result?.isFinal) {
+            finalSpoken = text;
+          } else {
+            interimSpoken = text;
+          }
         }
 
-        if (!spoken) return;
+        // Deliver interim results immediately so the game can match early.
+        if (interimSpoken && !finalSpoken) {
+          onInterimResultRef.current?.(interimSpoken);
+          return;
+        }
+
+        if (!finalSpoken) return;
 
         hadResultRef.current = true;
         lastErrorRef.current = null;
-        onResultRef.current?.(spoken);
-        setTranscript(spoken);
+        onResultRef.current?.(finalSpoken);
+        setTranscript(finalSpoken);
         setStatus('processing');
       };
 
@@ -262,6 +292,7 @@ export const useSpeechRecognition = (
         setIsListening(false);
 
         if (nextError === 'aborted' || nextError === 'no-speech') {
+          // Transient errors — don't surface to UI, let onend handle restart.
           if (nextError === 'no-speech') {
             setErrorCode('no-speech');
           }
@@ -288,12 +319,20 @@ export const useSpeechRecognition = (
           return;
         }
 
-        if (requiresManualStart || !shouldKeepAliveRef.current) {
+        if (!shouldKeepAliveRef.current) {
           setStatus((prev) => (prev === 'error' ? prev : 'idle'));
           return;
         }
 
-        const delay = lastErrorRef.current ? 500 : hadResultRef.current ? 0 : 250;
+        // Auto-restart the recognition session. This is critical for the game:
+        // on mobile (both iOS and Android Telegram), `continuous: false` means
+        // the browser stops after every utterance. Without restart the mic goes
+        // silent after the first word.
+        const delay = lastErrorRef.current
+          ? TRANSIENT_RESTART_DELAY_MS
+          : hadResultRef.current
+            ? RESULT_RESTART_DELAY_MS
+            : IDLE_RESTART_DELAY_MS;
         hadResultRef.current = false;
         clearRestartTimer();
         restartTimerRef.current = window.setTimeout(() => {

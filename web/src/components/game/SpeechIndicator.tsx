@@ -74,7 +74,6 @@ const SpeechIndicator = ({
         onPointerDown={onHoldStart}
         onPointerUp={onHoldEnd}
         onPointerCancel={onHoldEnd}
-        onPointerLeave={onHoldEnd}
       >
         <span className={iconClassName} aria-hidden="true">
           {iconNode}

@@ -854,7 +854,9 @@ const GameCanvas = ({ sceneRef, layout }: GameCanvasProps) => {
     return () => {
       window.cancelAnimationFrame(frameId);
     };
-  }, [layout, sceneRef, size.height, size.width]);
+    // sceneRef is a stable ref -- its identity never changes between renders.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [layout, size.height, size.width]);
 
   return (
     <div
@@ -867,7 +869,7 @@ const GameCanvas = ({ sceneRef, layout }: GameCanvasProps) => {
         boxShadow: 'none',
       }}
     >
-      <canvas ref={canvasRef} className="rocket-canvas" aria-hidden="true" />
+      <canvas ref={canvasRef} className="rocket-canvas" style={{ touchAction: 'none' }} aria-hidden="true" />
     </div>
   );
 };

@@ -7,6 +7,7 @@ import GameResult from '../components/game/GameResult';
 import SpeechIndicator from '../components/game/SpeechIndicator';
 import useGameLoop from '../hooks/useGameLoop';
 import useSpeechRecognition, { type SpeechErrorCode } from '../hooks/useSpeechRecognition';
+import type { UseSpeechRecognitionReturn } from '../hooks/useSpeechRecognition';
 import type {
   GameResult as GameResultType,
   GameState,
@@ -366,6 +367,15 @@ const RocketGame = ({ onBackToMenu, lang, t }: RocketGameProps) => {
   const lastTranscriptRef = useRef('');
   const currentCardRef = useRef<WordCard | null>(null);
   const particlesRef = useRef<Particle[]>([]);
+  // Mutable refs for values consumed inside async speech callbacks.
+  // React state setters are batched and closures capture stale values,
+  // so we mirror every score/combo/lives update into these refs.
+  const scoreRef = useRef(0);
+  const wordsDestroyedRef = useRef(0);
+  const comboRef = useRef(0);
+  const bestComboRef = useRef(0);
+  const livesRemainingRef = useRef(INITIAL_LIVES);
+  const speechRef = useRef<UseSpeechRecognitionReturn | null>(null);
   const exitRef = useRef<{
     startedAt: number | null;
     nextScore: number;
@@ -420,7 +430,10 @@ const RocketGame = ({ onBackToMenu, lang, t }: RocketGameProps) => {
 
   useEffect(() => {
     gameStatusRef.current = gameState.status;
-  }, [gameState.status]);
+    scoreRef.current = gameState.score;
+    wordsDestroyedRef.current = gameState.wordsDestroyed;
+    livesRemainingRef.current = gameState.livesRemaining;
+  }, [gameState.status, gameState.score, gameState.wordsDestroyed, gameState.livesRemaining]);
 
   const syncScene = (patch: Partial<CanvasScene>) => {
     sceneRef.current = {
@@ -536,15 +549,15 @@ const RocketGame = ({ onBackToMenu, lang, t }: RocketGameProps) => {
     }));
     gameStatusRef.current = 'playing';
 
-    if (!speech.requiresManualStart && !speech.isListening) {
-      speech.startListening();
+    if (!speechRef.current?.isListening) {
+      speechRef.current?.startListening();
     }
   };
 
   const pauseGame = () => {
     if (gameStatusRef.current !== 'playing') return;
 
-    speech.stopListening();
+    speechRef.current?.stopListening();
     pauseStartedAtRef.current = getNow();
 
     syncScene({
@@ -614,7 +627,7 @@ const RocketGame = ({ onBackToMenu, lang, t }: RocketGameProps) => {
       livesRemaining: snapshot?.livesRemaining ?? prev.livesRemaining,
     }));
     gameStatusRef.current = 'finished';
-    speech.stopListening();
+    speechRef.current?.stopListening();
   };
 
   const spawnNextCard = (snapshot: RoundSnapshot) => {
@@ -646,9 +659,11 @@ const RocketGame = ({ onBackToMenu, lang, t }: RocketGameProps) => {
 
     clearRoundTransitions();
     pauseStartedAtRef.current = null;
-    speech.stopListening();
+    speechRef.current?.stopListening();
     setCombo(0);
-    const nextLivesRemaining = Math.max(0, gameState.livesRemaining - 1);
+    comboRef.current = 0;
+    // Read lives from the ref to avoid stale closure if two impacts fire quickly.
+    const nextLivesRemaining = Math.max(0, livesRemainingRef.current - 1);
     const collisionCard = {
       ...card,
       y: impactCardY,
@@ -663,15 +678,16 @@ const RocketGame = ({ onBackToMenu, lang, t }: RocketGameProps) => {
     currentCardRef.current = collisionCard;
     impactStartedAtRef.current = getNow();
     impactResolutionRef.current = {
-      score: gameState.score,
-      wordsDestroyed: gameState.wordsDestroyed,
+      score: scoreRef.current,
+      wordsDestroyed: wordsDestroyedRef.current,
       livesRemaining: nextLivesRemaining,
       combo: 0,
-      bestCombo,
+      bestCombo: bestComboRef.current,
       failedWord,
       endGame: nextLivesRemaining === 0,
     };
     gameStatusRef.current = 'impact';
+    livesRemainingRef.current = nextLivesRemaining;
     particlesRef.current = [
       ...particlesRef.current,
       ...createExplosion(canvasLayout.width / 2, canvasLayout.collisionContactY, 1.25),
@@ -722,76 +738,88 @@ const RocketGame = ({ onBackToMenu, lang, t }: RocketGameProps) => {
     }));
     gameStatusRef.current = 'playing';
 
-    if (!speech.requiresManualStart) {
-      speech.startListening();
+    if (!speechRef.current?.isListening) {
+      speechRef.current?.startListening();
+    }
+  };
+
+  /** Shared handler for both final and interim speech transcripts. */
+  const handleSpeechMatch = (spoken: string) => {
+    const currentCard = currentCardRef.current;
+    const transcript = normalizeEnglishAnswer(spoken);
+
+    if (gameStatusRef.current !== 'playing' || !currentCard || !transcript) return;
+    if (lastTranscriptRef.current === transcript) return;
+
+    lastTranscriptRef.current = transcript;
+    if (currentCard.word.acceptedAnswers.some((answer) => isMatch(transcript, answer))) {
+      // Read current values from refs — never from stale closures.
+      const nextDestroyed = wordsDestroyedRef.current + 1;
+      const awardedScore = Math.min(BASE_SCORE_PER_WORD * currentCard.comboMultiplier, MAX_SCORE_PER_WORD);
+      const nextScore = scoreRef.current + awardedScore;
+      const nextCombo = comboRef.current + 1;
+      const nextBestCombo = Math.max(bestComboRef.current, nextCombo);
+      const roundPositions = getRoundPositions(currentCard);
+      const resolvedCard = {
+        ...currentCard,
+        y: roundPositions.cardY,
+      };
+
+      clearRoundTransitions();
+      pauseStartedAtRef.current = null;
+      speechRef.current?.stopListening();
+      currentCardRef.current = resolvedCard;
+      particlesRef.current = [
+        ...particlesRef.current,
+        ...createExplosion(
+          canvasLayout.width / 2,
+          roundPositions.cardY + (canvasLayout.cardHeight * 0.44),
+          1.08
+        ),
+      ];
+
+      // Eagerly update refs so subsequent callbacks see fresh values.
+      scoreRef.current = nextScore;
+      wordsDestroyedRef.current = nextDestroyed;
+      comboRef.current = nextCombo;
+      bestComboRef.current = nextBestCombo;
+
+      exitRef.current = {
+        startedAt: getNow(),
+        nextScore,
+        nextWordsDestroyed: nextDestroyed,
+        nextLivesRemaining: livesRemainingRef.current,
+        nextCombo,
+        nextBestCombo,
+      };
+      gameStatusRef.current = 'exiting';
+
+      syncScene({
+        status: 'exiting',
+        currentCard: resolvedCard,
+        particles: particlesRef.current,
+        timeLeftProgress: 0,
+        cardFadeProgress: 0,
+      });
+
+      setCombo(nextCombo);
+      setBestCombo(nextBestCombo);
+      setGameState((prev) => ({
+        ...prev,
+        status: 'exiting',
+        score: nextScore,
+        wordsDestroyed: nextDestroyed,
+        currentCard: resolvedCard,
+        particles: particlesRef.current,
+        livesRemaining: livesRemainingRef.current,
+      }));
     }
   };
 
   const speech = useSpeechRecognition({
     language: ANSWER_SPEECH_LANG,
-    onResult: (spoken) => {
-      const currentCard = currentCardRef.current;
-      const transcript = normalizeEnglishAnswer(spoken);
-
-      if (gameStatusRef.current !== 'playing' || !currentCard || !transcript) return;
-      if (lastTranscriptRef.current === transcript) return;
-
-      lastTranscriptRef.current = transcript;
-      if (currentCard.word.acceptedAnswers.some((answer) => isMatch(transcript, answer))) {
-        const nextDestroyed = gameState.wordsDestroyed + 1;
-        const awardedScore = Math.min(BASE_SCORE_PER_WORD * currentCard.comboMultiplier, MAX_SCORE_PER_WORD);
-        const nextScore = gameState.score + awardedScore;
-        const nextCombo = combo + 1;
-        const nextBestCombo = Math.max(bestCombo, nextCombo);
-        const roundPositions = getRoundPositions(currentCard);
-        const resolvedCard = {
-          ...currentCard,
-          y: roundPositions.cardY,
-        };
-
-        clearRoundTransitions();
-        pauseStartedAtRef.current = null;
-        speech.stopListening();
-        currentCardRef.current = resolvedCard;
-        particlesRef.current = [
-          ...particlesRef.current,
-          ...createExplosion(
-            canvasLayout.width / 2,
-            roundPositions.cardY + (canvasLayout.cardHeight * 0.44),
-            1.08
-          ),
-        ];
-        exitRef.current = {
-          startedAt: getNow(),
-          nextScore,
-          nextWordsDestroyed: nextDestroyed,
-          nextLivesRemaining: gameState.livesRemaining,
-          nextCombo,
-          nextBestCombo,
-        };
-        gameStatusRef.current = 'exiting';
-
-        syncScene({
-          status: 'exiting',
-          currentCard: resolvedCard,
-          particles: particlesRef.current,
-          timeLeftProgress: 0,
-          cardFadeProgress: 0,
-        });
-
-        setCombo(nextCombo);
-        setBestCombo(nextBestCombo);
-        setGameState((prev) => ({
-          ...prev,
-          status: 'exiting',
-          score: nextScore,
-          wordsDestroyed: nextDestroyed,
-          currentCard: resolvedCard,
-          particles: particlesRef.current,
-          livesRemaining: gameState.livesRemaining,
-        }));
-      }
-    },
+    onResult: handleSpeechMatch,
+    onInterimResult: handleSpeechMatch,
     onPermissionDenied: () => {
       if (gameStatusRef.current === 'countdown') {
         resetToIdleState();
@@ -801,6 +829,7 @@ const RocketGame = ({ onBackToMenu, lang, t }: RocketGameProps) => {
       setMicModalOpen(true);
     },
   });
+  speechRef.current = speech;
 
   useEffect(() => {
     const updateViewport = () => {
@@ -853,7 +882,7 @@ const RocketGame = ({ onBackToMenu, lang, t }: RocketGameProps) => {
 
   const loadWords = async () => {
     clearRoundTransitions();
-    speech.stopListening();
+    speechRef.current?.stopListening();
     pauseStartedAtRef.current = null;
     countdownStartedAtRef.current = null;
     setCountdownValue(COUNTDOWN_STEPS);
@@ -861,6 +890,11 @@ const RocketGame = ({ onBackToMenu, lang, t }: RocketGameProps) => {
     setResult(null);
     setCombo(0);
     setBestCombo(0);
+    comboRef.current = 0;
+    bestComboRef.current = 0;
+    scoreRef.current = 0;
+    wordsDestroyedRef.current = 0;
+    livesRemainingRef.current = INITIAL_LIVES;
     currentCardRef.current = null;
     particlesRef.current = [];
 
@@ -902,6 +936,11 @@ const RocketGame = ({ onBackToMenu, lang, t }: RocketGameProps) => {
     setResult(null);
     setCombo(0);
     setBestCombo(0);
+    comboRef.current = 0;
+    bestComboRef.current = 0;
+    scoreRef.current = 0;
+    wordsDestroyedRef.current = 0;
+    livesRemainingRef.current = INITIAL_LIVES;
     lastTranscriptRef.current = '';
 
     const shuffled = shuffleWords(eligibleWords);
@@ -931,11 +970,11 @@ const RocketGame = ({ onBackToMenu, lang, t }: RocketGameProps) => {
       livesRemaining: INITIAL_LIVES,
     });
     gameStatusRef.current = 'countdown';
-    speech.startListening();
+    speechRef.current?.startListening();
   };
 
   useEffect(() => {
-    if (!speech.isSupported) {
+    if (!speechRef.current?.isSupported) {
       return;
     }
 
@@ -946,7 +985,7 @@ const RocketGame = ({ onBackToMenu, lang, t }: RocketGameProps) => {
     return () => {
       window.clearTimeout(loadTimer);
       clearRoundTransitions();
-      speech.stopListening();
+      speechRef.current?.stopListening();
     };
     // Initial game bootstrap only. The callbacks read current refs/state internally.
     // eslint-disable-next-line react-hooks/exhaustive-deps

@@ -49,6 +49,6 @@ export const isMatch = (spoken: string, target: string) => {
   if (!normalizedSpoken || !normalizedTarget) return false;
   if (normalizedSpoken === normalizedTarget) return true;
 
-  const threshold = normalizedTarget.length <= 6 ? 2 : 3;
+  const threshold = normalizedTarget.length <= 3 ? 1 : normalizedTarget.length <= 6 ? 2 : 3;
   return levenshteinDistance(normalizedSpoken, normalizedTarget) <= threshold;
 };

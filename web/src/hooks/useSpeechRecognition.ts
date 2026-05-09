@@ -54,7 +54,6 @@ export type UseSpeechRecognitionReturn = {
   isListening: boolean;
   isSupported: boolean;
   isIOS: boolean;
-  requiresManualStart: boolean;
   error: string | null;
   errorCode: SpeechErrorCode | null;
   status: SpeechStatus;
@@ -91,16 +90,10 @@ const getMicErrorMessage = (code?: string) => {
   return 'Speech recognition failed.';
 };
 
-/** Delay before restarting after a transient error (no-speech, aborted). */
+// Задержки для бесшовного перезапуска (loop)
 const TRANSIENT_RESTART_DELAY_MS = 150;
-
-/** Delay before restarting after a result was delivered. */
-const RESULT_RESTART_DELAY_MS = 0;
-
-/** Delay before restarting when the session ended with no result and no error. */
-const IDLE_RESTART_DELAY_MS = 120;
-
-/** Cooldown after start() to prevent InvalidStateError on double-start. */
+const RESULT_RESTART_DELAY_MS = 10; // Мгновенный рестарт после успеха
+const IDLE_RESTART_DELAY_MS = 50; 
 const START_GUARD_MS = 140;
 
 export const useSpeechRecognition = (
@@ -112,30 +105,28 @@ export const useSpeechRecognition = (
   const [error, setError] = useState<string | null>(null);
   const [errorCode, setErrorCode] = useState<SpeechErrorCode | null>(null);
   const [status, setStatus] = useState<SpeechStatus>('idle');
+  
   const recognitionRef = useRef<BrowserSpeechRecognition | null>(null);
   const onResultRef = useRef(onResult);
   const onInterimResultRef = useRef(onInterimResult);
   const onPermissionDeniedRef = useRef(onPermissionDenied);
+  
   const restartTimerRef = useRef<number | null>(null);
   const shouldKeepAliveRef = useRef(false);
   const manualStopRef = useRef(false);
   const hadResultRef = useRef(false);
   const lastErrorRef = useRef<string | null>(null);
-  const hasStartedSuccessfullyRef = useRef(false);
+  
   const isStartingRef = useRef(false);
   const isListeningRef = useRef(false);
   const micAccessPromiseRef = useRef<Promise<boolean> | null>(null);
   const micStreamRef = useRef<MediaStream | null>(null);
   const startRequestIdRef = useRef(0);
   const languageRef = useRef(language);
+  
   const userAgent = typeof navigator === 'undefined' ? '' : navigator.userAgent;
   const isIOS = /iPad|iPhone|iPod/i.test(userAgent);
-  const isAndroid = /Android/i.test(userAgent);
-  const hasTelegramWebApp =
-    typeof window !== 'undefined' &&
-    Boolean((window as Window & { Telegram?: { WebApp?: unknown } }).Telegram?.WebApp);
-  const requiresManualStart = isIOS || (isAndroid && hasTelegramWebApp);
-  const requiresManualStartRef = useRef(requiresManualStart);
+  
   const SpeechRecognitionCtor = getSpeechCtor();
   const isSupported = Boolean(SpeechRecognitionCtor);
 
@@ -143,7 +134,6 @@ export const useSpeechRecognition = (
   onInterimResultRef.current = onInterimResult;
   onPermissionDeniedRef.current = onPermissionDenied;
   languageRef.current = language;
-  requiresManualStartRef.current = requiresManualStart;
 
   const clearRestartTimer = () => {
     if (restartTimerRef.current !== null) {
@@ -170,15 +160,17 @@ export const useSpeechRecognition = (
     isListeningRef.current = false;
     setIsListening(false);
     setStatus((prev) => (prev === 'error' ? prev : 'idle'));
+    
     if (releaseMicrophone) {
       releaseMicrophoneStream();
     }
+    
     const recognition = recognitionRef.current;
     if (!recognition) return;
     try {
       recognition.stop();
     } catch {
-      // no-op — may already be stopped
+      // no-op
     }
   };
 
@@ -190,15 +182,14 @@ export const useSpeechRecognition = (
 
     try {
       recognition.lang = languageRef.current;
-      recognition.continuous = requiresManualStartRef.current;
+      // На iOS continuous: true часто ломается. 
+      // На Android оставляем true, чтобы не было постоянного "пиканья" при рестартах.
+      recognition.continuous = !isIOS;
       recognition.start();
       setError(null);
       setErrorCode(null);
     } catch {
-      // Guard against InvalidStateError when recognition is already started.
-      // This can happen on fast double-calls (timer + UI). If the engine is
-      // already running, the onstart handler will fire anyway, so we silently
-      // absorb the exception instead of surfacing an error to the user.
+      // Игнорируем InvalidStateError при частых перезапусках
     } finally {
       window.setTimeout(() => {
         isStartingRef.current = false;
@@ -216,6 +207,8 @@ export const useSpeechRecognition = (
     micAccessPromiseRef.current = (async () => {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       releaseMicrophoneStream();
+      // КРИТИЧНО: Удерживаем MediaStream в памяти. 
+      // Это предотвращает отключение микрофона ОС браузером!
       micStreamRef.current = stream;
       return true;
     })().catch((err: unknown) => {
@@ -253,8 +246,6 @@ export const useSpeechRecognition = (
     setError(null);
     setErrorCode(null);
     manualStopRef.current = false;
-    // Keep the session active while the game is running. Manual-start platforms
-    // do not auto-restart from timers; they rely on direct user gestures.
     shouldKeepAliveRef.current = true;
     hadResultRef.current = false;
     lastErrorRef.current = null;
@@ -265,13 +256,11 @@ export const useSpeechRecognition = (
     if (!recognitionRef.current) {
       const recognition = new SpeechRecognitionCtor();
       recognition.lang = languageRef.current;
-      recognition.continuous = requiresManualStartRef.current;
-      // Enable interim results for instant matching — the game can react to
-      // partial transcripts before the browser marks the result as final.
+      recognition.continuous = !isIOS;
       recognition.interimResults = true;
       recognition.maxAlternatives = 1;
+      
       recognition.onstart = () => {
-        hasStartedSuccessfullyRef.current = true;
         isListeningRef.current = true;
         setError(null);
         setErrorCode(null);
@@ -296,7 +285,6 @@ export const useSpeechRecognition = (
           }
         }
 
-        // Deliver interim results immediately so the game can match early.
         if (interimSpoken && !finalSpoken) {
           onInterimResultRef.current?.(interimSpoken);
           return;
@@ -318,27 +306,13 @@ export const useSpeechRecognition = (
         setIsListening(false);
 
         if (nextError === 'aborted' || nextError === 'no-speech') {
-          // Transient errors — don't surface to UI, let onend handle restart.
-          if (nextError === 'no-speech') {
-            setErrorCode('no-speech');
-          }
+          if (nextError === 'no-speech') setErrorCode('no-speech');
           setStatus('idle');
-          return;
+          return; // onend подхватит и сделает restart
         }
 
         if (nextError === 'not-allowed' || nextError === 'service-not-allowed') {
-          if (requiresManualStartRef.current && hasStartedSuccessfullyRef.current) {
-            setError(null);
-            setErrorCode(null);
-            setStatus('idle');
-            return;
-          }
-
           shouldKeepAliveRef.current = false;
-          if (requiresManualStartRef.current && hasLiveMicStream()) {
-            setStatus('idle');
-            return;
-          }
           onPermissionDeniedRef.current?.();
         }
 
@@ -351,25 +325,19 @@ export const useSpeechRecognition = (
         isListeningRef.current = false;
         setIsListening(false);
 
-        if (manualStopRef.current) {
+        if (manualStopRef.current || !shouldKeepAliveRef.current) {
           setStatus((prev) => (prev === 'error' ? prev : 'idle'));
           return;
         }
 
-        if (!shouldKeepAliveRef.current) {
-          setStatus((prev) => (prev === 'error' ? prev : 'idle'));
-          return;
-        }
-
-        // Auto-restart the recognition session. This is critical for the game:
-        // desktop Chromium stops after every utterance when `continuous` is false.
-        // Telegram WebView/iOS often reject timer-based restarts because they are
-        // not user gestures, so those platforms use the visible mic control.
+        // БЕСШОВНЫЙ ЦИКЛ: Как только распознавание остановилось (из-за паузы или мобильного лимита),
+        // мы мгновенно запускаем его снова, не требуя от юзера нажатий кнопок!
         const delay = lastErrorRef.current
           ? TRANSIENT_RESTART_DELAY_MS
           : hadResultRef.current
             ? RESULT_RESTART_DELAY_MS
             : IDLE_RESTART_DELAY_MS;
+            
         hadResultRef.current = false;
         clearRestartTimer();
         restartTimerRef.current = window.setTimeout(() => {
@@ -378,14 +346,6 @@ export const useSpeechRecognition = (
       };
 
       recognitionRef.current = recognition;
-    }
-
-    if (requiresManualStartRef.current) {
-      if (manualStopRef.current || startRequestIdRef.current !== requestId) {
-        return;
-      }
-      startRecognition();
-      return;
     }
 
     void ensureMicrophoneAccess().then((granted) => {
@@ -417,16 +377,8 @@ export const useSpeechRecognition = (
       releaseMicrophoneStream();
       const recognition = recognitionRef.current;
       if (!recognition) return;
-      try {
-        recognition.stop();
-      } catch {
-        // no-op
-      }
-      try {
-        recognition.abort();
-      } catch {
-        // no-op
-      }
+      try { recognition.stop(); } catch {}
+      try { recognition.abort(); } catch {}
     };
   }, []);
 
@@ -435,7 +387,6 @@ export const useSpeechRecognition = (
     isListening,
     isSupported,
     isIOS,
-    requiresManualStart,
     error,
     errorCode,
     status,

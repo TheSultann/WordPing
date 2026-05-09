@@ -359,6 +359,7 @@ const RocketGame = ({ onBackToMenu, lang, t }: RocketGameProps) => {
   const [countdownValue, setCountdownValue] = useState(COUNTDOWN_STEPS);
   const [viewportMetrics, setViewportMetrics] = useState(readViewportMetrics);
   const [overlayHeights, setOverlayHeights] = useState<OverlayHeights>({ hud: 0, speech: 0 });
+  
   const gameStatusRef = useRef<GameStatus>(initialGameState.status);
   const wordQueueRef = useRef<GameWord[]>([]);
   const activeIndexRef = useRef(0);
@@ -367,15 +368,14 @@ const RocketGame = ({ onBackToMenu, lang, t }: RocketGameProps) => {
   const lastTranscriptRef = useRef('');
   const currentCardRef = useRef<WordCard | null>(null);
   const particlesRef = useRef<Particle[]>([]);
-  // Mutable refs for values consumed inside async speech callbacks.
-  // React state setters are batched and closures capture stale values,
-  // so we mirror every score/combo/lives update into these refs.
+
   const scoreRef = useRef(0);
   const wordsDestroyedRef = useRef(0);
   const comboRef = useRef(0);
   const bestComboRef = useRef(0);
   const livesRemainingRef = useRef(INITIAL_LIVES);
   const speechRef = useRef<UseSpeechRecognitionReturn | null>(null);
+  
   const exitRef = useRef<{
     startedAt: number | null;
     nextScore: number;
@@ -391,6 +391,7 @@ const RocketGame = ({ onBackToMenu, lang, t }: RocketGameProps) => {
     nextCombo: 0,
     nextBestCombo: 0,
   });
+  
   const impactStartedAtRef = useRef<number | null>(null);
   const impactResolutionRef = useRef<RoundSnapshot & { endGame: boolean }>({
     score: 0,
@@ -401,6 +402,7 @@ const RocketGame = ({ onBackToMenu, lang, t }: RocketGameProps) => {
     failedWord: null,
     endGame: false,
   });
+  
   const sceneRef = useRef<CanvasScene>({
     status: 'loading',
     currentCard: null,
@@ -415,6 +417,7 @@ const RocketGame = ({ onBackToMenu, lang, t }: RocketGameProps) => {
     },
     launchStartedAt: null,
   });
+  
   const hudDockRef = useRef<HTMLDivElement | null>(null);
   const speechDockRef = useRef<HTMLDivElement | null>(null);
 
@@ -657,7 +660,7 @@ const RocketGame = ({ onBackToMenu, lang, t }: RocketGameProps) => {
     pauseStartedAtRef.current = null;
     setCombo(0);
     comboRef.current = 0;
-    // Read lives from the ref to avoid stale closure if two impacts fire quickly.
+    
     const nextLivesRemaining = Math.max(0, livesRemainingRef.current - 1);
     const collisionCard = {
       ...card,
@@ -738,7 +741,6 @@ const RocketGame = ({ onBackToMenu, lang, t }: RocketGameProps) => {
     }
   };
 
-  /** Shared handler for both final and interim speech transcripts. */
   const handleSpeechMatch = (spoken: string) => {
     const currentCard = currentCardRef.current;
     const transcript = normalizeEnglishAnswer(spoken);
@@ -748,7 +750,6 @@ const RocketGame = ({ onBackToMenu, lang, t }: RocketGameProps) => {
 
     lastTranscriptRef.current = transcript;
     if (currentCard.word.acceptedAnswers.some((answer) => isMatch(transcript, answer))) {
-      // Read current values from refs — never from stale closures.
       const nextDestroyed = wordsDestroyedRef.current + 1;
       const awardedScore = Math.min(BASE_SCORE_PER_WORD * currentCard.comboMultiplier, MAX_SCORE_PER_WORD);
       const nextScore = scoreRef.current + awardedScore;
@@ -772,7 +773,6 @@ const RocketGame = ({ onBackToMenu, lang, t }: RocketGameProps) => {
         ),
       ];
 
-      // Eagerly update refs so subsequent callbacks see fresh values.
       scoreRef.current = nextScore;
       wordsDestroyedRef.current = nextDestroyed;
       comboRef.current = nextCombo;
@@ -981,7 +981,6 @@ const RocketGame = ({ onBackToMenu, lang, t }: RocketGameProps) => {
       clearRoundTransitions();
       speechRef.current?.stopListening();
     };
-    // Initial game bootstrap only. The callbacks read current refs/state internally.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -1180,11 +1179,7 @@ const RocketGame = ({ onBackToMenu, lang, t }: RocketGameProps) => {
     micStatusLocked: t('gameMicStatusLocked'),
     countdownTitle: lang === 'uz' ? 'Tayyorlan' : 'Готовься',
     countdownHint: lang === 'uz' ? "Mikrofon yoqildi. Startdan keyin inglizcha ayting." : 'Микрофон уже включён. После старта говори по-английски.',
-    micHintIos: t('gameMicHintIos'),
-    micHintAuto: t('gameMicHintAuto'),
-    micHintTap: t('gameMicHintTap'),
     autoMode: t('gameAutoMode'),
-    holdToSpeak: t('gameHoldToSpeak'),
     startMic: t('gameStartMic'),
     retryMic: t('gameRetryMic'),
     wordsLabel: t('gameWords'),
@@ -1218,18 +1213,11 @@ const RocketGame = ({ onBackToMenu, lang, t }: RocketGameProps) => {
     return copy.micStatusReady;
   })();
 
+  // Убрана зависимость от holdToSpeak. Просто даем возможность кликнуть и рестартануть
   const speechActionLabel = !canManuallyControlSpeech
     ? null
-    : speech.requiresManualStart
-      ? (speech.isIOS
-        ? (hasSpeechError ? copy.retryMic : copy.holdToSpeak)
-        : (hasSpeechError ? copy.retryMic : copy.startMic))
-      : speech.isIOS
-      ? (hasSpeechError ? copy.retryMic : copy.holdToSpeak)
-      : !speech.isListening || hasSpeechError
-        ? hasSpeechError
-          ? copy.retryMic
-          : copy.startMic
+    : (!speech.isListening || hasSpeechError)
+        ? (hasSpeechError ? copy.retryMic : copy.startMic)
         : null;
 
   const wordsReady = eligibleWords.length >= MIN_WORDS;
@@ -1396,8 +1384,6 @@ const RocketGame = ({ onBackToMenu, lang, t }: RocketGameProps) => {
               disabled={gameState.status !== 'playing'}
               actionLabel={gameState.status === 'countdown' ? null : speechActionLabel}
               onTapStart={gameState.status === 'playing' ? speech.startListening : undefined}
-              onHoldStart={gameState.status === 'playing' ? speech.startListening : undefined}
-              onHoldEnd={gameState.status === 'playing' ? () => speech.stopListening({ releaseMicrophone: false }) : undefined}
             />
           </div>
 

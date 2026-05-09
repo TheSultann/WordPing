@@ -10,21 +10,16 @@ type SpeechIndicatorProps = {
   disabled?: boolean;
   actionLabel?: string | null;
   onTapStart?: () => void;
-  onHoldStart?: () => void;
-  onHoldEnd?: () => void;
 };
 
 const SpeechIndicator = ({
   status,
   label,
-  isIOS,
   isListening,
   hasError,
   disabled = false,
   actionLabel,
   onTapStart,
-  onHoldStart,
-  onHoldEnd,
 }: SpeechIndicatorProps) => {
   const toneClass = hasError
     ? 'is-error'
@@ -34,12 +29,9 @@ const SpeechIndicator = ({
         ? 'is-listening'
         : '';
 
-  const shouldShowTapButton = !isIOS && actionLabel && onTapStart;
-  const shouldShowHoldButton = isIOS && actionLabel && onHoldStart && onHoldEnd;
+  const shouldShowTapButton = actionLabel && onTapStart;
   const showStatusDot = !hasError && (status === 'listening' || status === 'processing');
-  const displayLabel = (shouldShowTapButton || shouldShowHoldButton)
-    ? actionLabel
-    : label;
+  const displayLabel = shouldShowTapButton ? actionLabel : label;
 
   const iconNode = hasError
     ? <TriangleAlert size={16} strokeWidth={2.3} />
@@ -49,6 +41,8 @@ const SpeechIndicator = ({
 
   const iconClassName = `speech-indicator__icon${showStatusDot ? ' speech-indicator__icon--dot' : ''}`;
 
+  // Теперь мы используем только onClick (onTapStart). 
+  // Удержание больше не требуется, микрофон работает в бесшовном цикле.
   if (shouldShowTapButton) {
     return (
       <button
@@ -56,24 +50,6 @@ const SpeechIndicator = ({
         className={`speech-indicator speech-indicator--action ${toneClass} ${isListening ? 'is-active' : ''}`}
         disabled={disabled}
         onClick={onTapStart}
-      >
-        <span className={iconClassName} aria-hidden="true">
-          {iconNode}
-        </span>
-        <span className="speech-indicator__label">{displayLabel}</span>
-      </button>
-    );
-  }
-
-  if (shouldShowHoldButton) {
-    return (
-      <button
-        type="button"
-        className={`speech-indicator speech-indicator--action ${toneClass} ${isListening ? 'is-active' : ''}`}
-        disabled={disabled}
-        onPointerDown={onHoldStart}
-        onPointerUp={onHoldEnd}
-        onPointerCancel={onHoldEnd}
       >
         <span className={iconClassName} aria-hidden="true">
           {iconNode}

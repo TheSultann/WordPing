@@ -252,8 +252,8 @@ export const useSpeechRecognition = (
     setError(null);
     setErrorCode(null);
     manualStopRef.current = false;
-    // Always keep alive — on manual-start platforms onend will still auto-restart
-    // the engine so the user doesn't have to tap the button for every single word.
+    // Keep the session active while the game is running. Manual-start platforms
+    // do not auto-restart from timers; they rely on direct user gestures.
     shouldKeepAliveRef.current = true;
     hadResultRef.current = false;
     lastErrorRef.current = null;
@@ -373,6 +373,14 @@ export const useSpeechRecognition = (
       };
 
       recognitionRef.current = recognition;
+    }
+
+    if (requiresManualStartRef.current) {
+      if (manualStopRef.current || startRequestIdRef.current !== requestId) {
+        return;
+      }
+      startRecognition();
+      return;
     }
 
     void ensureMicrophoneAccess().then((granted) => {

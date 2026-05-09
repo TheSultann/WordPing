@@ -548,10 +548,6 @@ const RocketGame = ({ onBackToMenu, lang, t }: RocketGameProps) => {
       livesRemaining: options?.livesRemaining ?? prev.livesRemaining,
     }));
     gameStatusRef.current = 'playing';
-
-    if (!speechRef.current?.isListening) {
-      speechRef.current?.startListening();
-    }
   };
 
   const pauseGame = () => {
@@ -659,7 +655,6 @@ const RocketGame = ({ onBackToMenu, lang, t }: RocketGameProps) => {
 
     clearRoundTransitions();
     pauseStartedAtRef.current = null;
-    speechRef.current?.stopListening();
     setCombo(0);
     comboRef.current = 0;
     // Read lives from the ref to avoid stale closure if two impacts fire quickly.
@@ -767,7 +762,6 @@ const RocketGame = ({ onBackToMenu, lang, t }: RocketGameProps) => {
 
       clearRoundTransitions();
       pauseStartedAtRef.current = null;
-      speechRef.current?.stopListening();
       currentCardRef.current = resolvedCard;
       particlesRef.current = [
         ...particlesRef.current,

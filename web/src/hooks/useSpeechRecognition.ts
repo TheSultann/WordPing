@@ -123,7 +123,8 @@ export const useSpeechRecognition = (
   const lastErrorRef = useRef<string | null>(null);
   const isStartingRef = useRef(false);
   const isListeningRef = useRef(false);
-  const micAccessGrantedRef = useRef(false);
+  const micAccessPromiseRef = useRef<Promise<boolean> | null>(null);
+  const micStreamRef = useRef<MediaStream | null>(null);
   const startRequestIdRef = useRef(0);
   const languageRef = useRef(language);
   const userAgent = typeof navigator === 'undefined' ? '' : navigator.userAgent;
@@ -148,6 +149,15 @@ export const useSpeechRecognition = (
     }
   };
 
+  const hasLiveMicStream = () => (
+    micStreamRef.current?.getAudioTracks().some((track) => track.readyState === 'live') ?? false
+  );
+
+  const releaseMicrophoneStream = () => {
+    micStreamRef.current?.getTracks().forEach((track) => track.stop());
+    micStreamRef.current = null;
+  };
+
   const stopListening = () => {
     startRequestIdRef.current += 1;
     manualStopRef.current = true;
@@ -156,6 +166,7 @@ export const useSpeechRecognition = (
     isListeningRef.current = false;
     setIsListening(false);
     setStatus((prev) => (prev === 'error' ? prev : 'idle'));
+    releaseMicrophoneStream();
     const recognition = recognitionRef.current;
     if (!recognition) return;
     try {
@@ -189,17 +200,19 @@ export const useSpeechRecognition = (
   };
 
   const ensureMicrophoneAccess = async () => {
-    if (micAccessGrantedRef.current) return true;
     if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
       return true;
     }
+    if (hasLiveMicStream()) return true;
+    if (micAccessPromiseRef.current) return micAccessPromiseRef.current;
 
-    try {
+    micAccessPromiseRef.current = (async () => {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      stream.getTracks().forEach((track) => track.stop());
-      micAccessGrantedRef.current = true;
+      releaseMicrophoneStream();
+      micStreamRef.current = stream;
       return true;
-    } catch (err) {
+    })().catch((err: unknown) => {
+      releaseMicrophoneStream();
       const code = err instanceof DOMException ? err.name : '';
       const normalizedCode =
         code === 'NotAllowedError' || code === 'PermissionDeniedError'
@@ -214,7 +227,11 @@ export const useSpeechRecognition = (
         onPermissionDeniedRef.current?.();
       }
       return false;
-    }
+    }).finally(() => {
+      micAccessPromiseRef.current = null;
+    });
+
+    return micAccessPromiseRef.current;
   };
 
   const startListening = () => {
@@ -349,6 +366,7 @@ export const useSpeechRecognition = (
         return;
       }
       if (manualStopRef.current || startRequestIdRef.current !== requestId) {
+        releaseMicrophoneStream();
         return;
       }
       startRecognition();
@@ -368,6 +386,7 @@ export const useSpeechRecognition = (
       shouldKeepAliveRef.current = false;
       manualStopRef.current = true;
       isListeningRef.current = false;
+      releaseMicrophoneStream();
       const recognition = recognitionRef.current;
       if (!recognition) return;
       try {

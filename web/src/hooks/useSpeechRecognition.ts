@@ -121,6 +121,7 @@ export const useSpeechRecognition = (
   const manualStopRef = useRef(false);
   const hadResultRef = useRef(false);
   const lastErrorRef = useRef<string | null>(null);
+  const hasStartedSuccessfullyRef = useRef(false);
   const isStartingRef = useRef(false);
   const isListeningRef = useRef(false);
   const micAccessPromiseRef = useRef<Promise<boolean> | null>(null);
@@ -270,8 +271,10 @@ export const useSpeechRecognition = (
       recognition.interimResults = true;
       recognition.maxAlternatives = 1;
       recognition.onstart = () => {
+        hasStartedSuccessfullyRef.current = true;
         isListeningRef.current = true;
         setError(null);
+        setErrorCode(null);
         setIsListening(true);
         setStatus('listening');
       };
@@ -324,6 +327,13 @@ export const useSpeechRecognition = (
         }
 
         if (nextError === 'not-allowed' || nextError === 'service-not-allowed') {
+          if (requiresManualStartRef.current && hasStartedSuccessfullyRef.current) {
+            setError(null);
+            setErrorCode(null);
+            setStatus('idle');
+            return;
+          }
+
           shouldKeepAliveRef.current = false;
           if (requiresManualStartRef.current && hasLiveMicStream()) {
             setStatus('idle');
@@ -347,11 +357,6 @@ export const useSpeechRecognition = (
         }
 
         if (!shouldKeepAliveRef.current) {
-          setStatus((prev) => (prev === 'error' ? prev : 'idle'));
-          return;
-        }
-
-        if (requiresManualStartRef.current) {
           setStatus((prev) => (prev === 'error' ? prev : 'idle'));
           return;
         }

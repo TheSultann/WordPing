@@ -59,7 +59,7 @@ export type UseSpeechRecognitionReturn = {
   errorCode: SpeechErrorCode | null;
   status: SpeechStatus;
   startListening: () => void;
-  stopListening: () => void;
+  stopListening: (options?: { releaseMicrophone?: boolean }) => void;
 };
 
 type UseSpeechRecognitionOptions = {
@@ -134,6 +134,7 @@ export const useSpeechRecognition = (
     typeof window !== 'undefined' &&
     Boolean((window as Window & { Telegram?: { WebApp?: unknown } }).Telegram?.WebApp);
   const requiresManualStart = isIOS || (isAndroid && hasTelegramWebApp);
+  const requiresManualStartRef = useRef(requiresManualStart);
   const SpeechRecognitionCtor = getSpeechCtor();
   const isSupported = Boolean(SpeechRecognitionCtor);
 
@@ -141,6 +142,7 @@ export const useSpeechRecognition = (
   onInterimResultRef.current = onInterimResult;
   onPermissionDeniedRef.current = onPermissionDenied;
   languageRef.current = language;
+  requiresManualStartRef.current = requiresManualStart;
 
   const clearRestartTimer = () => {
     if (restartTimerRef.current !== null) {
@@ -158,7 +160,8 @@ export const useSpeechRecognition = (
     micStreamRef.current = null;
   };
 
-  const stopListening = () => {
+  const stopListening = (options: { releaseMicrophone?: boolean } = {}) => {
+    const { releaseMicrophone = true } = options;
     startRequestIdRef.current += 1;
     manualStopRef.current = true;
     shouldKeepAliveRef.current = false;
@@ -166,7 +169,9 @@ export const useSpeechRecognition = (
     isListeningRef.current = false;
     setIsListening(false);
     setStatus((prev) => (prev === 'error' ? prev : 'idle'));
-    releaseMicrophoneStream();
+    if (releaseMicrophone) {
+      releaseMicrophoneStream();
+    }
     const recognition = recognitionRef.current;
     if (!recognition) return;
     try {
@@ -184,6 +189,7 @@ export const useSpeechRecognition = (
 
     try {
       recognition.lang = languageRef.current;
+      recognition.continuous = requiresManualStartRef.current;
       recognition.start();
       setError(null);
       setErrorCode(null);
@@ -258,7 +264,7 @@ export const useSpeechRecognition = (
     if (!recognitionRef.current) {
       const recognition = new SpeechRecognitionCtor();
       recognition.lang = languageRef.current;
-      recognition.continuous = false;
+      recognition.continuous = requiresManualStartRef.current;
       // Enable interim results for instant matching — the game can react to
       // partial transcripts before the browser marks the result as final.
       recognition.interimResults = true;
@@ -319,6 +325,10 @@ export const useSpeechRecognition = (
 
         if (nextError === 'not-allowed' || nextError === 'service-not-allowed') {
           shouldKeepAliveRef.current = false;
+          if (requiresManualStartRef.current && hasLiveMicStream()) {
+            setStatus('idle');
+            return;
+          }
           onPermissionDeniedRef.current?.();
         }
 
@@ -341,10 +351,15 @@ export const useSpeechRecognition = (
           return;
         }
 
+        if (requiresManualStartRef.current) {
+          setStatus((prev) => (prev === 'error' ? prev : 'idle'));
+          return;
+        }
+
         // Auto-restart the recognition session. This is critical for the game:
-        // on mobile (both iOS and Android Telegram), `continuous: false` means
-        // the browser stops after every utterance. Without restart the mic goes
-        // silent after the first word.
+        // desktop Chromium stops after every utterance when `continuous` is false.
+        // Telegram WebView/iOS often reject timer-based restarts because they are
+        // not user gestures, so those platforms use the visible mic control.
         const delay = lastErrorRef.current
           ? TRANSIENT_RESTART_DELAY_MS
           : hadResultRef.current

@@ -1397,7 +1397,7 @@ const RocketGame = ({ onBackToMenu, lang, t }: RocketGameProps) => {
               actionLabel={gameState.status === 'countdown' ? null : speechActionLabel}
               onTapStart={gameState.status === 'playing' ? speech.startListening : undefined}
               onHoldStart={gameState.status === 'playing' ? speech.startListening : undefined}
-              onHoldEnd={gameState.status === 'playing' ? speech.stopListening : undefined}
+              onHoldEnd={gameState.status === 'playing' ? () => speech.stopListening({ releaseMicrophone: false }) : undefined}
             />
           </div>
 

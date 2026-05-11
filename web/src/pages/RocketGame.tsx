@@ -356,6 +356,7 @@ const RocketGame = ({ onBackToMenu, lang, t }: RocketGameProps) => {
   const [result, setResult] = useState<GameResultType | null>(null);
   const [loadError, setLoadError] = useState('');
   const [micModalOpen, setMicModalOpen] = useState(false);
+  const [isStartingGame, setIsStartingGame] = useState(false);
   const [countdownValue, setCountdownValue] = useState(COUNTDOWN_STEPS);
   const [viewportMetrics, setViewportMetrics] = useState(readViewportMetrics);
   const [overlayHeights, setOverlayHeights] = useState<OverlayHeights>({ hud: 0, speech: 0 });
@@ -368,6 +369,7 @@ const RocketGame = ({ onBackToMenu, lang, t }: RocketGameProps) => {
   const lastTranscriptRef = useRef('');
   const currentCardRef = useRef<WordCard | null>(null);
   const particlesRef = useRef<Particle[]>([]);
+  const isStartingGameRef = useRef(false);
 
   const scoreRef = useRef(0);
   const wordsDestroyedRef = useRef(0);
@@ -737,7 +739,7 @@ const RocketGame = ({ onBackToMenu, lang, t }: RocketGameProps) => {
     gameStatusRef.current = 'playing';
 
     if (!speechRef.current?.isListening) {
-      speechRef.current?.startListening();
+      void speechRef.current?.startListening();
     }
   };
 
@@ -920,51 +922,62 @@ const RocketGame = ({ onBackToMenu, lang, t }: RocketGameProps) => {
     }
   };
 
-  const startGame = () => {
-    if (eligibleWords.length < MIN_WORDS) return;
+  const startGame = async () => {
+    if (eligibleWords.length < MIN_WORDS || isStartingGameRef.current) return;
 
-    clearRoundTransitions();
-    pauseStartedAtRef.current = null;
-    setMicModalOpen(false);
-    setLoadError('');
-    setResult(null);
-    setCombo(0);
-    setBestCombo(0);
-    comboRef.current = 0;
-    bestComboRef.current = 0;
-    scoreRef.current = 0;
-    wordsDestroyedRef.current = 0;
-    livesRemainingRef.current = INITIAL_LIVES;
-    lastTranscriptRef.current = '';
+    isStartingGameRef.current = true;
+    setIsStartingGame(true);
+    try {
+      clearRoundTransitions();
+      pauseStartedAtRef.current = null;
+      setMicModalOpen(false);
+      setLoadError('');
+      setResult(null);
+      setCombo(0);
+      setBestCombo(0);
+      comboRef.current = 0;
+      bestComboRef.current = 0;
+      scoreRef.current = 0;
+      wordsDestroyedRef.current = 0;
+      livesRemainingRef.current = INITIAL_LIVES;
+      lastTranscriptRef.current = '';
 
-    const shuffled = shuffleWords(eligibleWords);
-    wordQueueRef.current = shuffled;
-    activeIndexRef.current = 0;
+      const micReady = await (speechRef.current?.startListening() ?? Promise.resolve(false));
+      if (!micReady) {
+        return;
+      }
 
-    currentCardRef.current = null;
-    particlesRef.current = [];
-    countdownStartedAtRef.current = getNow();
-    setCountdownValue(COUNTDOWN_STEPS);
+      const shuffled = shuffleWords(eligibleWords);
+      wordQueueRef.current = shuffled;
+      activeIndexRef.current = 0;
 
-    syncScene({
-      status: 'countdown',
-      currentCard: null,
-      particles: [],
-      timeLeftProgress: 1,
-      rocket: getActiveRocket(),
-      launchStartedAt: null,
-    });
+      currentCardRef.current = null;
+      particlesRef.current = [];
+      countdownStartedAtRef.current = getNow();
+      setCountdownValue(COUNTDOWN_STEPS);
 
-    setGameState({
-      status: 'countdown',
-      score: 0,
-      wordsDestroyed: 0,
-      currentCard: null,
-      particles: [],
-      livesRemaining: INITIAL_LIVES,
-    });
-    gameStatusRef.current = 'countdown';
-    speechRef.current?.startListening();
+      syncScene({
+        status: 'countdown',
+        currentCard: null,
+        particles: [],
+        timeLeftProgress: 1,
+        rocket: getActiveRocket(),
+        launchStartedAt: null,
+      });
+
+      setGameState({
+        status: 'countdown',
+        score: 0,
+        wordsDestroyed: 0,
+        currentCard: null,
+        particles: [],
+        livesRemaining: INITIAL_LIVES,
+      });
+      gameStatusRef.current = 'countdown';
+    } finally {
+      isStartingGameRef.current = false;
+      setIsStartingGame(false);
+    }
   };
 
   useEffect(() => {
@@ -1335,7 +1348,12 @@ const RocketGame = ({ onBackToMenu, lang, t }: RocketGameProps) => {
             <div className="rocket-game__badge rocket-game__badge--accent">{copy.startReady}</div>
           </div>
 
-          <button type="button" className="btn-primary rocket-game__start-btn" onClick={startGame}>
+          <button
+            type="button"
+            className="btn-primary rocket-game__start-btn"
+            disabled={isStartingGame}
+            onClick={() => { void startGame(); }}
+          >
             {copy.startButton}
           </button>
         </div>
@@ -1383,7 +1401,7 @@ const RocketGame = ({ onBackToMenu, lang, t }: RocketGameProps) => {
               hasError={hasSpeechError}
               disabled={gameState.status !== 'playing'}
               actionLabel={gameState.status === 'countdown' ? null : speechActionLabel}
-              onTapStart={gameState.status === 'playing' ? speech.startListening : undefined}
+              onTapStart={gameState.status === 'playing' ? () => { void speech.startListening(); } : undefined}
             />
           </div>
 
@@ -1410,7 +1428,7 @@ const RocketGame = ({ onBackToMenu, lang, t }: RocketGameProps) => {
                 distanceUnit={copy.distanceUnit}
                 playAgainLabel={copy.playAgain}
                 backLabel={copy.backToMenu}
-                onPlayAgain={startGame}
+                onPlayAgain={() => { void startGame(); }}
                 onBackToMenu={onBackToMenu}
               />
             </div>
@@ -1433,9 +1451,9 @@ const RocketGame = ({ onBackToMenu, lang, t }: RocketGameProps) => {
                   if (gameState.status === 'paused') {
                     resumeGame();
                   } else if (gameState.status === 'playing') {
-                    speech.startListening();
+                    void speech.startListening();
                   } else {
-                    startGame();
+                    void startGame();
                   }
                 }}
               >

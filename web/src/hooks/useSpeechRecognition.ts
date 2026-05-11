@@ -54,10 +54,11 @@ export type UseSpeechRecognitionReturn = {
   isListening: boolean;
   isSupported: boolean;
   isIOS: boolean;
+  requiresManualStart: boolean;
   error: string | null;
   errorCode: SpeechErrorCode | null;
   status: SpeechStatus;
-  startListening: () => void;
+  startListening: () => Promise<boolean>;
   stopListening: (options?: { releaseMicrophone?: boolean }) => void;
 };
 
@@ -90,6 +91,38 @@ const getMicErrorMessage = (code?: string) => {
   return 'Speech recognition failed.';
 };
 
+export type SpeechRecognitionPolicyInput = {
+  userAgent: string;
+  hasTelegramWebApp: boolean;
+};
+
+export type SpeechRecognitionPolicy = {
+  isIOS: boolean;
+  isAndroid: boolean;
+  hasTelegramWebApp: boolean;
+  requiresManualStart: boolean;
+  useMediaPreflight: boolean;
+  autoRestart: boolean;
+};
+
+export const getSpeechRecognitionPolicy = ({
+  userAgent,
+  hasTelegramWebApp,
+}: SpeechRecognitionPolicyInput): SpeechRecognitionPolicy => {
+  const isIOS = /iPad|iPhone|iPod/i.test(userAgent);
+  const isAndroid = /Android/i.test(userAgent);
+  const requiresManualStart = isIOS || hasTelegramWebApp;
+
+  return {
+    isIOS,
+    isAndroid,
+    hasTelegramWebApp,
+    requiresManualStart,
+    useMediaPreflight: !isIOS && !hasTelegramWebApp,
+    autoRestart: !requiresManualStart,
+  };
+};
+
 // Задержки для бесшовного перезапуска (loop)
 const TRANSIENT_RESTART_DELAY_MS = 150;
 const RESULT_RESTART_DELAY_MS = 10; // Мгновенный рестарт после успеха
@@ -116,6 +149,7 @@ export const useSpeechRecognition = (
   const manualStopRef = useRef(false);
   const hadResultRef = useRef(false);
   const lastErrorRef = useRef<string | null>(null);
+  const hasStartedSuccessfullyRef = useRef(false);
   
   const isStartingRef = useRef(false);
   const isListeningRef = useRef(false);
@@ -123,9 +157,18 @@ export const useSpeechRecognition = (
   const micStreamRef = useRef<MediaStream | null>(null);
   const startRequestIdRef = useRef(0);
   const languageRef = useRef(language);
+  const startPromiseRef = useRef<{
+    resolve: (granted: boolean) => void;
+  } | null>(null);
   
   const userAgent = typeof navigator === 'undefined' ? '' : navigator.userAgent;
-  const isIOS = /iPad|iPhone|iPod/i.test(userAgent);
+  const hasTelegramWebApp =
+    typeof window !== 'undefined' &&
+    Boolean((window as Window & { Telegram?: { WebApp?: unknown } }).Telegram?.WebApp);
+  const speechPolicy = getSpeechRecognitionPolicy({ userAgent, hasTelegramWebApp });
+  const policyRef = useRef(speechPolicy);
+  const isIOS = speechPolicy.isIOS;
+  const requiresManualStart = speechPolicy.requiresManualStart;
   
   const SpeechRecognitionCtor = getSpeechCtor();
   const isSupported = Boolean(SpeechRecognitionCtor);
@@ -134,6 +177,14 @@ export const useSpeechRecognition = (
   onInterimResultRef.current = onInterimResult;
   onPermissionDeniedRef.current = onPermissionDenied;
   languageRef.current = language;
+  policyRef.current = speechPolicy;
+
+  const settleStartRequest = (granted: boolean) => {
+    const pending = startPromiseRef.current;
+    if (!pending) return;
+    startPromiseRef.current = null;
+    pending.resolve(granted);
+  };
 
   const clearRestartTimer = () => {
     if (restartTimerRef.current !== null) {
@@ -160,6 +211,7 @@ export const useSpeechRecognition = (
     isListeningRef.current = false;
     setIsListening(false);
     setStatus((prev) => (prev === 'error' ? prev : 'idle'));
+    settleStartRequest(false);
     
     if (releaseMicrophone) {
       releaseMicrophoneStream();
@@ -184,12 +236,19 @@ export const useSpeechRecognition = (
       recognition.lang = languageRef.current;
       // На iOS continuous: true часто ломается. 
       // На Android оставляем true, чтобы не было постоянного "пиканья" при рестартах.
-      recognition.continuous = !isIOS;
+      recognition.continuous = policyRef.current.requiresManualStart;
       recognition.start();
       setError(null);
       setErrorCode(null);
-    } catch {
+    } catch (err) {
       // Игнорируем InvalidStateError при частых перезапусках
+      const code = err instanceof DOMException ? err.name : '';
+      if (code !== 'InvalidStateError') {
+        setError(getMicErrorMessage('unknown'));
+        setErrorCode('unknown');
+        setStatus('error');
+      }
+      settleStartRequest(code === 'InvalidStateError');
     } finally {
       window.setTimeout(() => {
         isStartingRef.current = false;
@@ -234,13 +293,15 @@ export const useSpeechRecognition = (
     return micAccessPromiseRef.current;
   };
 
-  const startListening = () => {
+  const startListening = (): Promise<boolean> => {
     if (!SpeechRecognitionCtor) {
       setError('Speech recognition is not supported in this browser.');
       setErrorCode('not-supported');
       setStatus('error');
-      return;
+      return Promise.resolve(false);
     }
+
+    if (isListeningRef.current) return Promise.resolve(true);
 
     setTranscript('');
     setError(null);
@@ -250,22 +311,28 @@ export const useSpeechRecognition = (
     hadResultRef.current = false;
     lastErrorRef.current = null;
     clearRestartTimer();
+    settleStartRequest(false);
     const requestId = startRequestIdRef.current + 1;
     startRequestIdRef.current = requestId;
+    const startPromise = new Promise<boolean>((resolve) => {
+      startPromiseRef.current = { resolve };
+    });
 
     if (!recognitionRef.current) {
       const recognition = new SpeechRecognitionCtor();
       recognition.lang = languageRef.current;
-      recognition.continuous = !isIOS;
+      recognition.continuous = policyRef.current.requiresManualStart;
       recognition.interimResults = true;
       recognition.maxAlternatives = 1;
       
       recognition.onstart = () => {
+        hasStartedSuccessfullyRef.current = true;
         isListeningRef.current = true;
         setError(null);
         setErrorCode(null);
         setIsListening(true);
         setStatus('listening');
+        settleStartRequest(true);
       };
 
       recognition.onresult = (event) => {
@@ -312,7 +379,16 @@ export const useSpeechRecognition = (
         }
 
         if (nextError === 'not-allowed' || nextError === 'service-not-allowed') {
+          if (policyRef.current.requiresManualStart && hasStartedSuccessfullyRef.current) {
+            setError(null);
+            setErrorCode(null);
+            setStatus('idle');
+            settleStartRequest(true);
+            return;
+          }
+
           shouldKeepAliveRef.current = false;
+          settleStartRequest(false);
           onPermissionDeniedRef.current?.();
         }
 
@@ -325,7 +401,7 @@ export const useSpeechRecognition = (
         isListeningRef.current = false;
         setIsListening(false);
 
-        if (manualStopRef.current || !shouldKeepAliveRef.current) {
+        if (manualStopRef.current || !shouldKeepAliveRef.current || !policyRef.current.autoRestart) {
           setStatus((prev) => (prev === 'error' ? prev : 'idle'));
           return;
         }
@@ -348,17 +424,30 @@ export const useSpeechRecognition = (
       recognitionRef.current = recognition;
     }
 
+    if (!policyRef.current.useMediaPreflight) {
+      if (manualStopRef.current || startRequestIdRef.current !== requestId) {
+        settleStartRequest(false);
+        return startPromise;
+      }
+      startRecognition();
+      return startPromise;
+    }
+
     void ensureMicrophoneAccess().then((granted) => {
       if (!granted) {
         shouldKeepAliveRef.current = false;
+        settleStartRequest(false);
         return;
       }
       if (manualStopRef.current || startRequestIdRef.current !== requestId) {
         releaseMicrophoneStream();
+        settleStartRequest(false);
         return;
       }
       startRecognition();
     });
+
+    return startPromise;
   };
 
   useEffect(() => {
@@ -374,11 +463,20 @@ export const useSpeechRecognition = (
       shouldKeepAliveRef.current = false;
       manualStopRef.current = true;
       isListeningRef.current = false;
+      settleStartRequest(false);
       releaseMicrophoneStream();
       const recognition = recognitionRef.current;
       if (!recognition) return;
-      try { recognition.stop(); } catch {}
-      try { recognition.abort(); } catch {}
+      try {
+        recognition.stop();
+      } catch {
+        // Recognition can already be stopped during component teardown.
+      }
+      try {
+        recognition.abort();
+      } catch {
+        // Recognition can already be aborted during component teardown.
+      }
     };
   }, []);
 
@@ -387,6 +485,7 @@ export const useSpeechRecognition = (
     isListening,
     isSupported,
     isIOS,
+    requiresManualStart,
     error,
     errorCode,
     status,

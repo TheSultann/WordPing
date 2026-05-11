@@ -111,14 +111,19 @@ export const getSpeechRecognitionPolicy = ({
 }: SpeechRecognitionPolicyInput): SpeechRecognitionPolicy => {
   const isIOS = /iPad|iPhone|iPod/i.test(userAgent);
   const isAndroid = /Android/i.test(userAgent);
-  const requiresManualStart = isIOS || hasTelegramWebApp;
+  // iOS still requires manual start due to strict WebKit policies.
+  // Telegram WebApp on Android behaves close enough to a regular browser,
+  // so we no longer force manual-start / continuous mode for it.
+  const requiresManualStart = isIOS;
 
   return {
     isIOS,
     isAndroid,
     hasTelegramWebApp,
     requiresManualStart,
-    useMediaPreflight: !isIOS && !hasTelegramWebApp,
+    // Always do getUserMedia preflight on non-iOS to keep the mic stream alive.
+    // Previously Telegram WebApp skipped this, causing the OS to reclaim the mic.
+    useMediaPreflight: !isIOS,
     autoRestart: !requiresManualStart,
   };
 };

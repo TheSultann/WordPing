@@ -2,15 +2,18 @@ import { describe, expect, it } from 'vitest';
 import { getSpeechRecognitionPolicy } from '../web/src/hooks/useSpeechRecognition';
 
 describe('getSpeechRecognitionPolicy', () => {
-  it('uses direct manual speech start in Telegram Android WebView', () => {
+  it('uses media preflight and auto restart in Telegram Android WebView', () => {
     const policy = getSpeechRecognitionPolicy({
       userAgent: 'Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Telegram',
       hasTelegramWebApp: true,
     });
 
-    expect(policy.requiresManualStart).toBe(true);
-    expect(policy.useMediaPreflight).toBe(false);
-    expect(policy.autoRestart).toBe(false);
+    // Telegram WebApp on Android now behaves like a regular browser:
+    // media preflight keeps the mic stream alive, auto-restart ensures
+    // seamless recognition loop without mic disconnects.
+    expect(policy.requiresManualStart).toBe(false);
+    expect(policy.useMediaPreflight).toBe(true);
+    expect(policy.autoRestart).toBe(true);
   });
 
   it('allows media preflight and auto restart on desktop Chrome', () => {

@@ -1,10 +1,63 @@
 # WordPing
 
-Telegram-бот и Mini App для интервальных повторений английских слов.
+WordPing is a Telegram bot and Telegram Mini App for learning English vocabulary with spaced repetition, short quizzes, reminders, and contextual examples from the news.
 
-## Быстрый Старт
+The backend runs a Telegram bot, an Express API, Prisma/Postgres persistence, and scheduled workers. The frontend is a React + Vite Mini App in `web/`.
 
-Требования: Node.js и PostgreSQL.
+## Screenshots
+
+| Mini App practice | Telegram review reminder | News vocabulary card |
+| --- | --- | --- |
+| ![Mini App rocket practice](docs/screenshots/mini-app-rocket.png) | ![Telegram review reminder](docs/screenshots/telegram-review-reminder.png) | ![Telegram news vocabulary card](docs/screenshots/telegram-news-card.png) |
+
+## Looking For Contributors
+
+WordPing is ready for contributors who enjoy language-learning tools, Telegram bots, TypeScript services, test coverage, UX polish, and practical open-source maintenance.
+
+Good first areas include:
+
+- improving onboarding and docs;
+- adding more screenshots and Mini App walkthroughs;
+- expanding bot, worker, API, and frontend tests;
+- reviewing CI, deployment, and security posture;
+- polishing the Telegram Mini App user experience.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) and the open GitHub issues for suggested starting points.
+
+## Features
+
+- Add words through `/add` with language detection and fallback auto-translation.
+- Store two cards for each word: `EN -> native` and `native -> EN`.
+- Review words through a fixed SRS ladder: `5 min -> 25 min -> 1.5 h -> 20 h -> 2.5 d -> 6 d -> 14 d -> 30 d`.
+- Grade reviews as `Hard`, `Good`, or `Easy` to move cards backward, forward, or two stages forward.
+- Receive reminders with `+5 min`, `+20 min`, and later `1 hour` retry behavior.
+- Practice quiz sessions with multiple choice, true/false, and context questions.
+- Read prepared news vocabulary cards without calling external news providers from the main bot flow.
+- Open settings and statistics in the Telegram Mini App when `WEBAPP_URL` is configured.
+
+## Architecture
+
+- `src/bot` - Telegram bot flows, callback payloads, quiz/settings/news digest UI, and runtime logic.
+- `src/api` - Express API for the Mini App and health/readiness endpoints.
+- `src/scheduler/worker.ts` - main review/reminder worker.
+- `src/scheduler/newsWorker.ts` - news-only worker for RSS/news resolution.
+- `src/services` - SRS, quiz, translation, sessions, users, and news pipeline services.
+- `src/utils` - shared helpers for environment parsing, logging, runtime health, time, and text handling.
+- `prisma` - Prisma schema and migrations.
+- `tests` - Vitest coverage for bot, API, services, workers, news, backup, and release flows.
+- `web` - React/Vite Telegram Mini App.
+- `scripts` - backup, restore, deploy, migration, and rollback scripts.
+
+Production runs four processes: `api`, `bot`, `worker`, and `news-worker`.
+
+## Quick Start
+
+Requirements:
+
+- Node.js
+- PostgreSQL
+
+Install dependencies and prepare Prisma:
 
 ```bash
 npm install
@@ -13,20 +66,22 @@ npx prisma generate
 npx prisma migrate deploy
 ```
 
-Минимально в `.env` нужны:
+At minimum, configure:
 
-- `BOT_TOKEN` - токен Telegram-бота от BotFather.
-- `DATABASE_URL` - строка подключения PostgreSQL.
+- `BOT_TOKEN` - Telegram bot token from BotFather.
+- `DATABASE_URL` - PostgreSQL connection string.
 
-Локальный запуск:
+Run locally:
 
 ```bash
+npm run dev:api
 npm run dev:bot
 npm run dev:worker
 npm run dev:news-worker
+npm run dev:web
 ```
 
-Production через PM2:
+Production with PM2:
 
 ```bash
 npm i -g pm2
@@ -34,61 +89,72 @@ npm run build
 npm run pm2:start
 ```
 
-## Основные Возможности
+## Mini App And API
 
-- Добавление слов через `/add` с автоопределением языка и fallback-автопереводом.
-- Две карточки на каждое слово: `EN -> native` и `native -> EN`.
-- Интервальные повторения по фиксированной лестнице: `5 мин -> 25 мин -> 1.5 ч -> 20 ч -> 2.5 д -> 6 д -> 14 д -> 30 д`.
-- Оценки `Hard`, `Good`, `Easy` двигают карточку назад, вперед или на две стадии вперед.
-- Напоминания: `+5 мин`, `+20 мин`, затем возврат через `1 час` на `stage 0`.
-- Дневной лимит добавления слов: `9` на пользователя; для `UNLIMITED_WORD_ADD_IDS` и `ADMIN_USER_IDS` лимит отключен.
-- Настройки и статистика доступны в Mini App через `/settings` и `/stats`, если задан `WEBAPP_URL`.
+Frontend environment variables live in `web/.env`; backend environment variables live in the root `.env`.
 
-## Обучение И Quiz
+Useful variables:
 
-На ранних стадиях бот спрашивает простой перевод. Начиная со `stage >= 2`, использует контекстные фразы, сгенерированные через Gemini API.
+- `BOT_USERNAME` - used for `t.me/<bot>/app` links.
+- `VITE_BOT_USERNAME` - used by the Mini App for referral links.
+- `VITE_ADMIN_TELEGRAM_ID` - optional admin tab visibility.
+- `WEBAPP_URL` - Mini App URL sent by the bot.
+- `WEB_ORIGIN` - production origin for the API.
+- `ALLOW_DEV_AUTH=true` - local development without Telegram init data.
 
-- `Stage 0-1`: изолированный перевод.
-- `Stage 2-6`: слово выделено в предложении.
-- `Stage 7+`: слово заменено на `___`.
-- Для одного слова хранится несколько примеров, чтобы не заучивать одну фразу.
-- Недостающие примеры добирает фоновый `worker`.
+In local development, open the Mini App with:
 
-Quiz запускается короткой сессией на `10` вопросов. В него попадают слова со `stage >= 2`. Приоритет выше у слов с недавними ошибками, `hardStreak`, overdue review или давним показом. Типы вопросов: `multiple choice`, `true/false`, `context`.
+```text
+?devUserId=123456789
+```
 
-## Новости
+Mini App authorization uses:
 
-Кнопка `Почитать новости` показывает заранее подготовленные примеры из БД. Бот не ходит во внешние news API в момент нажатия.
+- `x-telegram-init-data` - Telegram WebApp context.
+- `x-dev-user-id` - local development mode.
+
+Keep `ALLOW_DEV_AUTH=false` in production.
+
+If the frontend and API are on the same AWS server, configure a reverse proxy:
+
+```text
+https://your-domain/api/* -> http://127.0.0.1:3001/api/*
+```
+
+Production Mini App static files are served by nginx from `/var/www/wordping`. After `npm run build:web`, sync `web/dist/` to `/var/www/wordping/` and reload nginx.
+
+## Learning And Quiz Logic
+
+Early stages ask for a simple translation. Starting at `stage >= 2`, WordPing uses contextual examples generated through the Gemini API.
+
+- `Stage 0-1`: isolated translation.
+- `Stage 2-6`: the word is highlighted inside a sentence.
+- `Stage 7+`: the word is replaced with `___`.
+- Each word can store multiple examples so users do not memorize a single sentence.
+- The main `worker` fills missing examples in the background.
+
+Quiz sessions are short runs of `10` questions. They include words with `stage >= 2` and prioritize recent mistakes, `hardStreak`, overdue reviews, and stale examples.
+
+## News Pipeline
+
+The `Read news` flow shows prepared examples from the database. The bot does not call external news APIs when a user taps the news button.
 
 News pipeline:
 
-1. Слова со `stage >= 4` попадают в `NewsResolveJob`.
-2. `news-worker` ищет примеры через RSS cache, NewsData.io, GDELT и Guardian.
-3. Готовые карточки выдаются батчами по 5.
-4. Ссылки на источники проверяются; `404/410` помечаются на refresh.
+1. Words with `stage >= 4` are enqueued as `NewsResolveJob` records.
+2. `news-worker` resolves examples through RSS cache, NewsData.io, GDELT, and The Guardian.
+3. Prepared cards are served in batches of 5.
+4. Source links are checked; `404/410` responses are marked for refresh.
 
-Важное правило: `src/scheduler/worker.ts` не делает внешние news-запросы. Внешние news API вызываются только из `src/scheduler/newsWorker.ts` через `newsFallbackService`.
+Important rule: `src/scheduler/worker.ts` must not call external news providers directly. External news API calls belong only in `src/scheduler/newsWorker.ts` and `src/services/news*`.
 
-## Структура Проекта
+## Time And Storage
 
-- `src/bot` - Telegram bot flows и FSM.
-- `src/api` - Express API для Mini App и health/readiness endpoints.
-- `src/scheduler/worker.ts` - основной worker карточек и напоминаний.
-- `src/scheduler/newsWorker.ts` - отдельный news worker.
-- `src/services` - SRS, quiz, перевод, пользователи, сессии и news pipeline.
-- `src/utils` - общие утилиты.
-- `prisma` - Prisma schema и migrations.
-- `tests` - Vitest-тесты.
-- `web` - React/Vite Mini App.
-- `scripts` - backup, restore, deploy, migration и rollback.
+- Database timestamps are stored in UTC.
+- User notification windows are stored as minutes from `00:00`, defaulting to `08:00-23:00`.
+- Notification checks use the user's timezone. If a timezone is not configured, UTC is used.
 
-## Время И Хранение
-
-- Все времена в БД хранятся в UTC.
-- Пользовательские окна уведомлений хранятся в минутах от `00:00`, по умолчанию `08:00-23:00`.
-- При проверке окна используется timezone пользователя. Если timezone не задан, используется UTC.
-
-## Полезные Команды
+## Useful Commands
 
 ```bash
 npm run migrate:dev
@@ -105,55 +171,15 @@ npm run backup:db
 npm run restore:db -- ./backups/postgres/<file>.dump
 ```
 
-Текущий путь проекта на AWS-сервере:
+Current production project path on the AWS server:
 
 ```bash
 ~/apps/WordPing
 ```
 
-## Mini App И API
+## Deploy And Backup
 
-Локальный запуск:
-
-```bash
-npm --prefix web install
-npm run dev:api
-npm run dev:web
-```
-
-Переменные:
-
-- `BOT_USERNAME` - для ссылок `t.me/<bot>/app`.
-- `VITE_BOT_USERNAME` - для реферальных ссылок в `web/.env`.
-- `VITE_ADMIN_TELEGRAM_ID` - опционально для показа вкладки админа.
-- `WEBAPP_URL` - URL Mini App, который бот отправляет пользователю.
-- `WEB_ORIGIN` - production origin для API.
-- `ALLOW_DEV_AUTH=true` - локальный dev-режим без Telegram.
-
-В dev-режиме можно открыть Web App с параметром:
-
-```text
-?devUserId=123456789
-```
-
-Авторизация Mini App:
-
-- `x-telegram-init-data` - Telegram WebApp context.
-- `x-dev-user-id` - локальный dev-режим.
-
-В production держи `ALLOW_DEV_AUTH=false`.
-
-Если frontend и API находятся на одном AWS-сервере, настрой reverse proxy:
-
-```text
-https://your-domain/api/* -> http://127.0.0.1:3001/api/*
-```
-
-Production Mini App статика раздается nginx из `/var/www/wordping`. После `npm run build:web` нужно синхронизировать `web/dist/` в `/var/www/wordping/` и перезагрузить nginx.
-
-## Deploy И Backup
-
-Актуальный production flow описан в `DEPLOY.md`.
+The current production flow is documented in [DEPLOY.md](DEPLOY.md).
 
 Deploy:
 
@@ -162,17 +188,17 @@ cd ~/apps/WordPing
 ./scripts/deploy-prod.sh origin/main
 ```
 
-Если есть Prisma-миграции, сначала запускай migration flow из `DEPLOY.md`, затем application deploy.
+If Prisma migrations are present, run the migration flow from [DEPLOY.md](DEPLOY.md) before the application deploy.
 
-Backup создается через `pg_dump` в формате `.dump`, хранится в `./backups/postgres` и отправляется администратору в Telegram. Для восстановления используется `pg_restore`.
+Backups use `pg_dump` in `.dump` format, are stored in `./backups/postgres`, and are sent to the administrator through Telegram. Restore uses `pg_restore`.
 
-Ручной backup:
+Manual backup:
 
 ```bash
 npm run backup:db
 ```
 
-Восстановление:
+Restore:
 
 ```bash
 npm run restore:db -- ./backups/postgres/<file>.dump
@@ -186,15 +212,15 @@ Nightly cron:
 
 ## Environment
 
-Основные runtime-переменные:
+Core runtime variables:
 
 - `BOT_TOKEN`
 - `DATABASE_URL`
 - `ADMIN_TELEGRAM_ID`
 - `WEBAPP_URL`
-- `ALLOW_DEV_AUTH=false` в production
+- `ALLOW_DEV_AUTH=false` in production
 
-Перевод:
+Translation:
 
 - `GEMINI_API_KEY`
 - `GEMINI_MODEL=gemini-2.5-flash-lite`
@@ -204,14 +230,14 @@ Nightly cron:
 - `TRANSLATE_API_URL=https://api.mymemory.translated.net/get`
 - `DAILY_AUTO_TRANSLATE_LIMIT=30`
 
-Новости:
+News:
 
 - `NEWS_RSS_FEEDS`
 - `NEWS_RSS_PRIMARY_DOMAINS`
 - `NEWSDATA_API_KEY`
 - `GDELT_API_URL`
 - `GUARDIAN_API_KEY`
-- `NEWS_*` cron, retry, timeout и retention настройки
+- `NEWS_*` cron, retry, timeout, and retention settings
 
 Backup:
 
@@ -223,17 +249,17 @@ Backup:
 - `PG_DUMP_BIN`
 - `PG_RESTORE_BIN`
 
-Полный список переменных смотри в `.env.example`.
+See [.env.example](.env.example) for the complete list.
 
-## Логи И Healthcheck
+## Logs And Healthcheck
 
-Логи пишутся в `stdout`/`stderr`.
+Logs are written to `stdout`/`stderr`.
 
-- Локально формат по умолчанию: `pretty`.
-- В production через PM2: `json`.
+- Local default format: `pretty`.
+- Production through PM2: `json`.
 - `LOG_LEVEL`: `debug`, `info`, `warn`, `error`.
 - `LOG_FORMAT`: `pretty`, `json`.
-- API добавляет `x-request-id` в логи запросов.
+- The API includes `x-request-id` in request logs.
 
 Healthcheck:
 
@@ -241,12 +267,30 @@ Healthcheck:
 GET /api/health
 ```
 
-Endpoint возвращает статус API, БД и heartbeat backend-процессов.
+The endpoint returns API, database, and backend process heartbeat status.
 
-## Тесты
+## Tests
 
 ```bash
 npm test
 ```
 
-Интеграционные тесты используют PostgreSQL и по умолчанию создают схему `test` в базе из `DATABASE_URL`. При необходимости можно задать отдельную БД через `TEST_DATABASE_URL`.
+Integration tests use PostgreSQL and, by default, create a `test` schema in the database from `DATABASE_URL`. Set `TEST_DATABASE_URL` when a separate test database is needed.
+
+Before handing off most code changes, run:
+
+```bash
+npm run lint
+npm test
+npm run build
+```
+
+When `web/` changes, also run:
+
+```bash
+npm run build:web
+```
+
+## License
+
+WordPing is released under the [MIT License](LICENSE).

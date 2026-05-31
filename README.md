@@ -1,16 +1,38 @@
-# WordPing
+# 🚀 WordPing
+
+<p align="center">
+  <strong>Learn English vocabulary inside Telegram with spaced repetition, quick quizzes, reminders, and real-world news examples.</strong>
+</p>
+
+<p align="center">
+  <img alt="TypeScript" src="https://img.shields.io/badge/TypeScript-3178C6?style=for-the-badge&logo=typescript&logoColor=white">
+  <img alt="Telegram" src="https://img.shields.io/badge/Telegram_Mini_App-26A5E4?style=for-the-badge&logo=telegram&logoColor=white">
+  <img alt="React" src="https://img.shields.io/badge/React_+_Vite-646CFF?style=for-the-badge&logo=vite&logoColor=white">
+  <img alt="Prisma" src="https://img.shields.io/badge/Prisma_+_Postgres-2D3748?style=for-the-badge&logo=prisma&logoColor=white">
+  <img alt="MIT License" src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge">
+</p>
+
+<p align="center">
+  <a href="#-screenshots">Screenshots</a> •
+  <a href="#-looking-for-contributors">Contribute</a> •
+  <a href="#-features">Features</a> •
+  <a href="#-quick-start">Quick Start</a> •
+  <a href="#-tests">Tests</a>
+</p>
 
 WordPing is a Telegram bot and Telegram Mini App for learning English vocabulary with spaced repetition, short quizzes, reminders, and contextual examples from the news.
 
 The backend runs a Telegram bot, an Express API, Prisma/Postgres persistence, and scheduled workers. The frontend is a React + Vite Mini App in `web/`.
 
-## Screenshots
+> 🧠 **Tiny daily practice, serious retention.** WordPing keeps vocabulary reviews close to the place where users already chat: Telegram.
+
+## 📸 Screenshots
 
 | Mini App practice | Telegram review reminder | News vocabulary card |
 | --- | --- | --- |
 | ![Mini App rocket practice](docs/screenshots/mini-app-rocket.png) | ![Telegram review reminder](docs/screenshots/telegram-review-reminder.png) | ![Telegram news vocabulary card](docs/screenshots/telegram-news-card.png) |
 
-## Looking For Contributors
+## 🤝 Looking For Contributors
 
 WordPing is ready for contributors who enjoy language-learning tools, Telegram bots, TypeScript services, test coverage, UX polish, and practical open-source maintenance.
 
@@ -24,7 +46,7 @@ Good first areas include:
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) and the open GitHub issues for suggested starting points.
 
-## Features
+## ✨ Features
 
 - Add words through `/add` with language detection and fallback auto-translation.
 - Store two cards for each word: `EN -> native` and `native -> EN`.
@@ -35,7 +57,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) and the open GitHub issues for suggested 
 - Read prepared news vocabulary cards without calling external news providers from the main bot flow.
 - Open settings and statistics in the Telegram Mini App when `WEBAPP_URL` is configured.
 
-## Architecture
+## 🧩 Architecture
 
 - `src/bot` - Telegram bot flows, callback payloads, quiz/settings/news digest UI, and runtime logic.
 - `src/api` - Express API for the Mini App and health/readiness endpoints.
@@ -50,7 +72,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) and the open GitHub issues for suggested 
 
 Production runs four processes: `api`, `bot`, `worker`, and `news-worker`.
 
-## Quick Start
+## ⚡ Quick Start
 
 Requirements:
 
@@ -89,7 +111,7 @@ npm run build
 npm run pm2:start
 ```
 
-## Mini App And API
+## 📱 Mini App And API
 
 Frontend environment variables live in `web/.env`; backend environment variables live in the root `.env`.
 
@@ -123,7 +145,7 @@ https://your-domain/api/* -> http://127.0.0.1:3001/api/*
 
 Production Mini App static files are served by nginx from `/var/www/wordping`. After `npm run build:web`, sync `web/dist/` to `/var/www/wordping/` and reload nginx.
 
-## Learning And Quiz Logic
+## 🧠 Learning And Quiz Logic
 
 Early stages ask for a simple translation. Starting at `stage >= 2`, WordPing uses contextual examples generated through the Gemini API.
 
@@ -135,7 +157,7 @@ Early stages ask for a simple translation. Starting at `stage >= 2`, WordPing us
 
 Quiz sessions are short runs of `10` questions. They include words with `stage >= 2` and prioritize recent mistakes, `hardStreak`, overdue reviews, and stale examples.
 
-## News Pipeline
+## 📰 News Pipeline
 
 The `Read news` flow shows prepared examples from the database. The bot does not call external news APIs when a user taps the news button.
 
@@ -148,13 +170,13 @@ News pipeline:
 
 Important rule: `src/scheduler/worker.ts` must not call external news providers directly. External news API calls belong only in `src/scheduler/newsWorker.ts` and `src/services/news*`.
 
-## Time And Storage
+## ⏰ Time And Storage
 
 - Database timestamps are stored in UTC.
 - User notification windows are stored as minutes from `00:00`, defaulting to `08:00-23:00`.
 - Notification checks use the user's timezone. If a timezone is not configured, UTC is used.
 
-## Useful Commands
+## 🛠️ Useful Commands
 
 ```bash
 npm run migrate:dev
@@ -177,7 +199,7 @@ Current production project path on the AWS server:
 ~/apps/WordPing
 ```
 
-## Deploy And Backup
+## 🚢 Deploy And Backup
 
 The current production flow is documented in [DEPLOY.md](DEPLOY.md).
 
@@ -210,7 +232,7 @@ Nightly cron:
 0 3 * * * cd ~/apps/WordPing && /usr/bin/npm run backup:db >> ~/apps/WordPing/backups/backup.log 2>&1
 ```
 
-## Environment
+## 🔐 Environment
 
 Core runtime variables:
 
@@ -251,7 +273,7 @@ Backup:
 
 See [.env.example](.env.example) for the complete list.
 
-## Logs And Healthcheck
+## 🩺 Logs And Healthcheck
 
 Logs are written to `stdout`/`stderr`.
 
@@ -269,7 +291,7 @@ GET /api/health
 
 The endpoint returns API, database, and backend process heartbeat status.
 
-## Tests
+## ✅ Tests
 
 ```bash
 npm test
@@ -291,6 +313,6 @@ When `web/` changes, also run:
 npm run build:web
 ```
 
-## License
+## 📄 License
 
 WordPing is released under the [MIT License](LICENSE).

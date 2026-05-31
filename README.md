@@ -193,7 +193,7 @@ npm run backup:db
 npm run restore:db -- ./backups/postgres/<file>.dump
 ```
 
-Current production project path on the AWS server:
+Example production path:
 
 ```bash
 ~/apps/WordPing

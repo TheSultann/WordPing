@@ -141,6 +141,10 @@ await mkdir(backupDir, { recursive: true });
 const backupPath = path.join(backupDir, buildBackupFileName(backupPrefix));
 
 try {
+  // NOTE: DATABASE_URL is passed as a pg_dump argument, making it visible in
+  // process listings. This is acceptable for server-local backup cron jobs
+  // but should not be used in shared or multi-tenant environments.
+  // Consider PGPASSFILE or pg_service.conf for stricter credential isolation.
   await runCommand(pgDumpBin, [
     `--dbname=${databaseUrl}`,
     '--format=custom',
@@ -177,6 +181,8 @@ for (const file of filesToPrune) {
 const backupStat = await stat(backupPath);
 const sizeText = formatSize(backupStat.size);
 if (backupStat.size > telegramUploadLimitBytes) {
+  // local_path is sent to the admin chat for operational awareness.
+  // Do not expose this channel to non-admin users.
   const warning = [
     'DB backup created, but Telegram upload was skipped.',
     `file: ${path.basename(backupPath)}`,
@@ -197,7 +203,6 @@ await sendBackupToTelegram(backupPath, sizeText);
 console.log('database backup created', {
   path: backupPath,
   size: sizeText,
-  telegramChatId,
   telegramBotApiBaseUrl,
   telegramUploadLimitMb,
   keptBackups: Math.min(managedFiles.length, retentionCount),

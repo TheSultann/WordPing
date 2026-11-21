@@ -81,6 +81,10 @@ const defaultOrigins = process.env.NODE_ENV === 'production'
 
 const allowedOrigins = Array.from(new Set([...parseOrigins(process.env.WEB_ORIGIN), ...defaultOrigins]));
 
+if (process.env.NODE_ENV === 'production' && allowedOrigins.length === 0) {
+  throw new Error('WEB_ORIGIN must be set in production — CORS will block all requests');
+}
+
 const parseTimezone = (value?: string | null): string | null => {
   const timezone = (value ?? '').trim();
   if (!timezone) return null;
@@ -188,8 +192,13 @@ app.use('/api', (req, res, next) => {
 });
 
 const botToken = process.env.BOT_TOKEN ?? '';
-const maxAgeSeconds = parseInt(process.env.INIT_DATA_MAX_AGE_SECONDS ?? '86400', 10);
+const maxAgeSeconds = parseInt(process.env.INIT_DATA_MAX_AGE_SECONDS ?? '3600', 10);
 const allowDev = process.env.ALLOW_DEV_AUTH === 'true' && process.env.NODE_ENV !== 'production';
+
+if (process.env.ALLOW_DEV_AUTH === 'true' && process.env.NODE_ENV === 'production') {
+  apiLogger.error('CRITICAL: ALLOW_DEV_AUTH is enabled in production — this is a security risk');
+  throw new Error('ALLOW_DEV_AUTH must not be enabled in production');
+}
 const adminTelegramId = BigInt(trimEnv(process.env.ADMIN_TELEGRAM_ID));
 const LEARNED_STAGE_MIN = 4;
 
@@ -238,11 +247,12 @@ app.get('/api/ready', async (_req, res) => {
 app.use('/api', async (req, res, next) => {
   const initData = req.header('x-telegram-init-data') ?? '';
   if (!initData) {
+    const devIdRaw = req.header('x-dev-user-id');
     if (allowDev) {
-      const devIdRaw = req.header('x-dev-user-id');
       if (devIdRaw) {
         const devId = Number(devIdRaw);
         if (Number.isFinite(devId) && devId > 0) {
+          apiLogger.warn('dev auth used', { userId: devId, ip: req.ip });
           req.telegramUserId = BigInt(devId);
           req.telegramUser = { id: devId } as any;
           try {
@@ -258,6 +268,12 @@ app.use('/api', async (req, res, next) => {
           return next();
         }
       }
+    } else if (devIdRaw) {
+      apiLogger.warn('dev auth attempt rejected (disabled or production)', {
+        ip: req.ip,
+        devIdRaw,
+        path: req.originalUrl,
+      });
     }
     return res.status(401).json({ error: 'unauthorized' });
   }
@@ -282,13 +298,55 @@ app.use('/api', async (req, res, next) => {
   return next();
 });
 
+const ADMIN_RATE_LIMIT_WINDOW_MS = 60 * 1000;
+const ADMIN_MAX_REQUESTS_PER_WINDOW = 120;
+const adminRequestCounts = new Map<string, { count: number; resetAt: number }>();
+
+export const checkAdminRateLimit = (key: string, limit = ADMIN_MAX_REQUESTS_PER_WINDOW): boolean => {
+  const now = Date.now();
+  const entry = adminRequestCounts.get(key);
+  if (!entry || now >= entry.resetAt) {
+    adminRequestCounts.set(key, { count: 1, resetAt: now + ADMIN_RATE_LIMIT_WINDOW_MS });
+    return true;
+  }
+  if (entry.count >= limit) {
+    return false;
+  }
+  entry.count += 1;
+  return true;
+};
+
+export const resetAdminRateLimitsForTest = () => {
+  adminRequestCounts.clear();
+};
+
 const requireAdmin: RequestHandler = (req, res, next) => {
   if (!req.telegramUserId) {
     return res.status(401).json({ error: 'unauthorized' });
   }
   if (req.telegramUserId !== adminTelegramId) {
+    apiLogger.warn('admin access denied', {
+      userId: req.telegramUserId?.toString(),
+      path: req.originalUrl,
+      ip: req.ip,
+    });
     return res.status(403).json({ error: 'forbidden' });
   }
+
+  const rateLimitKey = req.telegramUserId.toString();
+  if (!checkAdminRateLimit(rateLimitKey)) {
+    apiLogger.warn('admin rate limit exceeded', {
+      userId: req.telegramUserId.toString(),
+      path: req.originalUrl,
+      ip: req.ip,
+    });
+    return res.status(429).json({ error: 'rate_limited' });
+  }
+
+  apiLogger.info('admin access granted', {
+    userId: req.telegramUserId.toString(),
+    path: req.originalUrl,
+  });
   return next();
 };
 

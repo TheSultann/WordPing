@@ -61,7 +61,7 @@ export type VerifyInitDataResult =
 export const verifyInitData = (
   initData: string,
   botToken: string,
-  maxAgeSeconds = 86400
+  maxAgeSeconds = 3600 // Default 1 hour (was 86400 / 24 hours); 1-6h is recommended for Mini Apps
 ): VerifyInitDataResult => {
   if (!initData) return { ok: false, error: 'initData_missing' };
   if (!botToken) return { ok: false, error: 'bot_token_missing' };

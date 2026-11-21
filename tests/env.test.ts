@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { validateRuntimeEnv } from '../src/utils/env';
 
 const envBackup = { ...process.env };
@@ -55,5 +55,41 @@ describe('runtime env validation', () => {
     process.env.FILL_SENTENCES_URGENT_WINDOW_MINUTES = '180';
 
     expect(() => validateRuntimeEnv('worker')).not.toThrow();
+  });
+});
+
+describe('validateRuntimeEnv security checks', () => {
+  const originalEnv = { ...process.env };
+
+  beforeEach(() => {
+    process.env.DATABASE_URL = 'postgresql://user:pass@localhost:5432/test';
+    process.env.BOT_TOKEN = 'test-token';
+    process.env.ADMIN_TELEGRAM_ID = '12345';
+  });
+
+  afterEach(() => {
+    process.env = { ...originalEnv };
+  });
+
+  it('throws when ALLOW_DEV_AUTH is true in production', () => {
+    process.env.NODE_ENV = 'production';
+    process.env.ALLOW_DEV_AUTH = 'true';
+    expect(() => validateRuntimeEnv('api')).toThrow('ALLOW_DEV_AUTH must be disabled in production');
+  });
+
+  it('allows ALLOW_DEV_AUTH=true in development', () => {
+    process.env.NODE_ENV = 'development';
+    process.env.ALLOW_DEV_AUTH = 'true';
+    expect(() => validateRuntimeEnv('api')).not.toThrow();
+  });
+
+  it('validates INIT_DATA_MAX_AGE_SECONDS range', () => {
+    process.env.INIT_DATA_MAX_AGE_SECONDS = '100000';
+    expect(() => validateRuntimeEnv('api')).toThrow();
+  });
+
+  it('allows INIT_DATA_MAX_AGE_SECONDS within range', () => {
+    process.env.INIT_DATA_MAX_AGE_SECONDS = '3600';
+    expect(() => validateRuntimeEnv('api')).not.toThrow();
   });
 });

@@ -144,7 +144,7 @@ export const validateRuntimeEnv = (service: RuntimeService): void => {
 
   if (service === 'api') {
     validateIntegerEnv(errors, 'API_PORT', { min: 1, max: 65535 });
-    validateIntegerEnv(errors, 'INIT_DATA_MAX_AGE_SECONDS', { min: 1 });
+    validateIntegerEnv(errors, 'INIT_DATA_MAX_AGE_SECONDS', { min: 1, max: 86400 });
     validateBooleanEnv(errors, 'ALLOW_DEV_AUTH');
     pushMissing(errors, 'ADMIN_TELEGRAM_ID');
     validateBigIntEnv(errors, 'ADMIN_TELEGRAM_ID');

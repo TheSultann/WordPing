@@ -8,6 +8,7 @@ import { cleanupUserData } from './helpers/cleanup';
 import { createRuntimeHealthReporter, readRuntimeHealth } from '../src/utils/runtimeHealth';
 
 let app: any;
+let apiMod: any;
 let prisma: PrismaClient;
 const userId = BigInt(900000001);
 const otherUserId = BigInt(900000010);
@@ -48,8 +49,8 @@ beforeAll(async () => {
   process.env.BOT_TOKEN = 'test-token';
 
   vi.resetModules();
-  const mod = await import('../src/api/index');
-  app = mod.app;
+  apiMod = await import('../src/api/index');
+  app = apiMod.app;
   prisma = new PrismaClient({ datasources: { db: { url: testUrl } } });
 });
 
@@ -917,5 +918,40 @@ describe('API integration', () => {
     expect(settings.body.maxNotificationsPerDay).toBe(20);
     expect(settings.body.quietHoursStartMinutes).toBe(480);
     expect(settings.body.quietHoursEndMinutes).toBe(1380);
+  });
+
+  it('dev auth logs usage in non-production', async () => {
+    // Dev auth should work (the test env already has ALLOW_DEV_AUTH=true)
+    const res = await request(app)
+      .get('/api/me')
+      .set('x-dev-user-id', userId.toString());
+    expect(res.status).toBe(200);
+  });
+
+  it('admin endpoints return 403 for non-admin and 200 for admin', async () => {
+    const forbidden = await request(app)
+      .get('/api/admin/overview')
+      .set('x-dev-user-id', otherUserId.toString());
+    expect(forbidden.status).toBe(403);
+
+    await prisma.user.create({ data: { id: userId } });
+    const allowed = await request(app)
+      .get('/api/admin/overview')
+      .set('x-dev-user-id', userId.toString());
+    expect(allowed.status).toBe(200);
+  });
+
+  it('admin endpoint returns 429 when rate limit is exceeded', async () => {
+    await prisma.user.create({ data: { id: userId } });
+    const key = userId.toString();
+    for (let i = 0; i < 125; i++) {
+      apiMod.checkAdminRateLimit(key);
+    }
+    const res = await request(app)
+      .get('/api/admin/overview')
+      .set('x-dev-user-id', userId.toString());
+    expect(res.status).toBe(429);
+    expect(res.body.error).toBe('rate_limited');
+    apiMod.resetAdminRateLimitsForTest();
   });
 });

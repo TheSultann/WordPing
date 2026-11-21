@@ -49,6 +49,10 @@ const runCommand = async (command, args) =>
     });
   });
 
+// NOTE: DATABASE_URL is passed as a pg_restore argument, making it visible in
+// process listings. This is acceptable for server-local backup cron jobs
+// but should not be used in shared or multi-tenant environments.
+// Consider PGPASSFILE or pg_service.conf for stricter credential isolation.
 await runCommand(pgRestoreBin, [
   `--dbname=${databaseUrl}`,
   '--clean',
